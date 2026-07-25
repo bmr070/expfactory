@@ -14,9 +14,7 @@ Written RED: the suite module does not exist.
 """
 from __future__ import annotations
 
-import pytest
-
-from expfactory.adversarial_suite import build_suite, Expect
+from expfactory.adversarial_suite import Expect, build_suite
 
 
 def test_suite_has_all_four_failure_classes():

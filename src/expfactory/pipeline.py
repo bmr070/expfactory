@@ -8,9 +8,10 @@ stays derived inside the verifier; this function never sets it.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
-from expfactory.verifier import Candidate, Ledger, Verifier, VerdictBundle
+from expfactory.verifier import Candidate, Ledger, VerdictBundle, Verifier
 
 
 def run_and_record(

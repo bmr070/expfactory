@@ -26,13 +26,15 @@ def test_budget_starts_full(tmp_path: Path):
 
 def test_each_query_decrements(tmp_path: Path):
     b = HoldoutBudget(tmp_path / "budget.json", limit=3)
-    b.query(); b.query()
+    b.query()
+    b.query()
     assert b.remaining == 1
 
 
 def test_exhaustion_raises_not_silently_allows(tmp_path: Path):
     b = HoldoutBudget(tmp_path / "budget.json", limit=2)
-    b.query(); b.query()
+    b.query()
+    b.query()
     with pytest.raises(HoldoutExhausted):
         b.query()
 
@@ -42,7 +44,9 @@ def test_budget_survives_restart(tmp_path: Path):
     spent budget. Bouncing the process does NOT reopen the lockbox."""
     p = tmp_path / "budget.json"
     b1 = HoldoutBudget(p, limit=5)
-    b1.query(); b1.query(); b1.query()
+    b1.query()
+    b1.query()
+    b1.query()
     # simulate a restart: brand new object, same file
     b2 = HoldoutBudget(p, limit=5)
     assert b2.remaining == 2

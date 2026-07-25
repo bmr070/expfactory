@@ -23,10 +23,10 @@ import json
 import statistics
 import time
 import uuid
-from dataclasses import dataclass, field, asdict
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
-
+from typing import Any
 
 # --------------------------------------------------------------------------- #
 # Records
@@ -177,7 +177,6 @@ def gate_reproducible(exp: Experiment, tolerance: float = 1e-6, **_) -> GateResu
     by_seed: dict[int, list[float]] = {}
     for r in exp.runs:
         by_seed.setdefault(r.seed, []).append(r.val_metric)
-        dupes = {s: v for s, v in by_seed.items() if len(v) > 1}
     bad = {s: v for s, v in by_seed.items() if len(v) > 1 and (max(v) - min(v)) > tolerance}
     ok = not bad
     return GateResult("reproducible", ok,

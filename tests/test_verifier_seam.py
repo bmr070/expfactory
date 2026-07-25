@@ -11,20 +11,19 @@ Written RED: the prototype has no Verifier protocol and no deterministic adapter
 """
 from __future__ import annotations
 
-import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from expfactory.verifier import (
     Candidate,
+    ExitCodeVerifier,
+    GateVerifier,
+    Ledger,
     VerdictBundle,
     Verifier,
-    GateVerifier,
-    ExitCodeVerifier,
-    Ledger,
 )
-
 
 # ---- seam 1: the plugin boundary -------------------------------------------
 
@@ -109,7 +108,7 @@ def test_caller_cannot_forge_promotion():
 def test_gate_and_exitcode_verifiers_are_substitutable():
     """The deterministic CI adapter satisfies the same Verifier contract as the
     empirical gate verifier. This is the W-02 'prove the seam admits two impls'."""
-    for v in (GateVerifier(), ExitCodeVerifier(command=["true"])):
+    for v in (GateVerifier(), ExitCodeVerifier(command=_ok_cmd())):
         assert isinstance(v, Verifier)
         bundle = v.run(_trivial_good_candidate())
         assert isinstance(bundle, VerdictBundle)
@@ -117,15 +116,15 @@ def test_gate_and_exitcode_verifiers_are_substitutable():
 
 
 def test_exitcode_verifier_maps_exit_code_to_verdict():
-    passing = ExitCodeVerifier(command=["true"]).run(_trivial_good_candidate())
-    failing = ExitCodeVerifier(command=["false"]).run(_trivial_good_candidate())
+    passing = ExitCodeVerifier(command=_ok_cmd()).run(_trivial_good_candidate())
+    failing = ExitCodeVerifier(command=_fail_cmd()).run(_trivial_good_candidate())
     assert passing.promoted is True
     assert failing.promoted is False
 
 
 # ---- helpers ---------------------------------------------------------------
 
-def _trivial_good_candidate() -> "Candidate":
+def _trivial_good_candidate() -> Candidate:
     return Candidate(
         hypothesis="baseline", config={"model": "logreg"}, code_hash="abc123",
         runs=[dict(seed=s, val_metric=0.80, train_ids_hash="t", eval_ids_hash="e",
@@ -134,8 +133,18 @@ def _trivial_good_candidate() -> "Candidate":
     )
 
 
-def _promoted_bundle(exp_id: str) -> "VerdictBundle":
-    v = GateVerifier()
-    b = v.run(_trivial_good_candidate())
-    # stamp a deterministic id for ledger-ordering assertions
-    return b.with_exp_id(exp_id)
+def _promoted_bundle(exp_id: str) -> VerdictBundle:
+    # Pin the id through the verifier's seam rather than rewriting the bundle
+    # afterwards: a VerdictBundle is frozen precisely so that nothing edits a
+    # verdict once it has been reached.
+    v = GateVerifier(id_factory=lambda: exp_id)
+    return v.run(_trivial_good_candidate())
+
+
+def _ok_cmd() -> list[str]:
+    """Exit-0 command that exists on every platform (unlike coreutils `true`)."""
+    return [sys.executable, "-c", ""]
+
+
+def _fail_cmd() -> list[str]:
+    return [sys.executable, "-c", "raise SystemExit(1)"]

@@ -11,10 +11,9 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any
 
-from expfactory.verifier import Candidate, Verifier
 from expfactory.gates_v1 import DiffEvidence
+from expfactory.verifier import Candidate, Verifier
 
 
 class Expect(enum.Enum):
