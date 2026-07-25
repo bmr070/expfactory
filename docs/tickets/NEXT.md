@@ -19,10 +19,16 @@ still need infrastructure that does not exist yet.
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
 
-**N-01/02/03/04 landed.** G-07 runs inside `GateVerifier` when constructed with
-`require_prereg=True`, backed by a `PreregStore` (which `Ledger` satisfies). The
-gate has 18 unit fixtures plus 9 suite fixtures across both partitions. Baseline
-measurement: visible 6/6, held-out 3/3.
+**N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
+constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`
+satisfies). 29 unit fixtures plus 10 suite fixtures across both partitions.
+
+Baseline, measured once before any tuning:
+
+| Suite | Visible | Held-out |
+|---|---|---|
+| core gates | 5/5 | 3/3 |
+| G-07 + G-08 preregistration | 7/7 | 3/3 |
 
 One judgement call worth revisiting: `require_prereg` defaults to **False**. The
 same gate set adjudicates one-off candidates with no hill-climb lineage — the
