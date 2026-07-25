@@ -51,7 +51,7 @@ Clock = Callable[[], float]
 SECONDS_PER_DAY = 86_400.0
 
 
-class JobState(str, enum.Enum):
+class JobState(enum.StrEnum):
     SUBMITTED = "submitted"
     RESOLVED = "resolved"
     LOST = "lost"

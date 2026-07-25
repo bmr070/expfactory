@@ -14,7 +14,10 @@ dependencies = []
 # The verifier core deliberately has no runtime deps. numpy/scipy/scikit-learn are
 # needed only by the demo workload, never by the gates or the ledger.
 demo = ["numpy>=1.26", "scipy>=1.11", "scikit-learn>=1.3"]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+# Pinned, not floated. These three ARE the checks: an unpinned linter means a
+# green local run says nothing about CI, and a new release can turn main red
+# with no code change. Bump deliberately, in its own commit.
+dev = ["pytest==8.4.2", "ruff==0.16.0", "mypy==1.20.2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
