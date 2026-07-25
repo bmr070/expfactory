@@ -102,6 +102,7 @@ attaching a persuasive endorsement to it.
 | [`docs/MAP2.md`](docs/MAP2.md) | Before starting new design work. Open territory. |
 | [`docs/decisions/`](docs/decisions/) | Why a specific call was made. |
 | [`docs/tickets/`](docs/tickets/) | Build slices, dependency-ordered. |
+| [`docs/TRACKING.md`](docs/TRACKING.md) | Where work lives: Linear (human board) vs GitHub Issues (machine control plane). |
 
 ## Status
 
