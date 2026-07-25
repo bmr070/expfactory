@@ -250,6 +250,7 @@ class PreregStore(Protocol):
     def prereg_hashes(self) -> frozenset[str]: ...
     def get_prereg(self, prereg_hash: str) -> Preregistration | None: ...
     def non_promoting_prereg_count(self, parent_id: str | None) -> int: ...
+    def get_verdict_metric(self, exp_id: str) -> float | None: ...
 
 
 class GateVerifier:
@@ -284,13 +285,21 @@ class GateVerifier:
     def _prereg_ctx(self, candidate: Candidate) -> PreregContext:
         store = self._prereg_store
         cited = candidate.prereg_hash
+        record = store.get_prereg(cited) if (store and cited) else None
         return PreregContext(
-            prereg=store.get_prereg(cited) if (store and cited) else None,
+            prereg=record,
             exploratory=candidate.exploratory,
             filed_hashes=store.prereg_hashes() if store else frozenset(),
             cited_hash=cited,
             lineage_attempts=(
                 store.non_promoting_prereg_count(candidate.parent_id) if store else 0
+            ),
+            # Read from the ledger, deliberately not from the prereg: the whole
+            # point of rule 8 is that the agent does not get to supply this.
+            parent_metric=(
+                store.get_verdict_metric(record.parent_id)
+                if (store and record is not None and record.parent_id)
+                else None
             ),
         )
 
@@ -452,6 +461,10 @@ class Ledger:
         Counts the current attempt too: its prereg is already filed (G-07 requires
         that) and has not promoted yet, so a lineage on its fourth try reports 4.
         """
+        if parent_id is None:
+            # No lineage, nothing to count. Lumping every parentless prereg into a
+            # single bucket would block unrelated root experiments as "shopping".
+            return 0
         rows = self.rows()
         promoted = {
             r.payload.prereg_hash
@@ -465,6 +478,17 @@ class Ledger:
             and r.payload.parent_id == parent_id
             and r.payload.hash not in promoted
         )
+
+    def get_verdict_metric(self, exp_id: str) -> float | None:
+        """The metric an experiment actually recorded. Rule 8's source of truth.
+
+        Returns the most recent verdict for `exp_id`; None if it never landed one.
+        """
+        for row in reversed(self.rows()):
+            if isinstance(row.payload, VerdictBundle) and row.payload.exp_id == exp_id:
+                metric = row.payload.mean_metric
+                return None if isnan(metric) else metric
+        return None
 
     def position_of_prereg(self, prereg_hash: str) -> int | None:
         for row in self.rows():

@@ -39,6 +39,8 @@ _HARNESS_PATHS = (
     "adversarial_suite.py",
     # The holdout lockbox and its durable budget.
     "holdout.py",
+    # The boundary test CI runs. Editing it edits what "verified" means.
+    "selfcheck.py",
 )
 
 # Markers that suppress a test rather than fix it.

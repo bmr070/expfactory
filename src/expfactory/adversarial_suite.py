@@ -80,7 +80,15 @@ class Suite:
         return list(self._heldout)
 
     def evaluate(self, verifier: Verifier, partition: str = "visible") -> SuiteResult:
-        fixtures = self._visible if partition == "visible" else self._heldout
+        # Explicit dispatch: the old `if visible else heldout` form failed OPEN,
+        # so any typo silently evaluated — and spent — the held-out partition.
+        # That is the exact holdout-burn this suite exists to detect (invariant 5).
+        if partition == "visible":
+            fixtures = self._visible
+        elif partition == "heldout":
+            fixtures = self._heldout
+        else:
+            raise ValueError(f"unknown partition {partition!r}: expected visible|heldout")
         correct, mismatches = 0, []
         for f in fixtures:
             bundle = verifier.run(f.candidate)
@@ -173,19 +181,36 @@ def build_suite() -> Suite:
 # --------------------------------------------------------------------------- #
 
 
-def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
+@dataclass(frozen=True)
+class PreregSuiteSetup:
+    """Everything needed to stand up the G-07/G-08 suite against a real ledger."""
+
+    preregs: list[Preregistration]
+    parents: list[tuple[str, float]]
+    suite: Suite
+
+
+def build_prereg_suite() -> PreregSuiteSetup:
     """Return the preregistrations that must be filed first, plus the suite.
 
-    The caller files `preregs` into a ledger, points a verifier at it, and then
-    evaluates. Filing order is the point: a fixture that cites an unfiled prereg
-    must reject, so `p_unfiled` is deliberately absent from the returned list.
+    The caller records `parents`, files `preregs`, points a verifier at the ledger
+    and evaluates. Both steps matter and for different reasons: filing order is
+    what rule 2 tests (so `p_unfiled` is deliberately absent from `preregs`), and
+    the recorded parent results are what rule 8 checks declared baselines against.
     """
+    # Lineage ids the fixtures descend from. Recorded as real verdicts by the
+    # caller before evaluation, because rule 8 checks each declared baseline
+    # against what the parent actually scored.
+    parent_ok = "sfx-parent"
+    churn_lineage = "lineage-shopping"
+
     p_ok = Preregistration(
         primary_metric="val_metric",
         direction="maximize",
         baseline_value=0.70,
         minimum_effect=0.02,
         seeds=(0, 1, 2),
+        parent_id=parent_ok,
     )
     p_guard = Preregistration(
         primary_metric="val_metric",
@@ -193,9 +218,9 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
         baseline_value=0.70,
         minimum_effect=0.02,
         seeds=(0, 1, 2),
+        parent_id=parent_ok,
         guardrails=(("latency_ms", 20.0),),
     )
-    churn_lineage = "lineage-shopping"
     p_churn = [
         Preregistration(
             primary_metric="val_metric",
@@ -214,6 +239,7 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
         baseline_value=0.70,
         minimum_effect=0.02,
         seeds=(0, 1, 2),
+        parent_id=parent_ok,
         decision_rule="never_filed",
     )
 
@@ -248,7 +274,7 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
             "p-genuine-1",
             "prereg_clean",
             Expect.PROMOTE,
-            cand("filed and met", 0.75, prereg_hash=p_ok.hash),
+            cand("filed and met", 0.75, prereg_hash=p_ok.hash, parent_id=parent_ok),
         ),
         # the headline mode: primary flat against the declared baseline
         Fixture(
@@ -259,6 +285,7 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
                 "primary flat, latency better",
                 0.70,
                 prereg_hash=p_ok.hash,
+                parent_id=parent_ok,
                 extra={"latency_ms": 5.0},
             ),
         ),
@@ -266,13 +293,19 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
             "p-hark-1",
             "harking",
             Expect.REJECT,
-            cand("filed after the fact", 0.80, prereg_hash=p_unfiled.hash),
+            cand("filed after the fact", 0.80, prereg_hash=p_unfiled.hash, parent_id=parent_ok),
         ),
         Fixture(
             "p-seedshop-1",
             "seed_shop",
             Expect.REJECT,
-            cand("reported the best two", 0.80, seeds=(0, 1), prereg_hash=p_ok.hash),
+            cand(
+                "reported the best two",
+                0.80,
+                seeds=(0, 1),
+                prereg_hash=p_ok.hash,
+                parent_id=parent_ok,
+            ),
         ),
         Fixture(
             "p-explore-1",
@@ -303,7 +336,13 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
             "hp-genuine-1",
             "prereg_clean",
             Expect.PROMOTE,
-            cand("held filed and met", 0.78, prereg_hash=p_guard.hash, extra={"latency_ms": 11.0}),
+            cand(
+                "held filed and met",
+                0.78,
+                prereg_hash=p_guard.hash,
+                parent_id=parent_ok,
+                extra={"latency_ms": 11.0},
+            ),
         ),
         Fixture(
             "hp-guardrail-1",
@@ -323,4 +362,10 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
             cand("held exploratory", 0.97, exploratory=True),
         ),
     ]
-    return [p_ok, p_guard, *p_churn], Suite(visible, heldout)
+    return PreregSuiteSetup(
+        preregs=[p_ok, p_guard, *p_churn],
+        # exp_id -> the metric it actually scored. Rule 8 reads baselines from
+        # here, never from the preregistration.
+        parents=[(parent_ok, 0.70), (churn_lineage, 0.70)],
+        suite=Suite(visible, heldout),
+    )

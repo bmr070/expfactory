@@ -33,11 +33,29 @@ import tempfile
 from pathlib import Path
 
 from expfactory.adversarial_suite import SuiteResult, build_prereg_suite, build_suite
-from expfactory.verifier import GateVerifier, Ledger
+from expfactory.harness import RunResult
+from expfactory.verifier import Candidate, GateVerifier, Ledger, VerdictBundle
 
 
 def run(partition: str = "visible") -> SuiteResult:
     return build_suite().evaluate(GateVerifier(), partition=partition)
+
+
+def _recorded_parent(exp_id: str, metric: float) -> VerdictBundle:
+    """A minimal past result for a fixture lineage to descend from."""
+    runs = [
+        RunResult(
+            seed=s,
+            val_metric=metric,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+        )
+        for s in range(3)
+    ]
+    candidate = Candidate(hypothesis="ancestor", config={}, code_hash="a", runs=runs)
+    return GateVerifier(id_factory=lambda: exp_id).run(candidate)
 
 
 def run_prereg(partition: str = "visible") -> SuiteResult:
@@ -45,13 +63,17 @@ def run_prereg(partition: str = "visible") -> SuiteResult:
     require_prereg=True, with the declared preregistrations already filed. Filing
     happens here rather than in the fixtures because *when* a prereg was filed is
     the thing under test."""
-    preregs, suite = build_prereg_suite()
+    setup = build_prereg_suite()
     with tempfile.TemporaryDirectory() as tmp:
         ledger = Ledger(Path(tmp) / "suite.jsonl")
-        for prereg in preregs:
+        # Record the ancestors first: rule 8 checks each declared baseline against
+        # what the parent actually scored, read from the ledger.
+        for exp_id, metric in setup.parents:
+            ledger.append(_recorded_parent(exp_id, metric))
+        for prereg in setup.preregs:
             ledger.append_prereg(prereg)
         verifier = GateVerifier(require_prereg=True, prereg_store=ledger)
-        return suite.evaluate(verifier, partition=partition)
+        return setup.suite.evaluate(verifier, partition=partition)
 
 
 def main(argv: list[str] | None = None) -> int:

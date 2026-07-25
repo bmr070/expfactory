@@ -15,6 +15,8 @@ from pathlib import Path
 from expfactory.prereg import Preregistration
 from expfactory.verifier import Candidate, GateVerifier, Ledger, VerdictBundle
 
+PARENT = "exp-parent"
+
 
 def _prereg(**over: object) -> Preregistration:
     base: dict[str, object] = dict(
@@ -23,6 +25,7 @@ def _prereg(**over: object) -> Preregistration:
         baseline_value=0.70,
         minimum_effect=0.02,
         seeds=(0, 1, 2),
+        parent_id=PARENT,
     )
     base.update(over)
     return Preregistration(**base)  # type: ignore[arg-type]
@@ -48,6 +51,17 @@ def _candidate(metric: float = 0.75, **over: object) -> Candidate:
     )
     base.update(over)
     return Candidate(**base)  # type: ignore[arg-type]
+
+
+def _seed_parent(led: Ledger, metric: float = 0.70) -> None:
+    """Record the parent result the preregistration will cite.
+
+    Rule 8 reads the baseline from the ledger rather than from the prereg, so a
+    confirmatory run needs a real recorded ancestor. Every promote-case below has
+    to establish one — which is the point: before this rule, they were promoting
+    against a baseline with no provenance at all.
+    """
+    led.append(GateVerifier(id_factory=lambda: PARENT).run(_candidate(metric=metric)))
 
 
 # ---- N-01: one log, two row kinds, ordered ---------------------------------
@@ -114,11 +128,12 @@ def test_unwrapped_legacy_verdict_row_still_loads(tmp_path: Path):
 
 def test_confirmatory_run_promotes_when_the_prereg_was_filed_first(tmp_path: Path):
     led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
     p = _prereg()
     led.append_prereg(p)  # filed BEFORE the run
 
     v = GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e1")
-    bundle = v.run(_candidate(prereg_hash=p.hash))
+    bundle = v.run(_candidate(prereg_hash=p.hash, parent_id=PARENT))
     assert bundle.promoted, bundle.blocked_by
     assert "preregistration" in bundle.gate_names
 
@@ -127,10 +142,11 @@ def test_same_run_is_blocked_when_the_prereg_was_never_filed(tmp_path: Path):
     """Identical candidate, identical numbers. The only difference is that nobody
     filed the rule beforehand — and that alone must flip the verdict."""
     led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
     p = _prereg()  # constructed but NOT appended
 
     v = GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e1")
-    bundle = v.run(_candidate(prereg_hash=p.hash))
+    bundle = v.run(_candidate(prereg_hash=p.hash, parent_id=PARENT))
     assert not bundle.promoted
     assert "preregistration" in bundle.blocked_by
 
@@ -147,11 +163,12 @@ def test_metric_swap_is_blocked_end_to_end(tmp_path: Path):
     """The headline fooling mode, through the real verifier: primary flat against
     the declared baseline, so no amount of secondary improvement promotes it."""
     led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
     p = _prereg(secondary_metrics=("latency_ms",))
     led.append_prereg(p)
 
     v = GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e1")
-    bundle = v.run(_candidate(metric=0.70, prereg_hash=p.hash))
+    bundle = v.run(_candidate(metric=0.70, prereg_hash=p.hash, parent_id=PARENT))
     assert not bundle.promoted
     assert "preregistration" in bundle.blocked_by
 
@@ -179,3 +196,17 @@ def test_ledger_satisfies_the_prereg_store_protocol(tmp_path: Path):
     from expfactory.verifier import PreregStore
 
     assert isinstance(Ledger(tmp_path / "l.jsonl"), PreregStore)
+
+
+def test_baseline_is_read_from_the_ledger_not_the_preregistration(tmp_path: Path):
+    """The forgery, end to end. The parent really scored 0.70; the prereg claims
+    0.0 so that a 0.05 result clears minimum_effect. Must not promote."""
+    led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led, metric=0.70)
+    forged = _prereg(baseline_value=0.0)
+    led.append_prereg(forged)
+
+    v = GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e1")
+    bundle = v.run(_candidate(metric=0.05, prereg_hash=forged.hash, parent_id=PARENT))
+    assert not bundle.promoted
+    assert "preregistration" in bundle.blocked_by

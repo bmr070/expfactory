@@ -45,7 +45,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 83 tests
+pytest                              # 92 tests
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -93,6 +93,13 @@ not by reasoning. Breaking one silently guts the verification layer.
   readable by whatever language the runner ends up in.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would.
+- **A preregistration's baseline is read from the ledger, never from the prereg.**
+  The agent authors the prereg; if it could also name the number it is measured
+  against, G-07 would be theatre. A confirmatory run needs a recorded parent.
+- **`Ledger` is defined twice** — `harness.Ledger` takes `Experiment`,
+  `verifier.Ledger` takes `VerdictBundle`. They are not interchangeable and
+  `ledger_ctx` is typed `Any`, so passing the wrong one type-checks and fails at
+  runtime.
 
 ## Do not re-propose
 

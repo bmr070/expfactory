@@ -61,7 +61,7 @@ def _prereg(n: int, parent: str | None = LINEAGE) -> Preregistration:
     )
 
 
-def _candidate(prereg_hash: str, parent: str | None = LINEAGE) -> Candidate:
+def _candidate(prereg_hash: str, parent: str | None = LINEAGE, metric: float = 0.75) -> Candidate:
     return Candidate(
         hypothesis="h",
         config={},
@@ -69,7 +69,7 @@ def _candidate(prereg_hash: str, parent: str | None = LINEAGE) -> Candidate:
         runs=[
             dict(
                 seed=s,
-                val_metric=0.75,
+                val_metric=metric,
                 train_ids_hash="t",
                 eval_ids_hash="e",
                 overlap_count=0,
@@ -122,6 +122,17 @@ def test_exploration_is_exempt():
 # ---- counting, against a real ledger ---------------------------------------
 
 
+def _seed_parent(led: Ledger, metric: float = 0.70) -> None:
+    """Record the lineage's parent result, so rule 8 has a baseline to check.
+
+    Scores 0.70 — the value every prereg here declares as its baseline. The
+    children score 0.75, clearing the 0.02 minimum effect.
+    """
+    led.append(
+        GateVerifier(id_factory=lambda: LINEAGE).run(_candidate("", parent=None, metric=metric))
+    )
+
+
 def test_ledger_counts_only_the_matching_lineage(tmp_path: Path):
     led = Ledger(tmp_path / "l.jsonl")
     for n in range(3):
@@ -135,6 +146,7 @@ def test_a_promoted_prereg_stops_counting_against_the_lineage(tmp_path: Path):
     """The gate targets *failure* to promote. A lineage that landed a result has
     not been shopping, however many rules it filed getting there."""
     led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
     p0 = _prereg(0)
     led.append_prereg(p0)
     led.append_prereg(_prereg(1))
@@ -162,6 +174,7 @@ def test_churn_blocks_end_to_end_through_the_verifier(tmp_path: Path):
 def test_a_clean_lineage_passes_end_to_end(tmp_path: Path):
     """The same machinery must not block ordinary work."""
     led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
     p = _prereg(0)
     led.append_prereg(p)
 
