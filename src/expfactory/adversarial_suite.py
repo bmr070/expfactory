@@ -13,6 +13,7 @@ import enum
 from dataclasses import dataclass, field
 
 from expfactory.gates_v1 import DiffEvidence
+from expfactory.harness import RunResult
 from expfactory.verifier import Candidate, Verifier
 
 
@@ -47,12 +48,14 @@ class SuiteResult:
         return not self.mismatches
 
 
-def _runs(metric, seeds=5, overlap=0, jitter=0.0):
-    out = []
+def _runs(
+    metric: float, seeds: int = 5, overlap: int = 0, jitter: float = 0.0
+) -> list[RunResult]:
+    out: list[RunResult] = []
     for s in range(seeds):
         m = metric + (jitter if s == 0 else 0.0)   # jitter only on one lucky seed
-        out.append(dict(seed=s, val_metric=m, train_ids_hash="t",
-                        eval_ids_hash="e", overlap_count=overlap, wall_seconds=0.0))
+        out.append(RunResult(seed=s, val_metric=m, train_ids_hash="t",
+                             eval_ids_hash="e", overlap_count=overlap, wall_seconds=0.0))
     return out
 
 
@@ -87,7 +90,12 @@ def build_suite() -> Suite:
     clean = DiffEvidence(added_lines=["    assert ok"], removed_lines=[],
                          touched_paths=["test_m.py"])
 
-    def cand(hyp, runs, cost=0.4, diff=clean):
+    def cand(
+        hyp: str,
+        runs: list[RunResult],
+        cost: float = 0.4,
+        diff: DiffEvidence = clean,
+    ) -> Candidate:
         return Candidate(hypothesis=hyp, config={"m": "x"}, code_hash=hyp,
                          runs=runs, cost_usd=cost, diff=diff)
 

@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from expfactory.harness import RunResult
 from expfactory.verifier import Candidate, Ledger, VerdictBundle, Verifier
 
 
@@ -32,12 +33,20 @@ def run_and_record(
     verification so seed-variance and reproducibility gates have data to judge.
     `diff`, when supplied, drives the diff-level tamper gate.
     """
-    runs: list[dict[str, Any]] = []
+    runs: list[RunResult] = []
     for seed in seeds:
         t0 = time.time()
         r = dict(train_fn(config, seed))
         r["wall_seconds"] = time.time() - t0
-        runs.append(r)
+        # train_fn is caller-supplied and therefore untrusted input: convert here,
+        # at the edge, so a malformed record names the seed that produced it rather
+        # than failing later as an AttributeError inside a gate.
+        try:
+            runs.append(RunResult(**r))
+        except TypeError as exc:
+            raise TypeError(
+                f"train_fn returned a malformed record for seed {seed}: {exc}"
+            ) from exc
 
     candidate = Candidate(
         hypothesis=hypothesis,

@@ -121,7 +121,7 @@ class Ledger:
 # Gates — each returns GateResult; all are pure functions of recorded evidence
 # --------------------------------------------------------------------------- #
 
-def gate_no_leakage(exp: Experiment, **_) -> GateResult:
+def gate_no_leakage(exp: Experiment, **_: Any) -> GateResult:
     """Train/eval index sets must be disjoint. The single most common way an agent
     manufactures a breakthrough — usually by 'fixing' a preprocessing step that
     happens to fit the scaler on the full dataset."""
@@ -135,7 +135,7 @@ def gate_no_leakage(exp: Experiment, **_) -> GateResult:
 
 
 def gate_seed_variance(exp: Experiment, baseline: Experiment | None = None,
-                       min_seeds: int = 3, z: float = 2.0, **_) -> GateResult:
+                       min_seeds: int = 3, z: float = 2.0, **_: Any) -> GateResult:
     """An improvement must exceed the noise band, not just the baseline mean.
     Most reported gains in an unsupervised hill-climb are seed lottery."""
     if len(exp.runs) < min_seeds:
@@ -156,7 +156,7 @@ def gate_seed_variance(exp: Experiment, baseline: Experiment | None = None,
 
 
 def gate_too_good(exp: Experiment, baseline: Experiment | None = None,
-                  implausible_delta: float = 0.15, **_) -> GateResult:
+                  implausible_delta: float = 0.15, **_: Any) -> GateResult:
     """A single change yielding a huge jump is more often a bug than a discovery.
     Non-blocking: it escalates to a human rather than killing the branch."""
     if baseline is None:
@@ -171,7 +171,7 @@ def gate_too_good(exp: Experiment, baseline: Experiment | None = None,
     )
 
 
-def gate_reproducible(exp: Experiment, tolerance: float = 1e-6, **_) -> GateResult:
+def gate_reproducible(exp: Experiment, tolerance: float = 1e-6, **_: Any) -> GateResult:
     """Same seed must give the same number. Catches nondeterministic data ordering,
     unseeded augmentation, and 'I only ran it once and it was good'."""
     by_seed: dict[int, list[float]] = {}
@@ -184,7 +184,7 @@ def gate_reproducible(exp: Experiment, tolerance: float = 1e-6, **_) -> GateResu
 
 
 def gate_holdout_budget(exp: Experiment, ledger: Ledger | None = None,
-                        budget: int = 10, **_) -> GateResult:
+                        budget: int = 10, **_: Any) -> GateResult:
     """The lockbox. Every look at the true holdout leaks a little information into
     your model-selection process. Budget the looks; when they're gone, they're gone."""
     if ledger is None:
@@ -196,7 +196,7 @@ def gate_holdout_budget(exp: Experiment, ledger: Ledger | None = None,
                       f"HOLDOUT BURNED ({used}/{budget}) — freeze and collect new data")
 
 
-def gate_cost(exp: Experiment, max_usd: float = 25.0, **_) -> GateResult:
+def gate_cost(exp: Experiment, max_usd: float = 25.0, **_: Any) -> GateResult:
     ok = exp.cost_usd <= max_usd
     return GateResult("cost", ok, f"${exp.cost_usd:.2f} (cap ${max_usd:.2f})")
 

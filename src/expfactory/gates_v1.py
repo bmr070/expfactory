@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
-from expfactory.harness import GateResult
+from expfactory.harness import Experiment, GateResult
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,9 @@ def _floor(lines: list[str]) -> int | None:
 # Baseline-free single-seed-dominance gate (ticket 03 recalibration)
 # --------------------------------------------------------------------------- #
 
-def gate_no_single_seed_dominance(exp, dominance: float = 0.5, **_):
+def gate_no_single_seed_dominance(
+    exp: Experiment, dominance: float = 0.5, **_: Any
+) -> GateResult:
     """Reject a candidate whose apparent performance rests on one lucky seed.
 
     The prototype's seed_variance gate needs a baseline; with none, a single-seed
@@ -105,7 +108,6 @@ def gate_no_single_seed_dominance(exp, dominance: float = 0.5, **_):
 
     Calibrated against the ticket-04 fixtures rather than a hand-picked delta.
     """
-    from expfactory.harness import GateResult
     vals = sorted((r.val_metric for r in exp.runs), reverse=True)
     if len(vals) < 3:
         return GateResult("no_single_seed_dominance", False,

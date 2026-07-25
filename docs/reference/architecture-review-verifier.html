@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture Review — verifier core</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs" type="module"></script>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#12181B; --panel:#182024; --line:#2A3640; --ink:#E6EDEF;
+    --mut:#8DA1AB; --deep:#4FD1B5; --shallow:#E8825A; --strong:#4FD1B5;
+    --explore:#E8B04F; --spec:#8D7FE8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;line-height:1.6}
+  .mono{font-family:'IBM Plex Mono',monospace}
+  .display{font-family:'Fraunces',serif}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 96px}
+  header{border-bottom:1px solid var(--line);padding:52px 0 34px;margin-bottom:44px}
+  h1{font-family:'Fraunces',serif;font-weight:900;font-size:clamp(30px,6vw,52px);line-height:1;letter-spacing:-.02em;margin:0 0 16px}
+  .lede{color:var(--mut);max-width:66ch;font-size:17px}
+  .eyebrow{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--deep);margin-bottom:18px}
+  .vocab{margin-top:24px;display:flex;flex-wrap:wrap;gap:8px}
+  .vocab span{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--mut);border:1px solid var(--line);padding:3px 9px;border-radius:3px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:28px;margin-bottom:26px}
+  .card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:6px}
+  .card h2{font-family:'Fraunces',serif;font-weight:600;font-size:25px;margin:0;letter-spacing:-.01em}
+  .files{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--mut);margin:8px 0 20px}
+  .badge{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding:5px 11px;border-radius:20px;white-space:nowrap;font-weight:500}
+  .b-strong{background:rgba(79,209,181,.14);color:var(--strong);border:1px solid rgba(79,209,181,.35)}
+  .b-explore{background:rgba(232,176,79,.13);color:var(--explore);border:1px solid rgba(232,176,79,.32)}
+  .b-spec{background:rgba(141,127,232,.13);color:var(--spec);border:1px solid rgba(141,127,232,.32)}
+  .lbl{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--mut);margin:20px 0 7px}
+  .card p{margin:0 0 4px}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
+  .pane{border:1px solid var(--line);border-radius:8px;padding:14px;background:rgba(0,0,0,.15)}
+  .pane .tag{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:10px}
+  .pane.before .tag{color:var(--shallow)}
+  .pane.after .tag{color:var(--deep)}
+  .box{font-family:'IBM Plex Mono',monospace;font-size:11.5px;line-height:1.5;border-radius:5px;padding:8px 10px;margin:5px 0;border:1px solid var(--line)}
+  .box.shallow{border-color:rgba(232,130,90,.4);background:rgba(232,130,90,.06)}
+  .box.deep{border-color:rgba(79,209,181,.4);background:rgba(79,209,181,.06)}
+  .box.dim{color:var(--mut);border-style:dashed}
+  .arrow{text-align:center;color:var(--mut);font-family:'IBM Plex Mono',monospace;font-size:11px;margin:4px 0}
+  .deletion{margin-top:18px;border-left:2px solid var(--deep);padding:8px 0 8px 16px;font-size:14px}
+  .deletion b{font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--deep);display:block;margin-bottom:3px}
+  .top{background:linear-gradient(180deg,rgba(79,209,181,.08),transparent);border:1px solid rgba(79,209,181,.3)}
+  code{font-family:'IBM Plex Mono',monospace;font-size:.9em;background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px;color:var(--deep)}
+  .mermaid{background:rgba(0,0,0,.15);border-radius:8px;padding:14px;margin-top:12px}
+  @media(max-width:720px){.split{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <div class="eyebrow">Architecture Review · verifier core · 685 LOC · 34 tests green</div>
+  <h1 class="display">Four seams,<br>two worth deepening</h1>
+  <p class="lede">A scan of the verifier core for <b>deepening opportunities</b> — turning shallow modules, whose interface costs nearly as much as their implementation, into deep ones. Each candidate is put through the <b>deletion test</b>: would removing it <em>concentrate</em> complexity, or just move it around? Only a "concentrates" is worth doing.</p>
+  <div class="vocab">
+    <span>module</span><span>interface</span><span>depth</span><span>seam</span><span>adapter</span><span>leverage</span><span>locality</span><span>deletion&nbsp;test</span>
+  </div>
+</header>
+
+<!-- CANDIDATE 1 -->
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2>1 · The <code>Candidate.runs</code> primitive obsession</h2>
+      <div class="files mono">verifier.py · Candidate, _experiment · every caller of run_and_record</div>
+    </div>
+    <span class="badge b-strong">Strong</span>
+  </div>
+  <div class="lbl">Problem</div>
+  <p>The verifier's front door takes <code>runs: Sequence[dict[str, Any]]</code> — a bag of loosely-typed dicts that <code>_experiment</code> reconstructs into <code>RunResult</code> deep inside the module. The seam accepts anything shaped vaguely like a run; a malformed dict fails with a raw <code>TypeError</code> during gate evaluation, far from where the bad value entered. The interface is <em>wide</em> (accepts all dicts) but the module is <em>shallow</em> — it immediately does validation work the type system should have done at the boundary.</p>
+  <div class="lbl">Solution</div>
+  <p>Make <code>RunResult</code> the currency of the seam. <code>Candidate.runs</code> becomes <code>Sequence[RunResult]</code>; construction validates once, at the edge. The <code>_experiment</code> bridge — which exists only to translate dicts into the real type — largely dissolves.</p>
+  <div class="split">
+    <div class="pane before"><div class="tag">before · shallow</div>
+      <div class="box shallow">Candidate.runs : Sequence[dict]</div>
+      <div class="arrow">↓ dict flows inward, untyped</div>
+      <div class="box shallow">_experiment(): RunResult(**r)  ← fails here, late</div>
+      <div class="box dim">gate sees malformed data</div>
+    </div>
+    <div class="pane after"><div class="tag">after · deep</div>
+      <div class="box deep">Candidate.runs : Sequence[RunResult]</div>
+      <div class="arrow">↓ validated at the door</div>
+      <div class="box deep">_experiment(): trivial pass-through</div>
+      <div class="box deep">gate always sees valid data</div>
+    </div>
+  </div>
+  <div class="deletion"><b>Deletion test</b>Removing <code>_experiment</code> after this change <em>concentrates</em> — the dict→type translation stops being a hidden step and becomes the constructor's job. A yes.</div>
+</div>
+
+<!-- CANDIDATE 2 -->
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2>2 · Duplicated <code>VerdictBundle</code> construction</h2>
+      <div class="files mono">verifier.py · GateVerifier.run, ExitCodeVerifier.run (4 construction sites)</div>
+    </div>
+    <span class="badge b-strong">Strong</span>
+  </div>
+  <div class="lbl">Problem</div>
+  <p>Both verifiers hand-assemble a <code>VerdictBundle</code> field by field, and the "two implementations, one bundle shape" contract lives only in the fact that the two call sites happen to agree. Add a field to the bundle and you edit both — classic shotgun surgery. The bundle's own construction logic has <b>no locality</b>: it's smeared across the two things that produce it.</p>
+  <div class="lbl">Solution</div>
+  <p>Give <code>VerdictBundle</code> two named constructors — <code>from_experiment(exp)</code> and <code>from_exit_code(candidate, proc)</code>. The shape is defined once, on the type that owns it. Each verifier calls one line. The contract becomes <em>enforced by the type</em> rather than by two call sites agreeing.</p>
+  <div class="split">
+    <div class="pane before"><div class="tag">before · shallow</div>
+      <div class="box shallow">GateVerifier.run → VerdictBundle(exp_id=…, promoted=…, blocked_by=…, ×10 fields)</div>
+      <div class="box shallow">ExitCodeVerifier.run → VerdictBundle(exp_id=…, promoted=…, ×10 fields)</div>
+      <div class="box dim">shape agreement is implicit</div>
+    </div>
+    <div class="pane after"><div class="tag">after · deep</div>
+      <div class="box deep">VerdictBundle.from_experiment(exp)</div>
+      <div class="box deep">VerdictBundle.from_exit_code(cand, proc)</div>
+      <div class="box deep">shape owned in one place</div>
+    </div>
+  </div>
+  <div class="deletion"><b>Deletion test</b>The two constructors <em>concentrate</em> the bundle's shape onto the bundle. Deleting the inline construction removes duplication rather than relocating it. A yes.</div>
+</div>
+
+<!-- CANDIDATE 3 -->
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2>3 · <code>with_exp_id</code> — speculative generality</h2>
+      <div class="files mono">verifier.py · VerdictBundle.with_exp_id · only caller is a test helper</div>
+    </div>
+    <span class="badge b-strong">Strong</span>
+  </div>
+  <div class="lbl">Problem</div>
+  <p>A production method that exists <em>solely</em> to let a test stamp a deterministic id for ledger-ordering assertions. The test is driving production API in the wrong direction — the seam grew a method to serve the test rather than the test observing the seam. Flagged by both axes of the earlier code review.</p>
+  <div class="lbl">Solution</div>
+  <p>Delete it. Let the test control the id through the actual seam — inject a deterministic id source into the verifier, or assert on ledger order via the fields the bundle already exposes. The production surface shrinks; the test still gets what it needs, honestly.</p>
+  <div class="deletion"><b>Deletion test</b>Pure win: deleting <code>with_exp_id</code> concentrates nothing and moves nothing — the responsibility was never real. This is the textbook "inline it back until a real need shows."</div>
+</div>
+
+<!-- CANDIDATE 4 -->
+<div class="card">
+  <div class="card-head">
+    <div>
+      <h2>4 · The <code>Experiment</code> ↔ <code>VerdictBundle</code> entanglement</h2>
+      <div class="files mono">verifier.py + harness.py · GateVerifier reaches through Experiment internals</div>
+    </div>
+    <span class="badge b-explore">Worth exploring</span>
+  </div>
+  <div class="lbl">Problem</div>
+  <p><code>GateVerifier.run</code> reaches into <code>Experiment</code> — <code>exp.blocked_by</code>, <code>exp.mean_metric</code>, <code>r.seed for r in exp.runs</code>, <code>g.name for g in exp.gates</code> — to build the bundle. That's <b>feature envy</b>: the verifier wants data that lives on <code>Experiment</code>. The two types were split when <code>verifier.py</code> was carved from the prototype's <code>harness.py</code>, and the seam between them still leaks.</p>
+  <div class="lbl">Why only "worth exploring"</div>
+  <p>Deepening here means deciding whether <code>Experiment</code> and <code>VerdictBundle</code> should be one type or stay two with a clean <code>.to_verdict()</code> method. That's a genuine design fork, not a mechanical move — and candidate 2 (named constructors) may resolve most of the envy on its own. Worth a look <em>after</em> 2, to see how much friction remains.</p>
+  <div class="mermaid">
+flowchart LR
+  subgraph now[" now · leaky seam"]
+    GV1["GateVerifier.run"] -.reaches into.-> EXP1["Experiment internals"]
+  end
+  subgraph then[" after · one method owns the crossing"]
+    GV2["GateVerifier.run"] --> M["Experiment.to_verdict()"] --> VB["VerdictBundle"]
+  end
+  now --> then
+  classDef n fill:#182024,stroke:#E8825A,color:#E6EDEF;
+  classDef t fill:#182024,stroke:#4FD1B5,color:#E6EDEF;
+  class GV1,EXP1 n;
+  class GV2,M,VB t;
+  </div>
+</div>
+
+<!-- TOP RECOMMENDATION -->
+<div class="card top">
+  <div class="lbl" style="color:var(--deep)">Top recommendation</div>
+  <h2 class="display" style="margin-bottom:12px">Do 3, then 1, then 2 — and let 4 decide itself</h2>
+  <p><b>Candidate 3 first</b> (<code>with_exp_id</code>): it's a pure deletion with no design decision attached, and it removes a test-driven wart before the other refactors touch the same type. Cheapest possible win, and it de-risks the rest by shrinking the surface.</p>
+  <p style="margin-top:10px"><b>Then candidate 1</b> (typed <code>runs</code>): the highest-leverage of the four. It moves validation to the seam, dissolves the <code>_experiment</code> bridge, and fixes the error-locality problem the code review flagged — a malformed run now fails at the door with a clear message instead of deep in gate evaluation.</p>
+  <p style="margin-top:10px"><b>Then candidate 2</b> (named constructors): mechanical once 1 has settled the field types, and it kills the shotgun-surgery risk before the runner (ticket 07) adds a third bundle producer.</p>
+  <p style="margin-top:10px"><b>Candidate 4 last, maybe never:</b> re-scan the envy after 2. If the named constructors already localise the crossing, 4 dissolves for free — which is the best outcome. Only open the <code>Experiment</code>/<code>VerdictBundle</code> merge question if real friction survives.</p>
+  <div class="deletion" style="margin-top:20px"><b>One caution</b>All 34 tests are green and test at real seams. The refactor's job is to keep every one of them green while shrinking the surface — if a test has to change, that test was coupled to an implementation detail, and the change is telling you something.</div>
+</div>
+
+<p class="mono" style="color:var(--mut);font-size:12px;text-align:center;margin-top:40px">Report is advisory — no interfaces proposed yet. Pick one to grill.</p>
+
+</div>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({startOnLoad:true,theme:'dark',themeVariables:{fontFamily:"'IBM Plex Mono',monospace",fontSize:'12px'}});
+</script>
+</body>
+</html>

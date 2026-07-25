@@ -1,0 +1,11 @@
+# Ticket 01 — trust lanes enforced at the repo boundary.
+# Green lane (agent -> CI -> merge on shallow review): everything not listed below.
+# Red lane (human writes or co-writes): the paths below always require a human.
+/migrations/        @harness-owner
+/db/                @harness-owner
+/auth/              @harness-owner
+/billing/           @harness-owner
+# The verification substrate itself is red — the agent may never self-certify.
+/expfactory/harness.py    @harness-owner
+/expfactory/gates_v1.py   @harness-owner
+/expfactory/verifier.py   @harness-owner

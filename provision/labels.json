@@ -1,0 +1,7 @@
+[
+  {"name": "agent-ready",        "color": "0e8a16", "description": "Human-tagged. The ONLY state a runner will dispatch."},
+  {"name": "lane:empirical",     "color": "1d76db", "description": "Verified by the gate harness + ledger."},
+  {"name": "lane:deterministic", "color": "5319e7", "description": "Verified by CI exit code."},
+  {"name": "blocked",            "color": "b60205", "description": "Has an unmet blocking edge."},
+  {"name": "needs-human",        "color": "d93f0b", "description": "Cost/failure breaker tripped, or red-lane path. Runner will not touch."}
+]
