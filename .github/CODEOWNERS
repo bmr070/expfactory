@@ -23,6 +23,7 @@
 /src/expfactory/holdout.py             @bmr070
 /src/expfactory/adversarial_suite.py   @bmr070
 /src/expfactory/selfcheck.py           @bmr070
+/src/expfactory/registry.py            @bmr070
 
 # CI is the enforcement surface; changing it changes what "green" means.
 /.github/workflows/    @bmr070
