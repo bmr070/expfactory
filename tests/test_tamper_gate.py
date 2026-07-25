@@ -95,7 +95,7 @@ def test_new_gate_modules_are_protected_by_the_tamper_gate():
     edit the gate set itself and the diff gate would wave it through."""
     from expfactory.gates_v1 import _HARNESS_PATHS
 
-    for substrate in ("prereg.py", "adversarial_suite.py", "holdout.py"):
+    for substrate in ("prereg.py", "adversarial_suite.py", "holdout.py", "registry.py"):
         result = gate_no_test_tampering(
             DiffEvidence(
                 added_lines=[], removed_lines=[], touched_paths=[f"src/expfactory/{substrate}"]
@@ -132,3 +132,29 @@ def test_codeowners_paths_actually_exist():
         path = line.split()[0].lstrip("/")
         if path.endswith(".py") or path.endswith("CODEOWNERS"):
             assert (root / path).exists(), f"CODEOWNERS references missing path: {path}"
+
+
+def test_every_module_is_classified_as_substrate_or_explicitly_exempt():
+    """The ratchet (W-11), replacing a list someone has to remember.
+
+    prereg.py, selfcheck.py and registry.py were each added to the package and
+    each missed on the first pass — three for three. A hardcoded list of expected
+    modules cannot catch the fourth, because the same lapse that omits it from
+    the package's protection omits it from the test.
+
+    Deriving the check from the filesystem inverts that: a new module fails until
+    it is classified, so the decision is forced rather than remembered.
+    """
+    from pathlib import Path
+
+    from expfactory.gates_v1 import _HARNESS_PATHS, _NOT_SUBSTRATE
+
+    package = Path(__file__).resolve().parent.parent / "src" / "expfactory"
+    known = set(_HARNESS_PATHS) | set(_NOT_SUBSTRATE)
+    unclassified = sorted(p.name for p in package.glob("*.py") if p.name not in known)
+
+    assert not unclassified, (
+        f"new module(s) {unclassified} are neither tamper-protected nor exempt. "
+        "This package is the verification layer, so the default is protected: add "
+        "to _HARNESS_PATHS and CODEOWNERS, or justify an entry in _NOT_SUBSTRATE."
+    )

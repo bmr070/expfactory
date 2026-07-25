@@ -1,0 +1,53 @@
+name: agent-ready guard
+
+# Makes the untrusted-tracker defense real rather than documented.
+#
+# The standing rule (W-07) is that only a HUMAN may apply `agent-ready`, because
+# the tracker is untrusted input: anyone who can file a ticket can prompt-inject
+# the factory, so dispatch is allowlisted rather than inferred. Until now that
+# rule lived only in prose, and prose does not ratchet (invariant 8).
+#
+# This strips the label from anyone not on the human allowlist and says why, so
+# a compromised or over-eager agent cannot promote its own ticket into dispatch
+# eligibility.
+#
+# NOTE: this is a backstop, not the primary control. The primary control is that
+# the agent's credential should not carry `issues: write` at all. Both, because
+# the failure being prevented is the factory acting on instructions it was
+# tricked into receiving.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  issues: write
+
+jobs:
+  guard:
+    if: github.event.label.name == 'agent-ready'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Strip the label unless a named human applied it
+        # Allowlist, not a denylist: a new bot account should fail closed rather
+        # than inherit dispatch rights by not being listed.
+        if: github.event.sender.login != 'bmr070'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.sender.login }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh issue edit "$ISSUE" --repo "$REPO" --remove-label agent-ready
+          gh issue comment "$ISSUE" --repo "$REPO" --body \
+            "\`agent-ready\` was applied by \`$ACTOR\`, who is not on the human
+          allowlist, so it has been removed.
+
+          Only a human may make a ticket dispatch-eligible. The tracker is
+          untrusted input — anyone who can file a ticket can prompt-inject the
+          factory — so dispatch is allowlisted by a human-applied label and no
+          ticket self-promotes.
+
+          If this was you, apply the label from your own account. If it was not,
+          treat it as an attempt to get the factory to act on a ticket nobody
+          vetted."

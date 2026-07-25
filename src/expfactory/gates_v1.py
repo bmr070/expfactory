@@ -43,6 +43,19 @@ _HARNESS_PATHS = (
     "selfcheck.py",
     # Holds the GPU credential and the cost caps; editing it edits the breaker.
     "registry.py",
+    # Builds Candidates from train_fn output; editing it can fabricate run records.
+    "pipeline.py",
+)
+
+# Modules in this package that are deliberately NOT verification substrate.
+#
+# This package IS the verification layer, so the default is "protected" and the
+# exemptions are the thing that needs justifying. A test asserts every module is
+# in one list or the other, which makes adding a module force the decision
+# instead of relying on someone remembering — prereg.py, selfcheck.py and
+# registry.py were each missed on first addition, which is three for three.
+_NOT_SUBSTRATE = (
+    "__init__.py",  # re-exports only; no logic to weaken
 )
 
 # Markers that suppress a test rather than fix it.
