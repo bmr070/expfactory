@@ -1,0 +1,28 @@
+# Ticket 01 — trust lanes enforced at the repo boundary.
+#
+# Green lane (agent -> CI -> merge on shallow review): everything not listed below.
+# Red lane (human writes or co-writes): the paths below always require a human.
+#
+# NOTE ON PATHS: these must track the real layout. The package lives under src/,
+# and an entry pointing at a path that does not exist protects nothing while
+# still looking like protection — the most dangerous failure mode this file has.
+
+/migrations/        @bmr070
+/db/                @bmr070
+/auth/              @bmr070
+/billing/           @bmr070
+
+# The verification substrate itself is red — the agent may never self-certify.
+# Kept in sync with _HARNESS_PATHS in src/expfactory/gates_v1.py, which blocks the
+# same files at the diff level. Two mechanisms, deliberately: CODEOWNERS is a
+# review requirement a human can waive, the tamper gate is a wall that blocks.
+/src/expfactory/harness.py             @bmr070
+/src/expfactory/gates_v1.py            @bmr070
+/src/expfactory/verifier.py            @bmr070
+/src/expfactory/prereg.py              @bmr070
+/src/expfactory/holdout.py             @bmr070
+/src/expfactory/adversarial_suite.py   @bmr070
+
+# CI is the enforcement surface; changing it changes what "green" means.
+/.github/workflows/    @bmr070
+/.github/CODEOWNERS    @bmr070

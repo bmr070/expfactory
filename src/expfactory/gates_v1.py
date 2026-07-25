@@ -27,7 +27,19 @@ class DiffEvidence:
 
 
 # Paths whose modification is inherently suspect: the verification substrate.
-_HARNESS_PATHS = ("harness.py", "gates_v1.py", "verifier.py", "conftest.py")
+_HARNESS_PATHS = (
+    "harness.py",
+    "gates_v1.py",
+    "verifier.py",
+    "conftest.py",
+    # G-07/G-08 live here, so editing it edits the gate set.
+    "prereg.py",
+    # The known-answer fixtures are how the harness is judged. An agent that can
+    # rewrite the answer key can certify itself.
+    "adversarial_suite.py",
+    # The holdout lockbox and its durable budget.
+    "holdout.py",
+)
 
 # Markers that suppress a test rather than fix it.
 _SKIP_MARKERS = (

@@ -85,3 +85,50 @@ def test_adding_a_new_test_is_allowed():
         touched_paths=["test_model.py"],
     )
     assert gate_no_test_tampering(diff).passed is True
+
+
+# ---- the protected set must track the real layout --------------------------
+
+
+def test_new_gate_modules_are_protected_by_the_tamper_gate():
+    """Adding a gate module without adding it here leaves a hole: the agent could
+    edit the gate set itself and the diff gate would wave it through."""
+    from expfactory.gates_v1 import _HARNESS_PATHS
+
+    for substrate in ("prereg.py", "adversarial_suite.py", "holdout.py"):
+        result = gate_no_test_tampering(
+            DiffEvidence(
+                added_lines=[], removed_lines=[], touched_paths=[f"src/expfactory/{substrate}"]
+            )
+        )
+        assert not result.passed, f"{substrate} is verification substrate but is not protected"
+        assert substrate in _HARNESS_PATHS
+
+
+def test_codeowners_covers_every_protected_module():
+    """CODEOWNERS and the tamper gate protect the same files by different means —
+    a review requirement versus a wall. If they drift, one of them is a lie."""
+    from pathlib import Path
+
+    from expfactory.gates_v1 import _HARNESS_PATHS
+
+    codeowners = (Path(__file__).resolve().parent.parent / ".github" / "CODEOWNERS").read_text()
+    for module in _HARNESS_PATHS:
+        if module == "conftest.py":  # not a shipped module; no owned path
+            continue
+        assert module in codeowners, f"{module} is tamper-protected but has no CODEOWNERS entry"
+
+
+def test_codeowners_paths_actually_exist():
+    """A CODEOWNERS entry pointing at a path that does not exist protects nothing
+    while still reading as protection. This is what the src/ move broke."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for line in (root / ".github" / "CODEOWNERS").read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        path = line.split()[0].lstrip("/")
+        if path.endswith(".py") or path.endswith("CODEOWNERS"):
+            assert (root / path).exists(), f"CODEOWNERS references missing path: {path}"
