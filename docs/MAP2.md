@@ -1,0 +1,98 @@
+---
+labels: [wayfinder:map]
+tracker: local-markdown
+parent-effort: MAP.md (exhausted, 12/12)
+---
+
+# Factory Proving Map II — the empirical execution layer
+
+## Destination
+
+The long-running experiment path is decided and buildable: how a hours-long GPU experiment is
+dispatched, tracked, adjudicated and recorded without bending a coding-agent orchestrator into a job
+queue — and how a hill-climb preregisters its claims so an autonomous agent cannot metric-shop its
+way to a promotion. Done when nothing is left to decide before someone builds it.
+
+## Notes
+
+- **Why a second map.** Map I closed with 12/12 and a working verifier core (34 tests). Three things
+  then surfaced that Map I could not have seen: a duration mismatch every ticket-driven orchestrator
+  shares, the loop-split that follows from it, and a documented fooling mode (metric-shopping) that
+  passes every gate currently built.
+- **The duration mismatch.** Symphony, OpenSymphony, Kata and Baton all assume one agent session is
+  roughly one unit of work. The empirical lane breaks that: the agent *writes* an experiment in
+  minutes, then the experiment *runs* for hours. Waiting trips the stall timeout; exiting leaves the
+  ticket without a result.
+- **Standing decision (Map I, unchanged).** Verification is layered L0/L1/L2; L0 deterministic gates
+  run first and block; a reviewer may never override a blocking gate.
+- **Evidence carried in.** Autonomous AI research systems are documented to p-hack (arXiv 2606.27687);
+  preregistration is the proposed mitigation and the paper recommends integrating it into autonomous
+  frameworks. Named failure modes: HARKing (hypothesising after results known) and S-hacking
+  (trialling many metrics, reporting the favourable one).
+- **Known tension.** Preregistration assumes a confirmatory study. A hill-climb is exploratory by
+  construction. Literature suggests preregistering the *selection methodology* rather than the
+  specific hypothesis — but that is a sketch, not a design.
+- **Category note.** Metaflow is ML-experiment-first with built-in artifact versioning; Prefect is a
+  general-purpose Python orchestrator expecting you to bring your own tracking. Since the ledger
+  already IS the tracking layer, the usual recommendation may invert.
+- **Baton is eliminated as a foundation.** Recorded explicitly because it was recommended, withdrawn,
+  then leaked back into artifacts. The Python-seam argument did not survive scrutiny. Retained only as
+  a short reading exercise.
+- **The LangGraph rejection needs a boundary.** "LangGraph as the outer loop orchestrating coding
+  agents" stays rejected. "A coding agent implemented in LangGraph" (Open SWE) is a different claim and
+  is a live candidate. Do not dismiss the second by association with the first.
+- **Stickiness warning.** Orchestrator choice is among the stickiest infrastructure decisions; once
+  20-30 pipelines sit on one, migration costs quarters. Decide deliberately, not by default.
+
+## Decisions so far
+
+<!-- one line per closed ticket -->
+
+- [M2-07 — Does Open SWE subsume the orchestrator, the runtime, or both?](decisions/M2-07-RESOLVED-open-swe.md) —
+  **adopt at L3 + the dispatch half of L5.** Current release is 17 Mar 2026, Python, on Deep Agents +
+  LangGraph (the Aug-2025 TS version is superseded). It does *not* supply an experiment queue, a
+  durable compute-job store, a cross-job circuit breaker, or GPU cost caps. `execute` defaults to a
+  300 s timeout and accepts an arbitrary one — so a long call is *expressible*, but the shape is a
+  blocking shell call inside a live agent session, which is exactly the duration mismatch. **W-06's
+  two-substrate split survives on design grounds.** OpenSymphony and Kata drop out as orchestrator
+  candidates. LangSmith is a swappable default (`SANDBOX_TYPE`), so no collision with MLflow — set it
+  explicitly. Steal the dummy-token proxy pattern regardless.
+- [M2-04 — How do you preregister an inherently exploratory hill-climb?](decisions/M2-04-RESOLVED-preregistration.md) —
+  **preregister the decision rule, not the hypothesis**, and split runs into exploratory (free,
+  unlimited, *structurally* unpromotable) versus confirmatory (prereg filed and hashed first, fixed
+  seed set, promotable). The mechanism is an asymmetry: a metric may promote **or** block, never
+  both — so "primary flat but latency improved" cannot promote under any reading. Preregistration
+  does not make metric-shopping impossible, it makes it *countable*; **G-08** counts it. Secondary
+  metrics are recorded and never sufficient. Unblocks M2-05.
+
+## Not yet specified
+
+- **Failure semantics across the split.** If the experiment queue loses a job, who notices — the
+  orchestrator, the tracker, or nobody? Map I's circuit breaker was scoped to the runner.
+  *Sharpened by M2-07:* Open SWE supplies no cross-job breaker, so this is ours to build.
+- **Where the ticket's state lives during a six-hour run.** The tracker says "In Progress" but the
+  agent session ended hours ago. Needs a state that means "running, unattended."
+- **Whether L1 review sees the experiment or only the verdict.** Reviewing a training run's *code* is
+  a different act from reviewing its *result*.
+
+<!-- resolved: the observability collision. M2-07 established LangSmith is a swappable
+     default, not a forced dependency; tracing, ML tracking and adjudication sit at three
+     different layers and the ledger alone promotes. M2-06 no longer has to pick a winner. -->
+
+## Frontier — takeable now
+
+- **M2-05** — build the G-07 preregistration gate and its fixtures (unblocked by M2-04).
+- **M2-03** — experiment queue: build, adopt, or does it not exist? Now the *load-bearing* open
+  ticket, since M2-07 confirmed Open SWE does not supply one.
+- **M2-01** — the timeout test. **Downgraded from blocking to confirmatory** by M2-07: the objection
+  is not "will a long call be killed" but "should an agent session be the thing that waits," and that
+  answer is no at any timeout value. Still cheap, still worth running. Needs the user's machine.
+- **M2-02** — orchestrator final pick. Substantially narrowed by M2-07.
+- **M2-06** — where MLflow sits. De-risked; now a placement question, not a contention one.
+
+## Out of scope
+
+- Rebuilding anything Map I closed. The verifier core, gate set, ledger and adversarial suite are
+  settled and built.
+- Model training as a product (TRL, DeepSpeed, fine-tuning pipelines). Out per Map I.
+- Multi-user/team concerns. Solo factory until proven.

@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Software Factory — Architecture Specification</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#FBFAF7;
+  --panel:#FFFFFF;
+  --ink:#16191B;
+  --ink-2:#4A5459;
+  --ink-3:#7C878D;
+  --rule:#DDD9D0;
+  --rule-2:#C4BFB3;
+  --built:#0B6E56;
+  --built-bg:#E8F3EF;
+  --adopt:#4A6B7C;
+  --adopt-bg:#EAF0F4;
+  --reject:#A33B2A;
+  --reject-bg:#F8EBE8;
+  --open:#8A6516;
+  --open-bg:#FAF2E0;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --serif:'IBM Plex Serif',Georgia,serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.sheet{max-width:1120px;margin:0 auto;padding:0 28px 100px}
+
+
+/* ---------- schematic ---------- */
+.schem{border:1.5px solid var(--ink);background:var(--panel);padding:22px 18px 10px}
+.schem svg{width:100%;height:auto;display:block}
+.dg-band{font-family:var(--mono);font-size:9px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;fill:var(--ink-3)}
+.dg-t{font-family:var(--sans);font-size:13px;font-weight:600;fill:var(--ink)}
+.dg-s{font-family:var(--mono);font-size:10px;fill:var(--ink-2)}
+.dg-a{font-family:var(--mono);font-size:9.5px;fill:var(--ink-3)}
+.dg-g{font-family:var(--mono);font-size:9px;fill:var(--built)}
+.dg-box{fill:#FFF;stroke:var(--rule-2);stroke-width:1}
+.dg-adopt{fill:var(--adopt-bg);stroke:rgba(74,107,124,.45);stroke-width:1}
+.dg-built{fill:var(--built-bg);stroke:rgba(11,110,86,.5);stroke-width:1}
+.dg-open{fill:var(--open-bg);stroke:rgba(138,101,22,.45);stroke-width:1}
+.dg-rej{fill:var(--reject-bg);stroke:rgba(163,59,42,.45);stroke-width:1}
+.dg-ct{fill:none;stroke:var(--rule-2);stroke-width:1;stroke-dasharray:4 4}
+.dg-l{stroke:var(--ink-3);stroke-width:1;fill:none}
+.legend{display:flex;flex-wrap:wrap;gap:18px;padding:14px 2px 4px;border-top:1px solid var(--rule);margin-top:12px}
+.legend span{font-family:var(--mono);font-size:10px;color:var(--ink-2);display:flex;align-items:center;gap:7px}
+.legend i{width:11px;height:11px;border-radius:2px;display:inline-block}
+
+/* ---------- title block ---------- */
+.titleblock{border:1.5px solid var(--ink);margin:36px 0 8px;background:var(--panel)}
+.tb-row{display:flex;border-bottom:1px solid var(--rule)}
+.tb-row:last-child{border-bottom:0}
+.tb-cell{padding:10px 16px;border-right:1px solid var(--rule);font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.tb-cell:last-child{border-right:0}
+.tb-cell b{display:block;font-family:var(--sans);font-size:13px;letter-spacing:0;text-transform:none;color:var(--ink);font-weight:600;margin-top:3px}
+.tb-main{padding:26px 18px 22px}
+h1{font-family:var(--sans);font-weight:700;font-size:clamp(26px,4.6vw,42px);line-height:1.05;letter-spacing:-.025em;margin:0 0 10px}
+.sub{color:var(--ink-2);max-width:70ch;margin:0;font-size:15.5px}
+
+/* ---------- status strip ---------- */
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border:1.5px solid var(--ink);border-top:0;background:var(--panel);margin-bottom:44px}
+.strip div{padding:14px 16px;border-right:1px solid var(--rule)}
+.strip div:last-child{border-right:0}
+.strip b{display:block;font-family:var(--sans);font-weight:700;font-size:26px;line-height:1}
+.strip span{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+
+/* ---------- sections ---------- */
+section{margin-bottom:52px}
+h2{font-family:var(--mono);font-weight:600;font-size:12px;letter-spacing:.2em;text-transform:uppercase;margin:0 0 4px;color:var(--ink);display:flex;align-items:baseline;gap:12px}
+h2 .num{color:var(--ink-3);font-weight:400}
+h2::after{content:"";flex:1;height:1px;background:var(--rule-2)}
+.note{color:var(--ink-2);font-size:14px;margin:0 0 20px;max-width:74ch}
+
+/* ---------- chips ---------- */
+.chip{display:inline-block;font-family:var(--mono);font-size:9.5px;font-weight:500;letter-spacing:.1em;text-transform:uppercase;padding:3px 8px;border-radius:2px;white-space:nowrap;vertical-align:middle}
+.c-built{background:var(--built-bg);color:var(--built);border:1px solid rgba(11,110,86,.3)}
+.c-adopt{background:var(--adopt-bg);color:var(--adopt);border:1px solid rgba(74,107,124,.3)}
+.c-reject{background:var(--reject-bg);color:var(--reject);border:1px solid rgba(163,59,42,.3)}
+.c-open{background:var(--open-bg);color:var(--open);border:1px solid rgba(138,101,22,.3)}
+
+/* ---------- tables ---------- */
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--rule-2);font-size:14px}
+th{text-align:left;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);font-weight:500;padding:10px 14px;border-bottom:1px solid var(--rule-2);background:#F6F4EF}
+td{padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.id{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);white-space:nowrap;width:1%}
+td.nm{font-weight:600;white-space:nowrap}
+td.st{width:1%;white-space:nowrap}
+td small{color:var(--ink-2);font-size:13px}
+
+/* ---------- layer stack ---------- */
+.stack{border:1.5px solid var(--ink);background:var(--panel)}
+.layer{display:grid;grid-template-columns:52px 190px 1fr;border-bottom:1px solid var(--rule)}
+.layer:last-child{border-bottom:0}
+.layer .lnum{font-family:var(--mono);font-size:11px;color:var(--ink-3);padding:16px 0;text-align:center;border-right:1px solid var(--rule);background:#F6F4EF}
+.layer .lname{padding:16px 14px;border-right:1px solid var(--rule)}
+.layer .lname b{display:block;font-size:14.5px;font-weight:600}
+.layer .lname span{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+.layer .lbody{padding:16px 14px;font-size:14px;color:var(--ink-2)}
+.layer .lbody .items{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+.pill{font-family:var(--mono);font-size:11px;padding:3px 9px;border:1px solid var(--rule-2);border-radius:3px;background:#FAF9F6;color:var(--ink)}
+.pill.b{border-color:rgba(11,110,86,.4);background:var(--built-bg);color:var(--built)}
+.pill.x{border-color:rgba(163,59,42,.35);background:var(--reject-bg);color:var(--reject);text-decoration:line-through}
+
+/* ---------- two-col ---------- */
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{border:1px solid var(--rule-2);background:var(--panel);padding:18px}
+.card h3{font-family:var(--sans);font-size:16px;font-weight:600;margin:0 0 4px}
+.card .k{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);margin-bottom:10px}
+.card p{margin:0 0 8px;font-size:14px;color:var(--ink-2)}
+.card ul{margin:8px 0 0;padding-left:18px;font-size:14px;color:var(--ink-2)}
+.card li{margin-bottom:5px}
+
+/* ---------- rule callout ---------- */
+.rule-box{border-left:3px solid var(--built);background:var(--built-bg);padding:14px 18px;margin:18px 0;font-size:14.5px}
+.rule-box b{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--built);display:block;margin-bottom:5px}
+.warn-box{border-left:3px solid var(--reject);background:var(--reject-bg);padding:14px 18px;margin:18px 0;font-size:14.5px}
+.warn-box b{font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--reject);display:block;margin-bottom:5px}
+
+/* ---------- flow trace ---------- */
+.trace{border:1.5px solid var(--ink);background:var(--panel)}
+.trace-head{padding:16px 20px;border-bottom:1.5px solid var(--ink);background:#F6F4EF}
+.trace-head b{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);display:block;margin-bottom:4px}
+.trace-head h3{margin:0;font-size:18px;font-weight:600}
+.step{display:grid;grid-template-columns:120px 1fr;border-bottom:1px solid var(--rule)}
+.step:last-child{border-bottom:0}
+.step .sl{padding:16px 14px;border-right:1px solid var(--rule);background:#FCFBF8}
+.step .sl b{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+.step .sl span{display:block;font-size:13px;font-weight:600;margin-top:4px}
+.step .sb{padding:16px}
+pre{font-family:var(--mono);font-size:12px;line-height:1.65;background:#F6F4EF;border:1px solid var(--rule);padding:12px 14px;margin:8px 0 0;overflow-x:auto;border-radius:3px;color:var(--ink)}
+pre .g{color:var(--built);font-weight:500}
+pre .r{color:var(--reject);font-weight:500}
+pre .m{color:var(--ink-3)}
+.branch{display:grid;grid-template-columns:1fr 1fr;gap:0;border-top:1.5px solid var(--ink)}
+.branch>div{padding:18px}
+.branch>div:first-child{border-right:1px solid var(--rule)}
+.branch h4{margin:0 0 6px;font-size:15px;font-weight:600}
+.branch p{margin:0;font-size:13.5px;color:var(--ink-2)}
+
+footer{border-top:1.5px solid var(--ink);padding-top:16px;margin-top:56px;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+
+@media(max-width:820px){
+  .cols{grid-template-columns:1fr}
+  .layer{grid-template-columns:40px 1fr}
+  .layer .lbody{grid-column:1/-1;border-top:1px solid var(--rule)}
+  .step{grid-template-columns:1fr}
+  .step .sl{border-right:0;border-bottom:1px solid var(--rule)}
+  .branch{grid-template-columns:1fr}
+  .branch>div:first-child{border-right:0;border-bottom:1px solid var(--rule)}
+}
+@media print{body{background:#fff}.sheet{max-width:100%}}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<div class="titleblock">
+  <div class="tb-row">
+    <div class="tb-cell" style="flex:2">Document · rev 2<b>AI software factory — architecture specification</b></div>
+    <div class="tb-cell" style="flex:1">Workload<b>Multimodal drone detection</b></div>
+    <div class="tb-cell" style="flex:1">Purpose<b>Proving vehicle only</b></div>
+  </div>
+  <div class="tb-main">
+    <h1>An empirical software factory</h1>
+    <p class="sub">Everything adopted is infrastructure that already exists. Everything built is verification. That asymmetry is the design: no system in the ecosystem has a ledger or anti-fooling gates, because they all verify code against tests — and the empirical lane has no tests.</p>
+  </div>
+  <div class="tb-row">
+    <div class="tb-cell" style="flex:1">Lane<b>Empirical (live) · deterministic (seam only)</b></div>
+    <div class="tb-cell" style="flex:1">Verification<b>L0 gates → L1 review → L2 human</b></div>
+    <div class="tb-cell" style="flex:1">Acceptance<b>Gates behave correctly; benchmark irrelevant</b></div>
+  </div>
+</div>
+
+<div class="strip">
+  <div><b>34</b><span>Tests green</span></div>
+  <div><b>12/12</b><span>Map I decisions</span></div>
+  <div><b>7</b><span>Map II open</span></div>
+  <div><b>7</b><span>L0 gates (6 built)</span></div>
+  <div><b>3</b><span>Agents that earn isolation</span></div>
+</div>
+
+<!-- 00 SCHEMATIC -->
+<section>
+  <h2><span class="num">00</span> Schematic</h2>
+  <p class="note">Two loops, not one. The agent writes an experiment in minutes and exits; the queue runs it for hours. Every ticket-driven orchestrator assumes one session equals one unit of work — training breaks that assumption, and the split is the response.</p>
+  <div class="schem">
+  <svg viewBox="0 0 1000 700" role="img" xmlns="http://www.w3.org/2000/svg">
+    <title>AI software factory architecture schematic</title>
+    <desc>Control plane feeds an agent loop measured in minutes, which submits jobs to an experiment loop measured in hours; results pass through deterministic gates, then fresh-context review and human judgement, with all outcomes recorded to an append-only ledger.</desc>
+    <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+    <rect class="dg-ct" x="40" y="24" width="920" height="76" rx="3"/>
+    <text class="dg-band" x="52" y="40">01 · control plane</text>
+    <rect class="dg-adopt" x="70" y="48" width="240" height="44" rx="3"/>
+    <text class="dg-t" x="190" y="66" text-anchor="middle" dominant-baseline="central">Linear</text>
+    <text class="dg-s" x="190" y="82" text-anchor="middle" dominant-baseline="central">human board</text>
+    <line class="dg-l" x1="312" y1="70" x2="356" y2="70" marker-end="url(#ar)"/>
+    <rect class="dg-adopt" x="360" y="48" width="240" height="44" rx="3"/>
+    <text class="dg-t" x="480" y="66" text-anchor="middle" dominant-baseline="central">GitHub Issues</text>
+    <text class="dg-s" x="480" y="82" text-anchor="middle" dominant-baseline="central">machine plane</text>
+    <line class="dg-l" x1="602" y1="70" x2="646" y2="70" marker-end="url(#ar)"/>
+    <rect class="dg-open" x="650" y="48" width="240" height="44" rx="3"/>
+    <text class="dg-t" x="770" y="66" text-anchor="middle" dominant-baseline="central">agent-ready label</text>
+    <text class="dg-s" x="770" y="82" text-anchor="middle" dominant-baseline="central">human-applied only</text>
+
+    <rect class="dg-ct" x="40" y="118" width="920" height="114" rx="3"/>
+    <text class="dg-band" x="52" y="134">02 · agent loop — minutes — untrusted</text>
+    <rect class="dg-adopt" x="70" y="160" width="280" height="52" rx="3"/>
+    <text class="dg-t" x="210" y="180" text-anchor="middle" dominant-baseline="central">Orchestrator</text>
+    <text class="dg-s" x="210" y="197" text-anchor="middle" dominant-baseline="central">poll · claim · dispatch</text>
+    <line class="dg-l" x1="352" y1="186" x2="386" y2="186" marker-end="url(#ar)"/>
+    <rect class="dg-adopt" x="390" y="160" width="280" height="52" rx="3"/>
+    <text class="dg-t" x="530" y="180" text-anchor="middle" dominant-baseline="central">Agent sandbox</text>
+    <text class="dg-s" x="530" y="197" text-anchor="middle" dominant-baseline="central">default-deny egress</text>
+    <line class="dg-l" x1="672" y1="186" x2="706" y2="186" marker-end="url(#ar)"/>
+    <rect class="dg-open" x="710" y="160" width="220" height="52" rx="3"/>
+    <text class="dg-t" x="820" y="180" text-anchor="middle" dominant-baseline="central">Runtime</text>
+    <text class="dg-s" x="820" y="197" text-anchor="middle" dominant-baseline="central">Claude Code / Open SWE</text>
+
+    <line class="dg-l" x1="210" y1="232" x2="210" y2="258" marker-end="url(#ar)"/>
+    <text class="dg-a" x="222" y="249">submit job, then exit</text>
+
+    <rect class="dg-ct" x="40" y="262" width="920" height="114" rx="3"/>
+    <text class="dg-band" x="52" y="278">03 · experiment loop — hours — trusted</text>
+    <rect class="dg-open" x="70" y="304" width="280" height="52" rx="3"/>
+    <text class="dg-t" x="210" y="324" text-anchor="middle" dominant-baseline="central">Experiment queue</text>
+    <text class="dg-s" x="210" y="341" text-anchor="middle" dominant-baseline="central">owns the lifecycle</text>
+    <line class="dg-l" x1="352" y1="330" x2="386" y2="330" marker-end="url(#ar)"/>
+    <rect class="dg-adopt" x="390" y="304" width="280" height="52" rx="3"/>
+    <text class="dg-t" x="530" y="324" text-anchor="middle" dominant-baseline="central">GPU substrate</text>
+    <text class="dg-s" x="530" y="341" text-anchor="middle" dominant-baseline="central">no agent credentials</text>
+    <line class="dg-l" x1="672" y1="330" x2="706" y2="330" marker-end="url(#ar)"/>
+    <rect class="dg-box" x="710" y="304" width="220" height="52" rx="3"/>
+    <text class="dg-t" x="820" y="324" text-anchor="middle" dominant-baseline="central">Artifact</text>
+    <text class="dg-s" x="820" y="341" text-anchor="middle" dominant-baseline="central">runs · seeds · cost</text>
+
+    <line class="dg-l" x1="820" y1="376" x2="820" y2="402" marker-end="url(#ar)"/>
+
+    <rect class="dg-built" x="40" y="406" width="920" height="72" rx="3" stroke-width="1.5"/>
+    <text class="dg-band" x="52" y="424" style="fill:var(--built)">04 · L0 deterministic gates — block before any model is consulted</text>
+    <rect class="dg-box" x="56" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="108" y="452" text-anchor="middle" dominant-baseline="central">leakage</text>
+    <rect class="dg-box" x="168" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="220" y="452" text-anchor="middle" dominant-baseline="central">reproducible</text>
+    <rect class="dg-box" x="280" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="332" y="452" text-anchor="middle" dominant-baseline="central">seed_var</text>
+    <rect class="dg-box" x="392" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="444" y="452" text-anchor="middle" dominant-baseline="central">dominance</text>
+    <rect class="dg-box" x="504" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="556" y="452" text-anchor="middle" dominant-baseline="central">holdout</text>
+    <rect class="dg-box" x="616" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="668" y="452" text-anchor="middle" dominant-baseline="central">tamper</text>
+    <rect class="dg-open" x="728" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="780" y="452" text-anchor="middle" dominant-baseline="central" style="fill:var(--open)">prereg</text>
+    <rect class="dg-box" x="840" y="440" width="104" height="22" rx="2"/><text class="dg-g" x="892" y="452" text-anchor="middle" dominant-baseline="central">cost</text>
+
+    <line class="dg-l" x1="230" y1="478" x2="230" y2="504" marker-end="url(#ar)"/>
+    <text class="dg-a" x="242" y="495">pass</text>
+    <line class="dg-l" x1="865" y1="478" x2="865" y2="504" marker-end="url(#ar)" stroke="#A33B2A"/>
+    <text class="dg-a" x="800" y="495" text-anchor="end" style="fill:var(--reject)">blocked</text>
+
+    <rect class="dg-built" x="40" y="508" width="380" height="62" rx="3"/>
+    <text class="dg-t" x="230" y="530" text-anchor="middle" dominant-baseline="central">L1 review</text>
+    <text class="dg-s" x="230" y="548" text-anchor="middle" dominant-baseline="central">fresh context · read-only</text>
+    <line class="dg-l" x1="422" y1="539" x2="446" y2="539" marker-end="url(#ar)"/>
+    <rect class="dg-built" x="450" y="508" width="290" height="62" rx="3"/>
+    <text class="dg-t" x="595" y="530" text-anchor="middle" dominant-baseline="central">L2 human</text>
+    <text class="dg-s" x="595" y="548" text-anchor="middle" dominant-baseline="central">does this matter</text>
+    <rect class="dg-rej" x="770" y="508" width="190" height="62" rx="3"/>
+    <text class="dg-t" x="865" y="530" text-anchor="middle" dominant-baseline="central" style="fill:var(--reject)">Rejected</text>
+    <text class="dg-s" x="865" y="548" text-anchor="middle" dominant-baseline="central" style="fill:var(--reject)">still a passing run</text>
+
+    <line class="dg-l" x1="595" y1="570" x2="595" y2="596" marker-end="url(#ar)"/>
+    <line class="dg-l" x1="865" y1="570" x2="865" y2="596" marker-end="url(#ar)" stroke="#A33B2A"/>
+
+    <rect class="dg-built" x="40" y="600" width="920" height="60" rx="3" stroke-width="1.5"/>
+    <text class="dg-band" x="52" y="618" style="fill:var(--built)">05 · append-only ledger</text>
+    <text class="dg-s" x="52" y="640" dominant-baseline="central">config · code hash · seeds · per-gate verdicts · declared metric · cost — every outcome recorded, promoted or not</text>
+  </svg>
+  <div class="legend">
+    <span><i style="background:var(--adopt-bg);border:1px solid rgba(74,107,124,.5)"></i>adopted</span>
+    <span><i style="background:var(--built-bg);border:1px solid rgba(11,110,86,.5)"></i>built by you</span>
+    <span><i style="background:var(--open-bg);border:1px solid rgba(138,101,22,.5)"></i>open decision</span>
+    <span><i style="background:var(--reject-bg);border:1px solid rgba(163,59,42,.5)"></i>rejection path</span>
+  </div>
+  </div>
+</section>
+
+<!-- 1 -->
+<section>
+  <h2><span class="num">01</span> Decision ledger</h2>
+  <p class="note">The choices that shape everything below, and the reason each survived scrutiny. Every entry was contested at least once in reaching it.</p>
+  <table>
+    <thead><tr><th>Ref</th><th>Decision</th><th>Rationale</th><th></th></tr></thead>
+    <tbody>
+      <tr><td class="id">W-01</td><td class="nm">Drone detection as workload</td><td><small>Empirical lane exercises the part nothing off-the-shelf solves. Proving vehicle only — beating a benchmark is explicitly not required.</small></td><td class="st"><span class="chip c-built">settled</span></td></tr>
+      <tr><td class="id">W-02</td><td class="nm">Verifier is a plugin boundary</td><td><small>One live implementation (gates), one thin CI adapter to prove the seam admits two. Dispatcher stays lane-agnostic.</small></td><td class="st"><span class="chip c-built">settled</span></td></tr>
+      <tr><td class="id">W-03</td><td class="nm">Acceptance = adversarial suite</td><td><small>Measures the factory's judgement, not the model's accuracy. Rejecting every fake is a passing run.</small></td><td class="st"><span class="chip c-built">settled</span></td></tr>
+      <tr><td class="id">W-06</td><td class="nm">Two execution substrates</td><td><small>Agent session and experiment run are opposite on every axis — trust, duration, billing, GPU. Never share a sandbox.</small></td><td class="st"><span class="chip c-built">settled</span></td></tr>
+      <tr><td class="id">W-11</td><td class="nm">Weekly ratchet</td><td><small>Recurring findings become gates at the cheapest sufficient enforcement point. Prose doesn't ratchet; walls do.</small></td><td class="st"><span class="chip c-built">settled</span></td></tr>
+      <tr><td class="id">W-12</td><td class="nm">Two hard caps, day one</td><td><small>Agent inference and GPU spend, both fail-closed. Retrofitting after a shock is how programs get cancelled.</small></td><td class="st"><span class="chip c-built">settled</span></td></tr>
+      <tr><td class="id">M2-02</td><td class="nm">Orchestrator identity</td><td><small>Reopened. Under a split-loop design the orchestrator only runs short coding sessions — so the choice may be low-stakes. Decide that first.</small></td><td class="st"><span class="chip c-open">open</span></td></tr>
+      <tr><td class="id">M2-02</td><td class="nm">Baton fork — eliminated</td><td><small>Recommended, then withdrawn. The Python-seam argument didn't survive scrutiny: a subprocess boundary costs almost nothing, so "same language" was never a real tiebreaker. Retained only as a ~200-line reading exercise.</small></td><td class="st"><span class="chip c-reject">rejected</span></td></tr>
+      <tr><td class="id">M2-07</td><td class="nm">Open SWE — which layer?</td><td><small>Carries its own Manager, Linear invocation and label triggers, so it may replace the orchestrator, the runtime, or both. Forces a boundary on the LangGraph rejection.</small></td><td class="st"><span class="chip c-open">open</span></td></tr>
+      <tr><td class="id">M2-03</td><td class="nm">Experiment queue</td><td><small>Build, adopt, or unnecessary. Gated on an empirical timeout test, not on specs.</small></td><td class="st"><span class="chip c-open">open</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 2 -->
+<section>
+  <h2><span class="num">02</span> Layer stack</h2>
+  <p class="note">Six layers. Green pills are built and tested; plain pills are adopted; struck pills were considered and rejected.</p>
+  <div class="stack">
+
+    <div class="layer">
+      <div class="lnum">L6</div>
+      <div class="lname"><b>Control plane</b><span>Intake &amp; dispatch</span></div>
+      <div class="lbody">Linear is the human board; GitHub Issues is the machine plane; one-way sync. Runners read GitHub only, avoiding two-way race conditions. <b>Only a human-applied <code>agent-ready</code> label is dispatch-eligible</b> — the tracker is untrusted input.
+        <div class="items"><span class="pill">Linear</span><span class="pill">GitHub Issues</span><span class="pill">labels + CODEOWNERS</span></div></div>
+    </div>
+
+    <div class="layer">
+      <div class="lnum">L5</div>
+      <div class="lname"><b>Orchestrator</b><span>Short coding sessions</span></div>
+      <div class="lbody">Poll, claim, per-issue workspace, dispatch, reconcile. Handles the minutes-long half of the work only. Identity still open — the less it does, the less it matters. <b>Open SWE may subsume this layer entirely</b>, since it carries its own Manager, Linear invocation and label triggers.
+        <div class="items"><span class="pill">OpenSymphony</span><span class="pill">Kata Symphony</span><span class="pill">Open SWE</span><span class="pill x">Baton (fork)</span><span class="pill x">LangGraph as outer loop</span><span class="pill x">CrewAI / AutoGen</span></div></div>
+    </div>
+
+    <div class="layer">
+      <div class="lnum">L4</div>
+      <div class="lname"><b>Experiment queue</b><span>Hours-long runs</span></div>
+      <div class="lbody">Accepts a job, runs it on the GPU substrate, collects the artifact, invokes the verifier, appends to the ledger. Exists because every ticket-driven orchestrator assumes one session ≈ one unit of work — and training breaks that.
+        <div class="items"><span class="pill">Prefect</span><span class="pill">Metaflow</span><span class="pill">Celery / RQ</span><span class="pill">file-backed (~200 LOC)</span></div></div>
+    </div>
+
+    <div class="layer">
+      <div class="lnum">L3</div>
+      <div class="lname"><b>Execution fabric</b><span>Two substrates</span></div>
+      <div class="lbody">Agent sandbox: untrusted, model-bound, minutes, no GPU, default-deny egress. Experiment substrate: trusted, compute-bound, hours, GPU. The agent submits a job and receives an artifact — it never holds GPU credentials. Open SWE's pluggable sandbox providers include Modal, which offers GPU sandboxes — so part of this split may be available off the shelf.
+        <div class="items"><span class="pill">Claude Code / Codex</span><span class="pill">Open SWE</span><span class="pill">OpenHands</span><span class="pill">Modal / Northflank</span><span class="pill">Daytona / E2B / Runloop</span><span class="pill">LiteLLM router</span></div></div>
+    </div>
+
+    <div class="layer">
+      <div class="lnum">L2</div>
+      <div class="lname"><b>Verification</b><span>The part you build</span></div>
+      <div class="lbody">Deterministic gates, then fresh-context LLM review, then human judgement — strictly in that order. A reviewer may never override a blocking gate.
+        <div class="items"><span class="pill b">verifier.py</span><span class="pill b">gates_v1.py</span><span class="pill b">holdout.py</span><span class="pill b">adversarial_suite.py</span></div></div>
+    </div>
+
+    <div class="layer">
+      <div class="lnum">L1</div>
+      <div class="lname"><b>Record</b><span>Provenance</span></div>
+      <div class="lbody">Append-only ledger — config, code hash, seeds, per-gate verdicts, declared metric, cost. Every promoted experiment reconstructs from its row alone, with no reference to agent narrative. MLflow traces alongside, never adjudicates.
+        <div class="items"><span class="pill b">Ledger (JSONL)</span><span class="pill">MLflow (tracing)</span><span class="pill x">dashboard as promotion signal</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 3 -->
+<section>
+  <h2><span class="num">03</span> Agents</h2>
+  <p class="note">Three roles, chosen because each earns <em>isolation</em> — a distinct context or permission set — not because it names a job title. Persona org-charts were proposed by four separate stack recommendations and declined each time.</p>
+  <div class="cols">
+    <div class="card">
+      <div class="k">Agent 01 · planner</div>
+      <h3>Planner</h3>
+      <p>Expensive model, <b>no write access</b>. Produces the spec and experiment design before any code exists. Mirrors Factory's spec mode: powerful model plans, fast model implements — the evidenced form of model tiering.</p>
+    </div>
+    <div class="card">
+      <div class="k">Agent 02 · reviewer</div>
+      <h3>Reviewer</h3>
+      <p>Read-only tools, <b>fresh context window</b>. The single most important design choice in the chain: a reviewer sharing the implementer's context rubber-stamps its own reasoning. Runs Standards and Spec as parallel passes.</p>
+    </div>
+    <div class="card">
+      <div class="k">Agent 03 · triage</div>
+      <h3>Triage</h3>
+      <p>Cheap model. Classifies incoming tickets against the Definition of Ready and bounces the underspecified ones <b>before</b> they burn tokens. Ticket quality is infrastructure when the tracker is the control plane.</p>
+    </div>
+    <div class="card" style="border-color:rgba(163,59,42,.4);background:var(--reject-bg)">
+      <div class="k" style="color:var(--reject)">Rejected roster</div>
+      <h3>Persona agents</h3>
+      <p>Product Manager, Architect, QA, Security, DevOps, Data Scientist, Documentation, Factory Manager, Memory Agent — and the most dangerous, <b>Evaluation Agent</b>, an LLM asked whether a result is statistically significant. That question is arithmetic on recorded seeds.</p>
+    </div>
+  </div>
+  <div class="warn-box"><b>Why the roster fails</b>Correlated priors. If implementer and reviewer are both LLMs with similar training, the reviewer is systematically blind to exactly the mistakes the implementer makes. Fresh context fixes context contamination; it does not fix shared priors. Only deterministic checks are uncorrelated with the generator.</div>
+</section>
+
+<!-- 3b -->
+<section>
+  <h2><span class="num">03b</span> Agent runtime options</h2>
+  <p class="note">The runtime is where an agent actually executes. This is deliberately a <em>plural</em> layer — different tasks suit different runtimes, and the verifier boundary makes them interchangeable from above.</p>
+  <table>
+    <thead><tr><th>Runtime</th><th>Shape</th><th>Fits</th><th></th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Claude Code</td><td><small>Terminal-first, local or CI, subagents with fresh context, hooks for deterministic enforcement</small></td><td><small>Short sessions, large-repo work, the ratchet's hook points</small></td><td class="st"><span class="chip c-adopt">candidate</span></td></tr>
+      <tr><td class="nm">Open SWE</td><td><small>Cloud-native async, Manager/Planner/Programmer/Reviewer stages, pluggable sandboxes (Modal, Daytona, Runloop, E2B), Linear + Slack invocation, auto PR</small></td><td><small>Complex long-running tasks — its own guidance says it is <em>not</em> optimal for one-liners, which matches the empirical lane's shape</small></td><td class="st"><span class="chip c-open">evaluating</span></td></tr>
+      <tr><td class="nm">Codex CLI</td><td><small>Subscription-backed local harness; supported as an alternate by OpenSymphony</small></td><td><small>Structured coding tasks, cost-controlled runs</small></td><td class="st"><span class="chip c-adopt">candidate</span></td></tr>
+      <tr><td class="nm">OpenHands</td><td><small>Agent-server with REST/WebSocket; the default harness for OpenSymphony</small></td><td><small>Autonomous sandboxed execution</small></td><td class="st"><span class="chip c-adopt">candidate</span></td></tr>
+    </tbody>
+  </table>
+  <div class="rule-box"><b>Correction — the LangGraph boundary</b>Two different claims were being conflated. <b>Rejected:</b> LangGraph as the <em>outer loop</em> orchestrating coding agents — a category error, because the coding agent already is the agent loop. <b>Not rejected:</b> a coding agent <em>implemented in</em> LangGraph, which is what Open SWE is. The first stays struck; the second is a live candidate and must not be dismissed by association.</div>
+  <div class="warn-box"><b>Two open collisions</b>Open SWE brings LangSmith for tracing, while the standing decision names MLflow — if adopted, one wins or both run, and that is unresolved (M2-06). And its Manager/Planner/Programmer/Reviewer stages are <em>pipeline stages</em>, not job titles — the same distinction that makes Factory's droids acceptable and a persona org-chart not. Worth verifying that holds in practice rather than assuming it from the naming.</div>
+</section>
+
+<!-- 4 -->
+<section>
+  <h2><span class="num">04</span> Skills, hooks &amp; instruction files</h2>
+  <p class="note">Four distinct mechanisms that people routinely conflate. The distinction that matters: <b>a skill is an instruction, a hook is a wall.</b> Instructions may be skipped under context pressure; a hook returning non-zero cannot be.</p>
+  <table>
+    <thead><tr><th>Mechanism</th><th>Loaded</th><th>Purpose</th><th>Skippable</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">AGENTS.md</td><td><small>Always in context</small></td><td><small>Build/test commands with exact flags, architectural constraints, files never to touch. Keep under ~200 lines or it stops being read carefully.</small></td><td class="st"><span class="chip c-open">yes</span></td></tr>
+      <tr><td class="nm">SKILL.md files</td><td><small>On demand, ~100 tokens metadata</small></td><td><small>Procedural knowledge. Progressive disclosure keeps cost low; the format ports across Claude Code, Codex, Cursor and OpenHands.</small></td><td class="st"><span class="chip c-open">yes</span></td></tr>
+      <tr><td class="nm">Hooks</td><td><small>Lifecycle events</small></td><td><small>PreToolUse, PostToolUse, SessionStart, SessionEnd. Shell commands that exit non-zero to block. Where the ratchet physically lives.</small></td><td class="st"><span class="chip c-built">no</span></td></tr>
+      <tr><td class="nm">Gates</td><td><small>Verification path</small></td><td><small>Deterministic functions of recorded evidence. Return blocking=True and promotion is impossible.</small></td><td class="st"><span class="chip c-built">no</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note" style="margin-top:20px">The six skill files to write first — then let the intervention log dictate the rest, rather than guessing:</p>
+  <table>
+    <thead><tr><th>Skill</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">run-verification</td><td><small>The exact command sequence with flags, in order. No paraphrase.</small></td></tr>
+      <tr><td class="nm">write-spec</td><td><small>The planning phase before any code. Includes the preregistration block.</small></td></tr>
+      <tr><td class="nm">run-experiment</td><td><small>Submit to queue, poll for artifact, never block the agent session waiting.</small></td></tr>
+      <tr><td class="nm">open-pr</td><td><small>PR template and what proof-of-work to attach — including what was tried and abandoned.</small></td></tr>
+      <tr><td class="nm">recover-failing-test</td><td><small>The debugging procedure, so the agent doesn't flail.</small></td></tr>
+      <tr><td class="nm">db-migration</td><td><small>The dangerous path, with hard stops. Red lane — human writes or co-writes.</small></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- 5 -->
+<section>
+  <h2><span class="num">05</span> The gate set</h2>
+  <p class="note">L0 is where the factory's judgement actually lives. Each gate traces to at least one fixture in the adversarial suite — a standing rule that keeps the set from bloating into unmaintainability.</p>
+  <table>
+    <thead><tr><th>Ref</th><th>Gate</th><th>Catches</th><th></th></tr></thead>
+    <tbody>
+      <tr><td class="id">G-01</td><td class="nm">no_leakage</td><td><small>Train/eval index overlap. Set arithmetic on recorded IDs — the single most common way an agent manufactures a breakthrough, usually via "hard-negative mining from the pool."</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+      <tr><td class="id">G-02</td><td class="nm">reproducible</td><td><small>Same seed, different number. Catches nondeterministic ordering, unseeded augmentation, and "I ran it once and it was good."</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+      <tr><td class="id">G-03</td><td class="nm">seed_variance</td><td><small>Improvement inside the noise band. Requires a baseline to compare against.</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+      <tr><td class="id">G-04</td><td class="nm">no_single_seed_dominance</td><td><small>Baseline-free seed lottery. Added after the suite caught a candidate the baseline-dependent gate promoted. The fix itself was wrong on first attempt — the fixture caught that too.</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+      <tr><td class="id">G-05</td><td class="nm">holdout_budget</td><td><small>Over-querying the lockbox. Durable across restart, atomic write, corrupt file fails <em>safe</em> (treated as spent) rather than open.</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+      <tr><td class="id">G-06</td><td class="nm">no_test_tampering</td><td><small>Reaching green by mutilating verification: removed assertions, added skip/xfail, lowered coverage floors, edits to the harness itself. Adding assertions is explicitly allowed.</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+      <tr><td class="id">G-07</td><td class="nm">preregistration</td><td><small>Metric-shopping — reporting whichever number happened to move. Named in the literature as HARKing and S-hacking; documented as a real behaviour of autonomous research systems. Design open (M2-04).</small></td><td class="st"><span class="chip c-open">designing</span></td></tr>
+      <tr><td class="id">—</td><td class="nm">cost</td><td><small>Per-experiment spend ceiling. Fail-closed; ticket moves to needs-human, never auto-retries.</small></td><td class="st"><span class="chip c-built">built</span></td></tr>
+    </tbody>
+  </table>
+  <div class="rule-box" style="border-left-color:var(--open);background:var(--open-bg)"><b style="color:var(--open)">Suite gains a fifth fixture class</b>The adversarial suite currently covers genuine / seed_noise / leakage / holdout_burn. G-07 requires a <code>metric_shopped</code> class expecting REJECT, plus a held-out variant — because every existing gate passes cleanly on a result whose metric was chosen after seeing the numbers.</div>
+<div class="rule-box"><b>Ordering constraint</b>L0 runs first and blocks. L1 review runs only on L0-passing candidates. Reverse the order and a fake result reaches the human wearing a persuasive LLM endorsement — which is <em>worse</em> than no review, because the narrative launders it.</div>
+</section>
+
+<!-- 6 -->
+<section>
+  <h2><span class="num">06</span> Built components</h2>
+  <p class="note">Real, tested Python. The verifier is the spine — everything else hangs off the boundary it defines.</p>
+  <table>
+    <thead><tr><th>Module</th><th>Provides</th><th>Tests</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">verifier.py</td><td><small><code>Verifier</code> protocol, frozen <code>VerdictBundle</code> where <code>promoted</code> cannot be forged, <code>GateVerifier</code>, <code>ExitCodeVerifier</code> (CI adapter), <code>Ledger</code></small></td><td class="id">7</td></tr>
+      <tr><td class="nm">gates_v1.py</td><td><small><code>DiffEvidence</code>, tamper gate, baseline-free dominance gate</small></td><td class="id">7</td></tr>
+      <tr><td class="nm">holdout.py</td><td><small><code>HoldoutBudget</code> with atomic persistence, <code>HoldoutExhausted</code></small></td><td class="id">6</td></tr>
+      <tr><td class="nm">adversarial_suite.py</td><td><small>Labeled fixtures across four fooling classes, visible + held-out partitions, <code>SuiteResult</code></small></td><td class="id">6</td></tr>
+      <tr><td class="nm">pipeline.py</td><td><small><code>run_and_record</code> — train all seeds, verify, append one immutable row</small></td><td class="id">4</td></tr>
+      <tr><td class="nm">harness.py</td><td><small>Original six gates and run records, retained behind the boundary</small></td><td class="id">4</td></tr>
+    </tbody>
+  </table>
+  <div class="warn-box"><b>Refactor constraint restored</b>When the runner was assumed to be a Baton fork, the seam was an in-process Python call and <code>VerdictBundle</code> needed no cross-process serialization. Baton is eliminated, so the seam is likely a <b>subprocess/artifact-file boundary</b> again. This raises the priority of refactor candidate 2 (named constructors on <code>VerdictBundle</code>), which should now produce a clean serialized form — not just deduplicate construction.</div>
+</section>
+
+<!-- 6b -->
+<section>
+  <h2><span class="num">06b</span> Revision log</h2>
+  <p class="note">Settled decisions amended by later findings. Recorded rather than silently patched — a reference document that changes without saying so is worse than one that shows its corrections.</p>
+  <table>
+    <thead><tr><th>Ref</th><th>Was</th><th>Amendment</th><th></th></tr></thead>
+    <tbody>
+      <tr><td class="id">W-08</td><td><small>"Fork Baton as the empirical runner"</small></td><td><small><b>Superseded twice.</b> First answer was reimplement Symphony's loop; second was fork Baton. Both withdrawn — the Python-seam argument failed, since a subprocess boundary costs almost nothing. Orchestrator choice is now open in Map II.</small></td><td class="st"><span class="chip c-reject">withdrawn</span></td></tr>
+      <tr><td class="id">W-06</td><td><small>"Two substrates, both built"</small></td><td><small>Finding stands, implication loosens. Open SWE's pluggable sandboxes include Modal, which offers GPU. Part of the split may be off-the-shelf — test, don't assume.</small></td><td class="st"><span class="chip c-open">loosened</span></td></tr>
+      <tr><td class="id">W-07</td><td><small>"One-way Linear → GitHub sync"</small></td><td><small>May be unnecessary machinery if Open SWE is adopted, since it invokes natively from Linear and Slack. The untrusted-tracker defense is <em>more</em> important under label-triggered invocation, not less.</small></td><td class="st"><span class="chip c-open">may simplify</span></td></tr>
+      <tr><td class="id">W-09</td><td><small>"Six gates plus three hardenings"</small></td><td><small>Seven gates. G-07 preregistration closes metric-shopping, which every existing gate is silent on. Suite gains a fifth fixture class.</small></td><td class="st"><span class="chip c-open">expanded</span></td></tr>
+      <tr><td class="id">W-10</td><td><small>"Six-stage chain, stage 4 fresh context"</small></td><td><small>Open SWE's internal Planner/Reviewer overlap stages 3–4. Must verify its Reviewer runs in genuinely fresh context — if it shares state with its Programmer, it cannot substitute and both must run.</small></td><td class="st"><span class="chip c-open">overlap</span></td></tr>
+      <tr><td class="id">W-11</td><td><small>"Cheapest sufficient enforcement point"</small></td><td><small>Unstated dependency: enforcement points are <em>runtime-specific</em>. Claude Code has lifecycle hooks; Open SWE's equivalents are unknown. A runtime with no hook layer forces findings into CI or prose — and prose doesn't ratchet.</small></td><td class="st"><span class="chip c-open">qualified</span></td></tr>
+      <tr><td class="id">W-12</td><td><small>"Two hard caps"</small></td><td><small>Possible third cost surface: LangGraph Platform hosting and LangSmith tracing, billed per-trace or per-seat rather than per-token or per-second. A third billing surface is a third place to be surprised.</small></td><td class="st"><span class="chip c-open">third surface</span></td></tr>
+    </tbody>
+  </table>
+  <div class="rule-box"><b>What did not move</b>W-01 (workload and proving-vehicle framing), W-02 (verifier as plugin boundary — <em>reinforced</em>, since more runtime candidates means more consumers of the seam), W-03 (acceptance criteria), W-04 (gh-aw security analysis), and W-05's factual findings about Symphony's scheduler. The 34 tests and the built gate logic are unaffected.</div>
+</section>
+
+<!-- 7 — FLOW -->
+<section>
+  <h2><span class="num">07</span> Worked flow</h2>
+  <p class="note">One ticket, end to end. The interesting case is not the happy path — it's what happens when a plausible-looking improvement turns out to be noise.</p>
+
+  <div class="trace">
+    <div class="trace-head">
+      <b>Trace · DRONE-42</b>
+      <h3>Does per-modality standardisation beat raw fused features?</h3>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 01</b><span>Intake</span></div>
+      <div class="sb">Human files the ticket in Linear and applies <code>agent-ready</code> + <code>lane:empirical</code>. Triage agent checks it against the Definition of Ready. The preregistration block is mandatory — without it the ticket bounces.
+        <pre>objective : improve drone-vs-bird separation
+hypothesis: per-modality standardisation unswamps
+            vision/acoustic channels
+baseline  : EXP-0117 (logreg, raw features, AP 0.72)
+<span class="g">primary   : average_precision        ← declared, binding</span>
+secondary : latency_ms, cost_usd     <span class="m">(recorded, never sufficient)</span>
+min_effect: +0.02 AP
+seeds     : 0,1,2,3,4</pre></div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 02</b><span>Dispatch</span></div>
+      <div class="sb">One-way sync mirrors the ticket into GitHub Issues. The orchestrator claims it, creates a per-issue workspace, and spawns the coding agent in the sandbox — untrusted, default-deny egress, no GPU credentials.</div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 03</b><span>Agent session</span></div>
+      <div class="sb"><b>Minutes.</b> The agent reads <code>AGENTS.md</code>, loads the <code>run-experiment</code> skill, writes the experiment config and the training function, then <em>submits a job and exits</em>. It does not wait — waiting would trip the stall timeout.
+        <pre>submitted job EXP-0142 → experiment queue
+config: {scaling: standard-train-only, model: logreg}
+agent session ends. ticket → "running, unattended"</pre></div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 04</b><span>Experiment run</span></div>
+      <div class="sb"><b>Hours.</b> The queue schedules the job on the GPU substrate. Five seeds train. The agent is long gone; the queue owns the lifecycle. Per-experiment cost cap is armed and fail-closed.
+        <pre>seed 0 → AP 0.781    seed 3 → AP 0.774
+seed 1 → AP 0.769    seed 4 → AP 0.783
+seed 2 → AP 0.776    <span class="m">wall 4h12m · $8.40 of $25.00 cap</span></pre></div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 05</b><span>L0 gates</span></div>
+      <div class="sb">Deterministic adjudication on recorded evidence. No model is consulted. This step decides everything.
+        <pre><span class="g">[PASS]</span> no_leakage              train/eval disjoint
+<span class="g">[PASS]</span> reproducible            deterministic across seeds
+<span class="g">[PASS]</span> seed_variance           delta +0.056 vs band 0.011
+<span class="g">[PASS]</span> no_single_seed_dominance  best seed drives 21% of lift
+<span class="g">[PASS]</span> holdout_budget          3/10 queries used
+<span class="g">[PASS]</span> no_test_tampering       no verification weakening
+<span class="g">[PASS]</span> preregistration         reported metric == declared
+<span class="g">[PASS]</span> cost                    $8.40 (cap $25.00)</pre></div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 06</b><span>Ledger</span></div>
+      <div class="sb">One immutable row. Reconstructable without any agent narrative — this is the artifact a human reviews, not the agent's summary of itself.
+        <pre>EXP-0142 · parent EXP-0117 · code a3f9c1e2
+mean 0.7766 ± 0.0058 (5 seeds) · promoted <span class="g">true</span>
+declared_metric average_precision · $8.40</pre></div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 07</b><span>L1 review</span></div>
+      <div class="sb">Only now does an LLM see it — fresh context, read-only tools, no knowledge of the implementer's reasoning. It judges what arithmetic cannot: does the hypothesis actually follow, is this measuring the right thing, does the code match the spec. <b>It cannot override a blocking gate.</b></div>
+    </div>
+
+    <div class="step">
+      <div class="sl"><b>Step 08</b><span>L2 human</span></div>
+      <div class="sb">The only question left: does this experiment matter? Review is the throughput ceiling of the whole factory, which is why seven gates and a fresh-context reviewer run first — to make sure nothing reaches this step that shouldn't.</div>
+    </div>
+
+    <div class="branch">
+      <div>
+        <h4>Path A — promoted</h4>
+        <p>New baseline is EXP-0142. The hill-climb continues from there. Any human intervention along the way is tagged with a reason code and enters the weekly ratchet queue.</p>
+      </div>
+      <div>
+        <h4>Path B — the run that proves the design</h4>
+        <p>Had seed 0 returned 0.95 and the rest 0.50, <code>no_single_seed_dominance</code> would have blocked at step 05 — before a single review token was spent. The ticket returns rejected, the ledger records why, and <b>that is a passing run.</b> Catching fakery is the thesis.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span>Architecture specification · Map I closed 12/12 · Map II open 6</span>
+  <span>Adopt infrastructure · build verification</span>
+</footer>
+
+</div>
+</body>
+</html>

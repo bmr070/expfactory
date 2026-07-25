@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factory Proving Map — chart of the way so far</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;800&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#EDF2EF;
+  --shoal:#D3E2DD;
+  --deep:#B4CBC6;
+  --ink:#12303A;
+  --ink-soft:#4A6B72;
+  --fog:#9FB2AF;
+  --magenta:#B0316E;
+  --charted:#2F6B4F;
+  --rule:rgba(18,48,58,.16);
+  --display:'Archivo',system-ui,sans-serif;
+  --body:'Source Serif 4',Georgia,serif;
+  --data:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--body);font-size:16px;line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+/* ambient bathymetric contours */
+.contours{position:fixed;inset:0;z-index:0;pointer-events:none;opacity:.5}
+.wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:0 24px 96px}
+
+/* ---- chart title block ---- */
+.titleblock{
+  border:1.5px solid var(--ink);margin:40px 0 56px;background:rgba(237,242,239,.86);
+  backdrop-filter:blur(2px);
+}
+.titleblock .bar{
+  display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  border-bottom:1px solid var(--rule);padding:10px 20px;
+  font-family:var(--data);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-soft);
+}
+.titleblock .main{padding:30px 20px 26px}
+h1{
+  font-family:var(--display);font-weight:800;font-size:clamp(30px,6.2vw,58px);
+  line-height:.98;letter-spacing:-.02em;text-transform:uppercase;margin:0 0 14px;
+}
+h1 .thin{font-weight:400;color:var(--ink-soft);display:block;font-size:.42em;letter-spacing:.16em;margin-top:14px}
+.dest{font-size:17px;max-width:64ch;margin:0}
+.soundings{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));
+  border-top:1px solid var(--rule);
+}
+.sounding{padding:16px 20px;border-right:1px solid var(--rule)}
+.sounding:last-child{border-right:0}
+.sounding b{display:block;font-family:var(--display);font-weight:800;font-size:30px;line-height:1}
+.sounding span{font-family:var(--data);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-soft)}
+
+/* ---- sections ---- */
+section{margin:0 0 72px}
+h2{
+  font-family:var(--display);font-weight:800;font-size:13px;letter-spacing:.2em;
+  text-transform:uppercase;margin:0 0 6px;
+}
+.sub{font-family:var(--data);font-size:11.5px;color:var(--ink-soft);margin:0 0 22px;letter-spacing:.03em}
+h2::before{content:"";display:inline-block;width:26px;height:1.5px;background:var(--ink);vertical-align:middle;margin-right:10px}
+p{max-width:70ch}
+
+/* ---- depth legend ---- */
+.legend{display:flex;flex-wrap:wrap;gap:0;border:1px solid var(--rule);margin-bottom:26px}
+.legend div{flex:1 1 150px;padding:12px 14px;border-right:1px solid var(--rule);font-family:var(--data);font-size:11px;letter-spacing:.05em}
+.legend div:last-child{border-right:0}
+.legend i{display:block;height:8px;margin-bottom:8px;font-style:normal}
+
+/* ---- graph ---- */
+.chartframe{border:1.5px solid var(--ink);background:rgba(255,255,255,.5);padding:8px;overflow-x:auto}
+.mermaid{min-width:640px}
+
+/* ---- lanes ---- */
+.lanes{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1.5px solid var(--ink)}
+.lane{padding:22px}
+.lane+.lane{border-left:1.5px solid var(--ink)}
+.lane h3{font-family:var(--display);font-weight:800;font-size:18px;text-transform:uppercase;letter-spacing:-.01em;margin:0 0 3px}
+.lane .verifier{font-family:var(--data);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--magenta);margin-bottom:14px}
+.lane ul{margin:0;padding-left:17px;font-size:14.5px}
+.lane li{margin-bottom:6px}
+.lane .who{margin-top:14px;padding-top:12px;border-top:1px solid var(--rule);font-family:var(--data);font-size:11.5px;color:var(--ink-soft)}
+
+/* ---- stack ---- */
+.stack{border:1.5px solid var(--ink)}
+.layer{display:grid;grid-template-columns:180px 1fr;gap:18px;padding:15px 20px;border-bottom:1px solid var(--rule);align-items:start}
+.layer:last-child{border-bottom:0}
+.layer .name{font-family:var(--display);font-weight:800;font-size:13px;letter-spacing:.09em;text-transform:uppercase}
+.layer .name em{display:block;font-family:var(--data);font-weight:400;font-style:normal;font-size:10.5px;letter-spacing:.09em;color:var(--ink-soft);margin-top:4px}
+.layer .body{font-size:14.5px}
+.tag{display:inline-block;font-family:var(--data);font-size:10.5px;letter-spacing:.06em;padding:2px 7px;border:1px solid var(--rule);margin:3px 4px 0 0;background:var(--shoal)}
+.tag.no{border-color:var(--magenta);color:var(--magenta);background:transparent;text-decoration:line-through}
+
+/* ---- stage chain ---- */
+.chain{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin-bottom:8px}
+.stage{
+  flex:1 1 148px;border:1px solid var(--ink);padding:12px;background:rgba(255,255,255,.45);
+  font-family:var(--data);font-size:11.5px;line-height:1.45;
+}
+.stage b{display:block;font-family:var(--display);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:5px}
+.stage.missing{border:1.5px dashed var(--magenta);color:var(--magenta)}
+.stage.split{background:var(--shoal)}
+
+/* ---- findings ---- */
+.finding{border-left:2.5px solid var(--charted);padding:2px 0 2px 20px;margin-bottom:26px}
+.finding .id{font-family:var(--data);font-size:11px;letter-spacing:.12em;color:var(--charted);text-transform:uppercase}
+.finding h3{font-family:var(--display);font-weight:600;font-size:19px;margin:4px 0 8px;letter-spacing:-.01em}
+.finding p{font-size:15px;margin:0 0 8px}
+.finding .flip{font-family:var(--data);font-size:12px;color:var(--magenta);letter-spacing:.02em}
+
+/* ---- notices ---- */
+.notices{border:1.5px solid var(--magenta);padding:20px 22px;background:rgba(176,49,110,.045)}
+.notices h2{color:var(--magenta)}
+.notices h2::before{background:var(--magenta)}
+.notices ol{margin:0;padding-left:20px;font-size:14.5px}
+.notices li{margin-bottom:9px}
+.notices li::marker{font-family:var(--data);font-size:12px;color:var(--magenta)}
+
+/* ---- next ---- */
+.next{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:0;border:1.5px solid var(--ink)}
+.card{padding:20px;border-right:1px solid var(--rule)}
+.card:last-child{border-right:0}
+.card .id{font-family:var(--data);font-size:11px;letter-spacing:.12em;color:var(--magenta)}
+.card h3{font-family:var(--display);font-weight:600;font-size:17px;margin:5px 0 8px;line-height:1.2}
+.card p{font-size:14px;margin:0}
+.card .mode{margin-top:12px;font-family:var(--data);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-soft)}
+.gate{margin-top:22px;font-family:var(--data);font-size:12.5px;padding:14px 18px;border:1px solid var(--rule);background:var(--shoal)}
+
+footer{border-top:1.5px solid var(--ink);padding-top:16px;font-family:var(--data);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-soft);display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px}
+
+@media (max-width:720px){
+  .lanes{grid-template-columns:1fr}
+  .lane+.lane{border-left:0;border-top:1.5px solid var(--ink)}
+  .layer{grid-template-columns:1fr;gap:6px}
+  .card{border-right:0;border-bottom:1px solid var(--rule)}
+}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--magenta);outline-offset:3px}
+@media (prefers-reduced-motion:no-preference){
+  .reveal{opacity:0;transform:translateY(10px);transition:opacity .5s ease,transform .5s ease}
+  .reveal.in{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+
+<svg class="contours" aria-hidden="true" preserveAspectRatio="none" viewBox="0 0 1200 900">
+  <g fill="none" stroke="#12303A" stroke-opacity=".07" stroke-width="1">
+    <path d="M-50,120 C220,70 380,190 640,150 C880,112 1010,205 1260,168"/>
+    <path d="M-50,220 C210,168 400,285 660,248 C900,212 1030,300 1260,268"/>
+    <path d="M-50,340 C240,286 420,404 690,362 C930,324 1050,412 1260,382"/>
+    <path d="M-50,470 C230,414 440,530 700,492 C940,456 1070,540 1260,510"/>
+    <path d="M-50,610 C250,556 450,668 720,630 C960,594 1080,676 1260,648"/>
+    <path d="M-50,760 C240,706 460,818 730,780 C970,744 1090,822 1260,796"/>
+  </g>
+</svg>
+
+<div class="wrap">
+
+  <div class="titleblock">
+    <div class="bar">
+      <span>Factory Proving Map · CHARTED</span>
+      <span>Local-markdown tracker · porting is W-07</span>
+    </div>
+    <div class="main">
+      <h1>The way is clear<span class="thin">12 of 12 charted · nothing left to decide</span></h1>
+      <p class="dest">A software factory designed for multiple workload lanes and demonstrably working — proven by driving one real workload end to end, from ticket through agent execution to a merged, verified result. The map is exhausted: every decision is made. What remains is building.</p>
+    </div>
+    <div class="soundings">
+      <div class="sounding"><b>12</b><span>Tickets charted</span></div>
+      <div class="sounding"><b>12</b><span>Resolved</span></div>
+      <div class="sounding"><b>0</b><span>Frontier</span></div>
+      <div class="sounding"><b>3</b><span>Build-time only</span></div>
+    </div>
+  </div>
+
+  <section class="reveal">
+    <h2>The chart</h2>
+    <p class="sub">Depth encodes decision state. Everything flows downstream from W-01.</p>
+    <div class="legend">
+      <div><i style="background:var(--charted)"></i>Charted — resolved, evidence recorded</div>
+      <div><i style="background:var(--magenta)"></i>Frontier — takeable now, unblocked</div>
+      <div><i style="background:var(--deep)"></i>Deeper water — blocked on something above</div>
+      <div><i style="background:var(--fog)"></i>Fog — in scope, not yet sharp enough to ticket</div>
+    </div>
+    <div class="chartframe">
+      <pre class="mermaid">
+graph TD
+  W04["W-04 · gh-aw envelope"]:::done
+  W05["W-05 · Symphony port"]:::done
+  W06["W-06 · GPU substrate"]:::done
+  W01["W-01 · workload = drone detection<br/>(proving vehicle only)"]:::done
+  W07["W-07 · Linear board +<br/>Issues control plane"]:::done
+  W08["W-08 · hybrid: gh-aw +<br/>custom empirical runner"]:::done
+  W02["W-02 · empirical live,<br/>verifier = plugin"]:::done
+  W03["W-03 · adversarial suite +<br/>invariants"]:::done
+  W09["W-09 · 6 gates + 3 hardenings,<br/>self-eval"]:::done
+  W10["W-10 · 6-stage chain,<br/>ratchet closes it"]:::done
+  W11["W-11 · weekly ratchet,<br/>cheapest gate point"]:::done
+  W12["W-12 · 2 hard caps,<br/>fail-closed"]:::done
+  FOG(["build-time only · trust-lane boundaries ·<br/>AGENTS.md contents (ratchet fills) ·<br/>egress vs dataset downloads ← residual risk"]):::fog
+
+  W04 --> W08
+  W05 --> W08
+  W06 --> W08
+  W01 --> W02
+  W01 --> W03
+  W01 --> W09
+  W03 --> W09
+  W02 --> W10
+  W08 --> W11
+  W08 --> W12
+  W02 -.-> FOG
+  W08 -.-> FOG
+
+  classDef done fill:#DCEBE2,stroke:#2F6B4F,stroke-width:1.5px,color:#12303A;
+  classDef front fill:#FBE6EF,stroke:#B0316E,stroke-width:2px,color:#12303A;
+  classDef blocked fill:#C7DCD7,stroke:#4A6B72,stroke-width:1px,color:#12303A;
+  classDef fog fill:transparent,stroke:#9FB2AF,stroke-width:1px,stroke-dasharray:4 4,color:#4A6B72;
+      </pre>
+    </div>
+  </section>
+
+  <section class="reveal">
+    <h2>The split that shapes everything</h2>
+    <p class="sub">One substrate, two verifiers. Conflating them is the failure mode that sinks this.</p>
+    <div class="lanes">
+      <div class="lane">
+        <h3>Deterministic</h3>
+        <div class="verifier">Verifier: CI is ground truth</div>
+        <ul>
+          <li>Web, iOS, infra, sim harness code</li>
+          <li>Unit of work is a ticket → PR</li>
+          <li>"Done" means tests pass and a human approves</li>
+          <li>Failure mode: agent games the tests</li>
+        </ul>
+        <div class="who">gh-aw + CI already solves this well.</div>
+      </div>
+      <div class="lane">
+        <h3>Empirical</h3>
+        <div class="verifier">Verifier: gate harness on recorded evidence</div>
+        <ul>
+          <li>ML research, hill-climbing, sensor fusion</li>
+          <li>Unit of work is an experiment → adjudicated result</li>
+          <li>"Done" means the number survives the gates</li>
+          <li>Failure mode: seed noise, leakage, burnt holdout</li>
+        </ul>
+        <div class="who">Nothing off-the-shelf. This is where the factory earns its existence.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="reveal">
+    <h2>The stack</h2>
+    <p class="sub">Split these cleanly or you build a monolith you regret.</p>
+    <div class="stack">
+      <div class="layer">
+        <div class="name">Control plane<em>Symphony's model</em></div>
+        <div class="body">The issue tracker is where work lives. Agents are dispatched against tickets, not sessions. <span class="tag">Linear</span><span class="tag">GitHub Issues</span></div>
+      </div>
+      <div class="layer">
+        <div class="name">Outer loop<em>the dispatcher</em></div>
+        <div class="body">Poll → claim → workspace → spawn → stream → reconcile → backoff. Still undecided — that's W-08. <span class="tag">gh-aw</span><span class="tag">Symphony port</span><span class="tag">Copilot coding agent</span></div>
+      </div>
+      <div class="layer">
+        <div class="name">Inner surface<em>Factory's model</em></div>
+        <div class="body">What makes a repo legible to whatever agent arrives. <span class="tag">AGENTS.md</span><span class="tag">SKILL.md</span><span class="tag">hooks</span><span class="tag">subagents</span><span class="tag">MCP</span></div>
+      </div>
+      <div class="layer">
+        <div class="name">Verifier<em>lane-dependent</em></div>
+        <div class="body">CI for the deterministic lane; the ledger + gate harness for the empirical one. Never let the agent self-certify.</div>
+      </div>
+      <div class="layer">
+        <div class="name">Execution<em>two substrates</em></div>
+        <div class="body">Agent session and experiment run have opposite requirements — don't share a sandbox. <span class="tag">E2B / gh-aw container</span><span class="tag">Modal / Northflank GPU</span><span class="tag no">one box for both</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="reveal">
+    <h2>The per-unit-of-work loop</h2>
+    <p class="sub">Your proposed chain, with the gap marked. Stage 6 is the one that makes it a factory rather than a workflow.</p>
+    <div class="chain">
+      <div class="stage"><b>0 · Setup</b>Tracker + label vocabulary. Missing today — blocks 2 and 4.</div>
+      <div class="stage"><b>1 · Wayfinder</b>Decisions. Loops until the map is exhausted. Fires once.</div>
+      <div class="stage"><b>2 · To-tickets</b>Vertical slices. A translation, not a handoff — the ontologies differ.</div>
+    </div>
+    <div class="chain">
+      <div class="stage split"><b>3a · Implement</b>TDD → code. Deterministic lane only.</div>
+      <div class="stage split"><b>3b · Experiment</b>Run → gates → ledger. Empirical lane.</div>
+      <div class="stage"><b>4 · Review</b>Standards ∥ Spec, parallel, fresh context.</div>
+      <div class="stage"><b>5 · Architecture</b>Deepening candidates.</div>
+      <div class="stage missing"><b>6 · Ratchet</b>Findings become permanent gates. Missing. Feeds back into 3, not 1. → W-11</div>
+    </div>
+    <p style="font-size:14.5px;margin-top:14px">None of stages 1–5 is the dispatcher. They describe the shape of the loop, not the motor that fires it unattended.</p>
+  </section>
+
+  <section class="reveal">
+    <h2>Soundings taken</h2>
+    <p class="sub">Three research tickets closed. Two changed the plan.</p>
+
+    <div class="finding">
+      <div class="id">W-05 · resolved</div>
+      <h3>Don't port Symphony first</h3>
+      <p>OpenAI's TypeScript, Go, Rust, Java and Python implementations were ambiguity-hunting exercises to polish the spec — not production code. A real port runs weeks. The published sequence is: run the reference against a sandbox board and one non-critical repo, prove it on one high-volume ticket type, measure time-to-PR and reviewer hours, port later or never.</p>
+      <p>Three breakages for long jobs: in-memory scheduler state with no restart recovery; per-issue exponential backoff with no circuit breaker; a five-minute stall timeout that kills anything compute-bound.</p>
+      <p class="flip">↳ Flipped the prior recommendation from buy-then-build to run-the-reference-then-decide.</p>
+    </div>
+
+    <div class="finding">
+      <div class="id">W-04 · resolved</div>
+      <h3>gh-aw is excellent, and wrong for the empirical lane</h3>
+      <p>Five default-on security layers: read-only agent token, zero secrets in the agent process, containerised execution behind a kernel-level egress firewall, gated safe outputs with hard per-operation limits, and an AI threat-detection scan before anything is applied.</p>
+      <p>The disqualifier isn't the 360-minute cap — self-hosted runners lift that. It's the output model: safe outputs are GitHub objects, and an adjudicated experiment result is a ledger row plus artifacts.</p>
+      <p class="flip">↳ Corrected my assumption about which constraint actually binds.</p>
+    </div>
+
+    <div class="finding">
+      <div class="id">W-06 · resolved</div>
+      <h3>The agent and the experiment need different boxes</h3>
+      <p>Untrusted, model-bound, minutes, no GPU, active-CPU billing — versus trusted, compute-bound, hours, GPU required, wall-clock billing. Opposite on every axis. GPU sandboxes exist only on Modal, Northflank and Beam; E2B, Fly.io Sprites, Vercel, Cloudflare and Runloop have none.</p>
+      <p>Pattern: the agent submits a job and receives an artifact. It never holds GPU credentials — the same shape as Symphony's tracker tool and gh-aw's zero-secrets layer.</p>
+    </div>
+  </section>
+
+  <section class="reveal">
+    <div class="notices">
+      <h2>Notices to mariners</h2>
+      <p class="sub" style="margin-bottom:16px">Corrections and hazards. Read before acting on anything above.</p>
+      <ol>
+        <li><b>The prototype failed its own test.</b> The demo planted a seed-noise case and the gate called it real — correctly, because the forest genuinely beat the baseline. The scenario was miscalibrated, so the demo validated nothing. A gate harness with no eval of its own is exactly the failure mode it exists to prevent. Now W-09.</li>
+        <li><b>GPU pricing is vendor-sourced.</b> Most of the comparative numbers in W-06 come from Northflank's own blog. Re-verify before committing.</li>
+        <li><b>gh-aw self-describes as early development</b> that may change significantly. The security model is strong today; the API surface is not stable.</li>
+        <li><b>Review bandwidth is the ceiling.</b> Any design that raises agent concurrency without raising review capacity is rejected by default. Neither reference architecture gates dispatch on review-queue depth.</li>
+        <li><b>Your tracker is untrusted input.</b> Anyone who can file a ticket can prompt-inject the factory. Allowlist by label; only human-tagged tickets get picked up.</li>
+        <li><b>The workload is the acceptance test, not a demo.</b> A workload the factory handles comfortably has proven nothing.</li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="reveal">
+    <h2>The way is clear</h2>
+    <p class="sub">Map exhausted. This is the build order the decisions imply — not new choices, just sequence.</p>
+    <div class="next">
+      <div class="card">
+        <div class="id">build · 01</div>
+        <h3>Tracker + harness owner</h3>
+        <p>Provision per W-07: Linear board, Issues control plane, labels, CODEOWNERS trust lanes. Name the harness owner (~20% of one senior engineer) — the highest-leverage role.</p>
+        <div class="mode">foundation</div>
+      </div>
+      <div class="card">
+        <div class="id">build · 02</div>
+        <h3>Harden the prototype</h3>
+        <p>Take <span style="font-family:var(--data);font-size:12px">expfactory/</span> to v1: add the test-tamper gate, recalibrate too-good, make the holdout budget durable. Build the labeled adversarial suite (W-03 = W-09 eval set) with held-out fixtures.</p>
+        <div class="mode">the verifier is the hard part</div>
+      </div>
+      <div class="card">
+        <div class="id">build · 03</div>
+        <h3>Minimal empirical runner</h3>
+        <p>Symphony's loop, reimplemented per W-08, with the three fixes it lacks: durable restart state, global circuit breaker, compute-tuned stall timeout. Two-substrate execution; agent never holds GPU credentials.</p>
+        <div class="mode">motor</div>
+      </div>
+      <div class="card">
+        <div class="id">build · 04</div>
+        <h3>Run detection, turn the ratchet</h3>
+        <p>Drive drone-detection experiments through the six-stage chain. Every human intervention feeds the weekly ratchet (W-11). Pass = gates behave correctly, including rejecting every fake — not beating a benchmark.</p>
+        <div class="mode">proof</div>
+      </div>
+    </div>
+    <div class="gate">Residual risk to resolve at build time: <b>egress policy vs dataset downloads</b>. Default-deny outbound versus pulling weights from HuggingFace — resolve with a pinned mirror allowlist + checksums. This is the one design tension the map could not close from the desk.</div>
+  </section>
+
+  <footer>
+    <span>Factory Proving Map · 3 of 12 charted</span>
+    <span>Plan, don't do</span>
+  </footer>
+</div>
+
+<script type="module">
+import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+mermaid.initialize({
+  startOnLoad:true,
+  theme:'base',
+  themeVariables:{
+    fontFamily:"'IBM Plex Mono', monospace",
+    fontSize:'12px',
+    lineColor:'#4A6B72',
+    primaryTextColor:'#12303A'
+  },
+  flowchart:{curve:'basis',nodeSpacing:34,rankSpacing:46,padding:10}
+});
+</script>
+<script>
+if (matchMedia('(prefers-reduced-motion: no-preference)').matches) {
+  const io = new IntersectionObserver((es)=>{
+    es.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } });
+  },{threshold:.08});
+  document.querySelectorAll('.reveal').forEach((el,i)=>{
+    el.style.transitionDelay = Math.min(i*40,160)+'ms';
+    io.observe(el);
+  });
+} else {
+  document.querySelectorAll('.reveal').forEach(el=>el.classList.add('in'));
+}
+</script>
+</body>
+</html>
