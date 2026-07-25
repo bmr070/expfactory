@@ -225,7 +225,12 @@ sandbox, proxy injects the real token). This is invariant 6 implemented cleanly.
 - **LangGraph boundary:** "LangGraph as the outer loop orchestrating coding agents"
   stays rejected as a category error. "A coding agent *implemented in* LangGraph"
   is a different claim and is adopted. Do not collapse these.
-- **OPEN — M2-03:** the experiment queue. Now the load-bearing open ticket.
+- **DECIDED — M2-03:** no general-purpose orchestrator. Adopt the compute
+  substrate's job primitive (Modal `spawn` → durable handle → poll); build a thin
+  `JobRegistry` for outstanding submissions, deadlines, the breaker and cost
+  accounting. Metaflow declined because a second authoritative-looking artifact
+  store creates ambiguity about which record adjudicates; Prefect declined as
+  redundant and kept as the fallback behind the same interface.
 - **OPEN — M2-02:** orchestrator final pick, substantially narrowed.
 
 ---
@@ -287,12 +292,9 @@ quadratic code in `gate_reproducible` that no review comment had caught.
 
 | Ref | Question | Notes |
 |---|---|---|
-| M2-03 | Experiment queue: build, adopt, or does it not exist? | Load-bearing; Open SWE supplies none |
 | M2-02 | Orchestrator final pick | Narrowed by M2-07 |
-| M2-05 | Build G-07 + fixtures | Unblocked by M2-04 |
 | M2-06 | Where MLflow sits | De-risked to a placement question |
+| N-08 | Build the JobRegistry + ComputeSubstrate protocol | Unblocked by M2-03; load-bearing build |
 | M2-01 | Timeout / handoff test | **Downgraded to confirmatory**; needs the owner's machine |
-| — | Failure semantics across the split | If the queue loses a job, who notices? |
-| — | Ticket state during a six-hour run | Needs a "running, unattended" state |
 | — | Does L1 review the experiment or only the verdict? | Reviewing code ≠ reviewing a result |
 | — | Egress policy vs dataset downloads | Default-deny vs pulling weights; resolve with a mirror allowlist + checksum pinning. Residual security risk. |
