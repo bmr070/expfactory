@@ -41,6 +41,8 @@ _HARNESS_PATHS = (
     "holdout.py",
     # The boundary test CI runs. Editing it edits what "verified" means.
     "selfcheck.py",
+    # Holds the GPU credential and the cost caps; editing it edits the breaker.
+    "registry.py",
 )
 
 # Markers that suppress a test rather than fix it.
