@@ -169,3 +169,43 @@ def test_a_clean_lineage_passes_end_to_end(tmp_path: Path):
     bundle = verifier.run(_candidate(p.hash))
     assert bundle.promoted, bundle.blocked_by
     assert "prereg_churn" in bundle.gate_names
+
+
+# ---- hash stability across processes ---------------------------------------
+
+
+def test_prereg_hash_is_stable_across_a_fresh_interpreter():
+    """N-02 called this out specifically, and it is the whole mechanism.
+
+    A confirmatory run cites a preregistration filed by a *different* process —
+    the runner files it, an agent session cites it later. If the hash depended on
+    anything process-local (address-based hashing, dict iteration order, PYTHONHASHSEED)
+    every confirmatory run would fail to match its own rule, and the failure would
+    look like tampering rather than a bug.
+
+    Same-process equality cannot catch that, so this re-derives the hash in a
+    subprocess with hash randomisation explicitly enabled.
+    """
+    import os
+    import subprocess
+    import sys
+
+    expected = _prereg(0).hash
+
+    script = (
+        "from expfactory.prereg import Preregistration;"
+        "print(Preregistration("
+        "primary_metric='val_metric', direction='maximize', baseline_value=0.70,"
+        "minimum_effect=0.02, seeds=(0, 1, 2), parent_id='exp-parent-1',"
+        "decision_rule='attempt_0').hash)"
+    )
+    env = {**os.environ, "PYTHONHASHSEED": "random", "PYTHONPATH": "src"}
+    out = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=Path(__file__).resolve().parent.parent,
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == expected
