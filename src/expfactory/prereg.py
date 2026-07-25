@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -53,6 +54,44 @@ BASELINE_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
+class Guardrail:
+    """A metric that may only ever BLOCK a promotion, never earn one.
+
+    The asymmetry is the mechanism (M2-04): a metric can promote or block, never
+    both. Guardrails are the blocking half.
+
+    `direction` names which way is *better*, so "recall must not drop" and
+    "latency must not rise" are both expressible. An earlier form took a fixed
+    upper bound with lower-is-better assumed, which could not express the first
+    case at all and would have fired on every improvement.
+
+    The threshold is NOT declared here — it is the parent's recorded value, read
+    from the ledger. A guardrail whose threshold the agent names is decorative
+    for the same reason a declared baseline was (rule 8).
+
+    `tolerance` is the regression that is acceptable anyway, stated in advance.
+    """
+
+    metric: str
+    direction: Direction
+    tolerance: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.direction not in ("maximize", "minimize"):
+            raise ValueError(
+                f"guardrail {self.metric!r}: direction must be maximize|minimize, "
+                f"got {self.direction!r}"
+            )
+        if self.tolerance < 0:
+            raise ValueError("tolerance is a magnitude and must be >= 0")
+
+    def regressed(self, observed: float, parent: float) -> bool:
+        if self.direction == "maximize":
+            return observed < parent - self.tolerance
+        return observed > parent + self.tolerance
+
+
+@dataclass(frozen=True)
 class Preregistration:
     """A decision rule, fixed before the confirmatory run executes.
 
@@ -66,8 +105,8 @@ class Preregistration:
     minimum_effect: float
     seeds: tuple[int, ...]
     secondary_metrics: tuple[str, ...] = ()
-    # name -> upper bound the metric must not exceed. Guardrails only ever block.
-    guardrails: tuple[tuple[str, float], ...] = ()
+    # Metrics that may only block, never promote. See Guardrail.
+    guardrails: tuple[Guardrail, ...] = ()
     parent_id: str | None = None
     supersedes: str | None = None
     decision_rule: str = "mean_effect_meets_minimum"
@@ -79,10 +118,10 @@ class Preregistration:
             raise ValueError("minimum_effect is a magnitude and must be >= 0")
         if not self.seeds:
             raise ValueError("a confirmatory run must declare its seed set up front")
-        overlap = set(self.secondary_metrics) & {g[0] for g in self.guardrails}
+        overlap = set(self.secondary_metrics) & {g.metric for g in self.guardrails}
         if overlap:
             raise ValueError(f"metric cannot be both secondary and guardrail: {sorted(overlap)}")
-        if self.primary_metric in {g[0] for g in self.guardrails}:
+        if self.primary_metric in {g.metric for g in self.guardrails}:
             # the asymmetry, enforced rather than documented: promote XOR block
             raise ValueError(
                 f"{self.primary_metric!r} cannot be both the primary metric and a "
@@ -97,7 +136,7 @@ class Preregistration:
             "minimum_effect": self.minimum_effect,
             "seeds": list(self.seeds),
             "secondary_metrics": list(self.secondary_metrics),
-            "guardrails": [list(g) for g in self.guardrails],
+            "guardrails": [[g.metric, g.direction, g.tolerance] for g in self.guardrails],
             "parent_id": self.parent_id,
             "supersedes": self.supersedes,
             "decision_rule": self.decision_rule,
@@ -112,7 +151,7 @@ class Preregistration:
             minimum_effect=d["minimum_effect"],
             seeds=tuple(d["seeds"]),
             secondary_metrics=tuple(d.get("secondary_metrics", ())),
-            guardrails=tuple((g[0], g[1]) for g in d.get("guardrails", ())),
+            guardrails=tuple(Guardrail(g[0], g[1], g[2]) for g in d.get("guardrails", ())),
             parent_id=d.get("parent_id"),
             supersedes=d.get("supersedes"),
             decision_rule=d.get("decision_rule", "mean_effect_meets_minimum"),
@@ -160,6 +199,14 @@ class PreregContext:
     # The parent experiment's RECORDED metric, read from the ledger — never from
     # the preregistration. See the baseline rule in gate_preregistration.
     parent_metric: float | None = None
+    # Every metric the parent recorded, for guardrail regression checks.
+    parent_metrics: Mapping[str, float] = field(default_factory=dict)
+    # Ledger positions. `verdict_position` is None on a first verification, which
+    # is the normal case; it is set only when a verdict for this experiment was
+    # already recorded, which is when ordering has to be checked rather than
+    # inferred from append order.
+    prereg_position: int | None = None
+    verdict_position: int | None = None
 
 
 def gate_preregistration(
@@ -199,13 +246,31 @@ def gate_preregistration(
             blocking=True,
         )
 
-    # Rule 2 — it must already be on the ledger. This is the anti-HARKing proof.
+    # Rule 2 — the preregistration must precede the run. Anti-HARKing.
+    #
+    # Membership alone only asks "is it filed *now*", which is sound while a
+    # verdict is appended straight after verification. It is not sound for a
+    # verdict already on the ledger: that can be re-verified against a rule filed
+    # afterwards. So when a verdict exists, compare positions.
     if ctx.cited_hash not in ctx.filed_hashes:
         return GateResult(
             name,
             False,
             f"HARKING: prereg {ctx.cited_hash} is not in the ledger — it was not "
             "filed before this run",
+            blocking=True,
+        )
+    if (
+        ctx.verdict_position is not None
+        and ctx.prereg_position is not None
+        and ctx.prereg_position >= ctx.verdict_position
+    ):
+        return GateResult(
+            name,
+            False,
+            f"HARKING: prereg was filed at ledger position {ctx.prereg_position}, "
+            f"after this experiment's verdict at {ctx.verdict_position} — the rule "
+            "post-dates the result it claims to have predicted",
             blocking=True,
         )
 
@@ -233,18 +298,31 @@ def gate_preregistration(
 
     # Rule 6 — guardrails may only block. Checked before the primary so a
     # regression cannot be traded away against a headline gain.
-    for gname, bound in prereg.guardrails:
-        values = [metric_value(r, gname) for r in exp.runs]
+    for guard in prereg.guardrails:
+        values = [metric_value(r, guard.metric) for r in exp.runs]
         if any(v is None for v in values):
             return GateResult(
-                name, False, f"guardrail {gname!r} declared but not reported", blocking=True
+                name, False, f"guardrail {guard.metric!r} declared but not reported", blocking=True
             )
-        observed = _mean([v for v in values if v is not None])
-        if observed > bound:
+        parent_value = ctx.parent_metrics.get(guard.metric)
+        if parent_value is None:
+            # No parent value means no regression can be computed. Fail closed:
+            # an unmeasurable guardrail must not read as a satisfied one.
             return GateResult(
                 name,
                 False,
-                f"GUARDRAIL BREACH: {gname}={observed:.4f} exceeds declared bound {bound:.4f}",
+                f"guardrail {guard.metric!r} has no recorded value on parent "
+                f"{prereg.parent_id} — regression cannot be measured",
+                blocking=True,
+            )
+        observed = _mean([v for v in values if v is not None])
+        if guard.regressed(observed, parent_value):
+            slack = f" (tolerance {guard.tolerance:g})" if guard.tolerance else ""
+            return GateResult(
+                name,
+                False,
+                f"GUARDRAIL REGRESSION: {guard.metric} moved {parent_value:.4f} -> "
+                f"{observed:.4f}, the wrong way for {guard.direction}{slack}",
                 blocking=True,
             )
 

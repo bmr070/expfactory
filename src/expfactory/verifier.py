@@ -20,7 +20,7 @@ import json
 import subprocess
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from math import isnan
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -114,6 +114,22 @@ class Candidate:
 # --------------------------------------------------------------------------- #
 
 
+def _mean_metrics(runs: Sequence[RunResult]) -> dict[str, float]:
+    """Mean of every metric reported across runs, keyed by name.
+
+    A metric missing from some runs is averaged over the runs that reported it;
+    the gate separately requires a declared metric to be present in all of them,
+    so a partial average can never satisfy a preregistration by accident.
+    """
+    totals: dict[str, list[float]] = {}
+    for r in runs:
+        totals.setdefault("val_metric", []).append(r.val_metric)
+        for key, value in r.extra.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals.setdefault(key, []).append(float(value))
+    return {k: sum(v) / len(v) for k, v in totals.items()}
+
+
 @dataclass(frozen=True)
 class VerdictBundle:
     exp_id: str
@@ -130,6 +146,10 @@ class VerdictBundle:
     # row remains self-contained, and so G-08 can tell which filed rules never
     # produced a promotion.
     prereg_hash: str | None = None
+    # Mean of every metric the runs reported, primary and otherwise. Without this
+    # the row cannot answer "what did this score on latency", and a guardrail
+    # regression cannot be measured against a parent at all.
+    metrics: dict[str, float] = field(default_factory=dict)
 
     # -- named constructors: one per lane, so neither verifier hand-rolls the shape
 
@@ -151,6 +171,7 @@ class VerdictBundle:
             mean_metric=exp.mean_metric,
             cost_usd=exp.cost_usd,
             prereg_hash=prereg_hash,
+            metrics=_mean_metrics(exp.runs),
             artifact={
                 "exp_id": exp.exp_id,
                 "hypothesis": exp.hypothesis,
@@ -214,6 +235,7 @@ class VerdictBundle:
         if row.get("mean_metric") is None:
             row["mean_metric"] = float("nan")
         row.setdefault("prereg_hash", None)  # rows written before G-07 existed
+        row.setdefault("metrics", {})
         return cls(**row)
 
     def to_json(self) -> str:
@@ -252,6 +274,9 @@ class PreregStore(Protocol):
     def get_prereg(self, prereg_hash: str) -> Preregistration | None: ...
     def non_promoting_prereg_count(self, parent_id: str | None) -> int: ...
     def get_verdict_metric(self, exp_id: str) -> float | None: ...
+    def get_verdict_metrics(self, exp_id: str) -> dict[str, float]: ...
+    def position_of_prereg(self, prereg_hash: str) -> int | None: ...
+    def position_of_verdict(self, exp_id: str) -> int | None: ...
 
 
 class GateVerifier:
@@ -283,7 +308,7 @@ class GateVerifier:
         self._require_prereg = require_prereg
         self._prereg_store = prereg_store
 
-    def _prereg_ctx(self, candidate: Candidate) -> PreregContext:
+    def _prereg_ctx(self, candidate: Candidate, exp_id: str) -> PreregContext:
         store = self._prereg_store
         cited = candidate.prereg_hash
         record = store.get_prereg(cited) if (store and cited) else None
@@ -302,6 +327,13 @@ class GateVerifier:
                 if (store and record is not None and record.parent_id)
                 else None
             ),
+            parent_metrics=(
+                store.get_verdict_metrics(record.parent_id)
+                if (store and record is not None and record.parent_id)
+                else {}
+            ),
+            prereg_position=(store.position_of_prereg(cited) if (store and cited) else None),
+            verdict_position=(store.position_of_verdict(exp_id) if store else None),
         )
 
     def run(self, candidate: Candidate) -> VerdictBundle:
@@ -311,7 +343,7 @@ class GateVerifier:
         # G-07 (M2-04). Runs before the diff gates so a run that had no business
         # being promoted is rejected on its claim, not only on its diff.
         if self._require_prereg:
-            prereg_ctx = self._prereg_ctx(candidate)
+            prereg_ctx = self._prereg_ctx(candidate, exp.exp_id)
             exp.gates.append(gate_preregistration(exp, prereg_ctx=prereg_ctx))
             # G-08 sees across preregistrations, which G-07 structurally cannot.
             exp.gates.append(gate_prereg_churn(exp, prereg_ctx=prereg_ctx))
@@ -489,6 +521,29 @@ class Ledger:
             if isinstance(row.payload, VerdictBundle) and row.payload.exp_id == exp_id:
                 metric = row.payload.mean_metric
                 return None if isnan(metric) else metric
+        return None
+
+    def get_verdict_metrics(self, exp_id: str) -> dict[str, float]:
+        """Every metric the experiment recorded.
+
+        Guardrail thresholds come from here, never from the preregistration —
+        an agent-named threshold is decorative, the same defect rule 8 closed
+        for the baseline.
+        """
+        for row in reversed(self.rows()):
+            if isinstance(row.payload, VerdictBundle) and row.payload.exp_id == exp_id:
+                return dict(row.payload.metrics)
+        return {}
+
+    def position_of_verdict(self, exp_id: str) -> int | None:
+        """Where this experiment's verdict sits, or None if never recorded.
+
+        Paired with position_of_prereg, this is what turns rule 2 from an
+        assumption about append order into a comparison.
+        """
+        for row in self.rows():
+            if isinstance(row.payload, VerdictBundle) and row.payload.exp_id == exp_id:
+                return row.position
         return None
 
     def position_of_prereg(self, prereg_hash: str) -> int | None:

@@ -46,7 +46,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 110 tests
+pytest                              # 118 tests
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -94,6 +94,9 @@ not by reasoning. Breaking one silently guts the verification layer.
   readable by whatever language the runner ends up in.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would.
+- **Neither a baseline nor a guardrail threshold is agent-declared.** Both are
+  read from the parent's recorded verdict. A threshold the agent names is
+  decorative.
 - **A preregistration's baseline is read from the ledger, never from the prereg.**
   The agent authors the prereg; if it could also name the number it is measured
   against, G-07 would be theatre. A confirmatory run needs a recorded parent.

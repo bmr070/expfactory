@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from expfactory.prereg import Preregistration
+from expfactory.prereg import Guardrail, Preregistration
 from expfactory.verifier import Candidate, GateVerifier, Ledger, VerdictBundle
 
 PARENT = "exp-parent"
@@ -93,7 +93,10 @@ def test_prereg_survives_a_round_trip_through_the_ledger(tmp_path: Path):
     led = Ledger(tmp_path / "l.jsonl")
     # note: a metric may not hold two roles, so the secondary and the guardrail
     # have to be different metrics — the record enforces that at construction.
-    p = _prereg(secondary_metrics=("recall",), guardrails=(("latency_ms", 20.0),))
+    p = _prereg(
+        secondary_metrics=("recall",),
+        guardrails=(Guardrail("latency_ms", "minimize"),),
+    )
     led.append_prereg(p)
     restored = Ledger(tmp_path / "l.jsonl").get_prereg(p.hash)
     assert restored == p
@@ -296,3 +299,65 @@ def test_run_and_record_cannot_forge_a_baseline_through_the_pipeline(tmp_path: P
     )
     assert not bundle.promoted
     assert "preregistration" in bundle.blocked_by
+
+
+# ---- #8: ordering is proved by position, not membership --------------------
+
+
+def test_reverifying_a_recorded_verdict_against_a_later_prereg_is_blocked(tmp_path: Path):
+    """The hole membership leaves open.
+
+    Set membership only asks "is this prereg filed *now*". That is sound while a
+    verdict is appended straight after verification — but a verdict already on
+    the ledger can be re-verified against a preregistration filed afterwards,
+    which is HARKing with extra steps. Ordering has to be compared, not assumed.
+    """
+    led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
+
+    # a run happens and is recorded FIRST
+    v = GateVerifier(id_factory=lambda: "e1")
+    led.append(v.run(_candidate(metric=0.75, parent_id=PARENT)))
+
+    # only then is a rule filed that the recorded run happens to satisfy
+    late = _prereg()
+    led.append_prereg(late)
+
+    gated = GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e1")
+    bundle = gated.run(_candidate(metric=0.75, prereg_hash=late.hash, parent_id=PARENT))
+    assert not bundle.promoted
+    assert "preregistration" in bundle.blocked_by
+
+
+# ---- #9 prerequisite: the ledger must record every reported metric ---------
+
+
+def test_verdict_records_every_reported_metric(tmp_path: Path):
+    """A guardrail regression is measured against the parent's recorded value.
+
+    Today the row keeps only mean_metric, so every secondary and guardrail metric
+    is dropped at the boundary — and a row that cannot answer "what did this
+    score on latency" cannot support a regression check at all.
+    """
+    runs = [
+        dict(
+            seed=s,
+            val_metric=0.75,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+            extra={"latency_ms": 12.0, "recall": 0.6},
+        )
+        for s in range(3)
+    ]
+    cand = Candidate(hypothesis="h", config={}, code_hash="c", runs=runs, cost_usd=0.1)
+    bundle = GateVerifier(id_factory=lambda: "e1").run(cand)
+
+    assert bundle.metrics["val_metric"] == 0.75
+    assert bundle.metrics["latency_ms"] == 12.0
+    assert bundle.metrics["recall"] == 0.6
+
+    led = Ledger(tmp_path / "l.jsonl")
+    led.append(bundle)
+    assert led.all()[0].metrics["latency_ms"] == 12.0
