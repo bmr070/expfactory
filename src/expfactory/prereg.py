@@ -46,6 +46,11 @@ Direction = Literal["maximize", "minimize"]
 # key inside RunResult.extra.
 PRIMARY_FIELD = "val_metric"
 
+# How far a declared baseline may sit from the parent's recorded metric before it
+# is treated as forged. Tight on purpose: this is an equality check with room for
+# float round-trips through JSON, not a tolerance band.
+BASELINE_TOLERANCE = 1e-9
+
 
 @dataclass(frozen=True)
 class Preregistration:
@@ -152,6 +157,9 @@ class PreregContext:
     # How many preregistrations exist in this candidate's lineage that never
     # produced a promotion, including the current attempt. Drives G-08.
     lineage_attempts: int = 0
+    # The parent experiment's RECORDED metric, read from the ledger — never from
+    # the preregistration. See the baseline rule in gate_preregistration.
+    parent_metric: float | None = None
 
 
 def gate_preregistration(
@@ -239,6 +247,42 @@ def gate_preregistration(
                 f"GUARDRAIL BREACH: {gname}={observed:.4f} exceeds declared bound {bound:.4f}",
                 blocking=True,
             )
+
+    # Rule 8 — the declared baseline must match what the parent actually scored.
+    #
+    # Without this the gate is theatre. The agent writes its own preregistration,
+    # so it can declare baseline_value=0.0 and any result clears minimum_effect.
+    # `promoted` being underivable by the caller buys nothing if the caller picks
+    # the number it is compared against. The baseline is therefore read from the
+    # ledger, and the declaration only has to *agree* with it.
+    #
+    # A confirmatory run must descend from a recorded parent. You cannot claim an
+    # improvement over nothing: the first run of a lineage is exploratory by
+    # construction, and it is what establishes the baseline the next run cites.
+    if prereg.parent_id is None:
+        return GateResult(
+            name,
+            False,
+            "confirmatory run has no parent: a baseline nobody recorded cannot be "
+            "checked, so the claim is unverifiable. Run it as exploratory first.",
+            blocking=True,
+        )
+    if ctx.parent_metric is None:
+        return GateResult(
+            name,
+            False,
+            f"parent {prereg.parent_id} has no recorded result in the ledger — "
+            "nothing to measure the declared baseline against",
+            blocking=True,
+        )
+    if abs(ctx.parent_metric - prereg.baseline_value) > BASELINE_TOLERANCE:
+        return GateResult(
+            name,
+            False,
+            f"FORGED BASELINE: declared {prereg.baseline_value:.4f} but parent "
+            f"{prereg.parent_id} actually scored {ctx.parent_metric:.4f}",
+            blocking=True,
+        )
 
     # Rule 4 — the effect must meet the declared minimum, in the declared
     # direction, against the declared baseline. All three were fixed in advance.

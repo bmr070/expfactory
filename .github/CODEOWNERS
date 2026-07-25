@@ -22,7 +22,10 @@
 /src/expfactory/prereg.py              @bmr070
 /src/expfactory/holdout.py             @bmr070
 /src/expfactory/adversarial_suite.py   @bmr070
+/src/expfactory/selfcheck.py           @bmr070
 
 # CI is the enforcement surface; changing it changes what "green" means.
 /.github/workflows/    @bmr070
 /.github/CODEOWNERS    @bmr070
+# Tool config decides what lint/typecheck/test actually enforce.
+/pyproject.toml        @bmr070

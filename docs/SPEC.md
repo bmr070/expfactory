@@ -160,8 +160,22 @@ fake — only the **claim** is.
 Guardrails (latency) block only. Secondaries are recorded and never sufficient.
 
 Preregistration does not make metric-shopping impossible — it makes it
-**countable**. G-08 counts it. Ordering in the append-only ledger is the
-anti-HARKing proof: the prereg row must precede the run row.
+**countable**. G-08 counts it.
+
+**Rule 8 — the declared baseline is read from the ledger, not the prereg.** The
+agent writes its own preregistration, so without this it can declare
+`baseline_value=0.0` and promote anything. `promoted` being underivable by the
+caller buys nothing if the caller picks the number it is compared against. A
+confirmatory run must therefore descend from a **recorded** parent whose metric
+matches the declaration; the first run of a lineage is exploratory by
+construction, and it is what establishes the baseline.
+
+**Anti-HARKing, stated precisely.** The gate checks that the cited prereg is
+*already in the ledger at verification time*, which is set membership, not a
+position comparison. It is sound only because the verdict row is appended
+**after** verification, so anything already filed necessarily precedes the run.
+That is weaker than comparing recorded positions, and it does not cover
+re-verifying an already-appended verdict against a later-filed prereg. Tracked.
 
 **Wiring.** `GateVerifier(require_prereg=True, prereg_store=ledger)` turns G-07
 on; `Ledger` holds verdicts and preregistrations in one ordered log so positions

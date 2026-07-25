@@ -16,6 +16,7 @@ from expfactory.harness import Experiment, RunResult
 from expfactory.prereg import PreregContext, Preregistration, gate_preregistration
 
 BASELINE = 0.70
+PARENT = "exp-parent"
 
 
 def _prereg(**over: object) -> Preregistration:
@@ -25,6 +26,7 @@ def _prereg(**over: object) -> Preregistration:
         baseline_value=BASELINE,
         minimum_effect=0.02,
         seeds=(0, 1, 2),
+        parent_id=PARENT,
     )
     base.update(over)
     return Preregistration(**base)  # type: ignore[arg-type]
@@ -56,10 +58,20 @@ def _exp(
     return exp
 
 
-def _ctx(prereg: Preregistration, *, filed: bool = True, **over: object) -> PreregContext:
+def _ctx(
+    prereg: Preregistration,
+    *,
+    filed: bool = True,
+    parent_metric: float | None = BASELINE,
+    **over: object,
+) -> PreregContext:
+    # parent_metric stands in for what the ledger recorded for the parent. It is
+    # deliberately a separate argument from prereg.baseline_value so a test can
+    # make them disagree — that disagreement is rule 8's whole subject.
     return PreregContext(
         prereg=prereg,
         cited_hash=prereg.hash,
+        parent_metric=parent_metric,
         filed_hashes=frozenset({prereg.hash}) if filed else frozenset(),
         **over,  # type: ignore[arg-type]
     )
@@ -205,7 +217,7 @@ def test_minimize_direction_treats_a_lower_number_as_the_gain():
         primary_metric="loss", direction="minimize", baseline_value=1.00, minimum_effect=0.10
     )
     exp = _exp([0.0, 0.0, 0.0], extra={"loss": 0.85})
-    assert gate_preregistration(exp, prereg_ctx=_ctx(p)).passed
+    assert gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metric=1.00)).passed
 
 
 def test_minimize_direction_rejects_an_increase():
@@ -213,7 +225,7 @@ def test_minimize_direction_rejects_an_increase():
         primary_metric="loss", direction="minimize", baseline_value=1.00, minimum_effect=0.10
     )
     exp = _exp([0.0, 0.0, 0.0], extra={"loss": 1.20})
-    assert not gate_preregistration(exp, prereg_ctx=_ctx(p)).passed
+    assert not gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metric=1.00)).passed
 
 
 # ---- the hash is the mechanism ---------------------------------------------
@@ -229,3 +241,38 @@ def test_hash_changes_when_any_declared_term_changes():
     assert _prereg(direction="minimize").hash != base
     assert _prereg(seeds=(0, 1, 2, 3)).hash != base
     assert _prereg(baseline_value=0.71).hash != base
+
+
+# ---- rule 8: the declared baseline must match what the parent scored --------
+
+
+def test_forged_baseline_is_blocked():
+    """The hole this rule closes: the agent writes its own preregistration, so
+    without a check it can declare baseline_value=0.0 and promote garbage."""
+    p = _prereg(baseline_value=0.0)
+    result = gate_preregistration(_exp([0.05, 0.05, 0.05]), prereg_ctx=_ctx(p))
+    assert not result.passed
+    assert "FORGED BASELINE" in result.detail
+
+
+def test_a_worthless_result_cannot_promote_against_a_zero_baseline():
+    """End of the same thread, stated as behaviour: 0.05 macro-F1 is worse than
+    random and must never promote, whatever baseline was declared."""
+    p = _prereg(baseline_value=0.0, minimum_effect=0.02)
+    assert not gate_preregistration(_exp([0.05, 0.05, 0.05]), prereg_ctx=_ctx(p)).passed
+
+
+def test_confirmatory_run_without_a_parent_is_blocked():
+    """You cannot claim an improvement over nothing. The first run of a lineage
+    is exploratory by construction, and it establishes the baseline."""
+    p = _prereg(parent_id=None)
+    result = gate_preregistration(_exp([0.99, 0.99, 0.99]), prereg_ctx=_ctx(p))
+    assert not result.passed
+    assert "no parent" in result.detail
+
+
+def test_unrecorded_parent_is_blocked():
+    p = _prereg()
+    result = gate_preregistration(_exp([0.75, 0.75, 0.75]), prereg_ctx=_ctx(p, parent_metric=None))
+    assert not result.passed
+    assert "no recorded result" in result.detail
