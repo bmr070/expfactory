@@ -31,7 +31,12 @@ from expfactory.harness import (
     Experiment,
     RunResult,
 )
-from expfactory.prereg import PreregContext, Preregistration, gate_preregistration
+from expfactory.prereg import (
+    PreregContext,
+    Preregistration,
+    gate_prereg_churn,
+    gate_preregistration,
+)
 
 IdFactory = Callable[[], str]
 
@@ -120,11 +125,15 @@ class VerdictBundle:
     mean_metric: float
     cost_usd: float
     artifact: dict[str, Any]
+    # Which preregistration governed this verdict, if any. Recorded so the ledger
+    # row remains self-contained, and so G-08 can tell which filed rules never
+    # produced a promotion.
+    prereg_hash: str | None = None
 
     # -- named constructors: one per lane, so neither verifier hand-rolls the shape
 
     @classmethod
-    def from_experiment(cls, exp: Experiment) -> VerdictBundle:
+    def from_experiment(cls, exp: Experiment, prereg_hash: str | None = None) -> VerdictBundle:
         """Build the bundle for an adjudicated experiment.
 
         `promoted` is derived here from the gate results, and this is the only
@@ -140,6 +149,7 @@ class VerdictBundle:
             gate_names=tuple(g.name for g in exp.gates),
             mean_metric=exp.mean_metric,
             cost_usd=exp.cost_usd,
+            prereg_hash=prereg_hash,
             artifact={
                 "exp_id": exp.exp_id,
                 "hypothesis": exp.hypothesis,
@@ -202,6 +212,7 @@ class VerdictBundle:
         row["gate_names"] = tuple(row["gate_names"])
         if row.get("mean_metric") is None:
             row["mean_metric"] = float("nan")
+        row.setdefault("prereg_hash", None)  # rows written before G-07 existed
         return cls(**row)
 
     def to_json(self) -> str:
@@ -238,6 +249,7 @@ class PreregStore(Protocol):
 
     def prereg_hashes(self) -> frozenset[str]: ...
     def get_prereg(self, prereg_hash: str) -> Preregistration | None: ...
+    def non_promoting_prereg_count(self, parent_id: str | None) -> int: ...
 
 
 class GateVerifier:
@@ -277,6 +289,9 @@ class GateVerifier:
             exploratory=candidate.exploratory,
             filed_hashes=store.prereg_hashes() if store else frozenset(),
             cited_hash=cited,
+            lineage_attempts=(
+                store.non_promoting_prereg_count(candidate.parent_id) if store else 0
+            ),
         )
 
     def run(self, candidate: Candidate) -> VerdictBundle:
@@ -286,7 +301,10 @@ class GateVerifier:
         # G-07 (M2-04). Runs before the diff gates so a run that had no business
         # being promoted is rejected on its claim, not only on its diff.
         if self._require_prereg:
-            exp.gates.append(gate_preregistration(exp, prereg_ctx=self._prereg_ctx(candidate)))
+            prereg_ctx = self._prereg_ctx(candidate)
+            exp.gates.append(gate_preregistration(exp, prereg_ctx=prereg_ctx))
+            # G-08 sees across preregistrations, which G-07 structurally cannot.
+            exp.gates.append(gate_prereg_churn(exp, prereg_ctx=prereg_ctx))
         # Baseline-free calibration gate (ticket 03): always runs, catches the
         # single-lucky-seed case the baseline-dependent seed_variance gate misses.
         from expfactory.gates_v1 import gate_no_single_seed_dominance
@@ -299,7 +317,7 @@ class GateVerifier:
             from expfactory.gates_v1 import gate_no_test_tampering
 
             exp.gates.append(gate_no_test_tampering(candidate.diff))
-        return VerdictBundle.from_experiment(exp)
+        return VerdictBundle.from_experiment(exp, prereg_hash=candidate.prereg_hash)
 
 
 # --------------------------------------------------------------------------- #
@@ -427,6 +445,26 @@ class Ledger:
             if p.hash == prereg_hash:
                 return p
         return None
+
+    def non_promoting_prereg_count(self, parent_id: str | None) -> int:
+        """Preregistrations filed under `parent_id` that no promoted verdict cites.
+
+        Counts the current attempt too: its prereg is already filed (G-07 requires
+        that) and has not promoted yet, so a lineage on its fourth try reports 4.
+        """
+        rows = self.rows()
+        promoted = {
+            r.payload.prereg_hash
+            for r in rows
+            if isinstance(r.payload, VerdictBundle) and r.payload.promoted and r.payload.prereg_hash
+        }
+        return sum(
+            1
+            for r in rows
+            if isinstance(r.payload, Preregistration)
+            and r.payload.parent_id == parent_id
+            and r.payload.hash not in promoted
+        )
 
     def position_of_prereg(self, prereg_hash: str) -> int | None:
         for row in self.rows():

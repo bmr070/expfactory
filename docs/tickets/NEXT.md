@@ -14,12 +14,12 @@ still need infrastructure that does not exist yet.
 | N-01 | Ledger ordering becomes an explicit, tested guarantee | — | — | **DONE** |
 | N-02 | `Preregistration` record + `prereg_hash` / `exploratory` on `Candidate` | N-01 | — | **DONE** |
 | N-03 | G-07 preregistration gate + fixtures, wired into the verifier | N-02 | — | **DONE** |
-| N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | open |
+| N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | **DONE** |
 | N-05 | Resolve M2-03 — the experiment queue | — | grilling session | open |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
 
-**N-01/02/03 landed.** G-07 runs inside `GateVerifier` when constructed with
+**N-01/02/03/04 landed.** G-07 runs inside `GateVerifier` when constructed with
 `require_prereg=True`, backed by a `PreregStore` (which `Ledger` satisfies). The
 gate has 18 unit fixtures plus 9 suite fixtures across both partitions. Baseline
 measurement: visible 6/6, held-out 3/3.

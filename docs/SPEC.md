@@ -104,7 +104,7 @@ invisible above this line.
 
 ---
 
-## 5. The gate set   **BUILT except G-08**
+## 5. The gate set   **BUILT**
 
 | Gate | Catches | Blocking | Status |
 |---|---|---|---|
@@ -117,7 +117,7 @@ invisible above this line.
 | `no_single_seed_dominance` | one lucky seed carries the mean; needs no baseline | yes | BUILT |
 | `no_test_tampering` | diff weakens verification itself | yes | BUILT |
 | `G-07` preregistration | HARKing / metric-shopping | yes | **BUILT** |
-| `G-08` prereg churn | serial re-filing until one lands | yes | **DESIGNED** |
+| `G-08` prereg churn | serial re-filing until one lands | yes | **BUILT** |
 
 **Bloat control (W-09/W-11): every gate traces to a fixture.** A gate may be added
 only when a fixture proves the set misses something. No speculative gates.
@@ -138,7 +138,7 @@ Baseline, measured once before any gate tuning:
 | Suite | Visible | Held-out |
 |---|---|---|
 | core gates | 5/5 | 3/3 |
-| G-07 preregistration | 6/6 | 3/3 |
+| G-07 + G-08 preregistration | 7/7 | 3/3 |
 
 ---
 

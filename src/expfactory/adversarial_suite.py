@@ -195,6 +195,19 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
         seeds=(0, 1, 2),
         guardrails=(("latency_ms", 20.0),),
     )
+    churn_lineage = "lineage-shopping"
+    p_churn = [
+        Preregistration(
+            primary_metric="val_metric",
+            direction="maximize",
+            baseline_value=0.70,
+            minimum_effect=0.02,
+            seeds=(0, 1, 2),
+            parent_id=churn_lineage,
+            decision_rule=f"attempt_{n}",
+        )
+        for n in range(4)
+    ]
     p_unfiled = Preregistration(
         primary_metric="val_metric",
         direction="maximize",
@@ -268,6 +281,21 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
             cand("great number, exploratory", 0.99, exploratory=True),
         ),
         Fixture("p-nocite-1", "no_prereg", Expect.REJECT, cand("confirmatory with no rule", 0.95)),
+        # G-08. Each of the four rules in this lineage is individually honest and
+        # passes G-07; only counting across them reveals the shopping. Note the
+        # numbers here are *good* — the rejection is about the pattern, not the
+        # result.
+        Fixture(
+            "p-churn-1",
+            "prereg_churn",
+            Expect.REJECT,
+            cand(
+                "fourth rule filed, none landed",
+                0.75,
+                prereg_hash=p_churn[-1].hash,
+                parent_id=churn_lineage,
+            ),
+        ),
     ]
 
     heldout = [
@@ -295,4 +323,4 @@ def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
             cand("held exploratory", 0.97, exploratory=True),
         ),
     ]
-    return [p_ok, p_guard], Suite(visible, heldout)
+    return [p_ok, p_guard, *p_churn], Suite(visible, heldout)

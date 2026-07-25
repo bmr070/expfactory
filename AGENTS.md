@@ -44,7 +44,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 73 tests
+pytest                              # 83 tests
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
