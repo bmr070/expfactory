@@ -57,6 +57,16 @@ way to a promotion. Done when nothing is left to decide before someone builds it
   two-substrate split survives on design grounds.** OpenSymphony and Kata drop out as orchestrator
   candidates. LangSmith is a swappable default (`SANDBOX_TYPE`), so no collision with MLflow — set it
   explicitly. Steal the dummy-token proxy pattern regardless.
+- [M2-03 — Experiment queue: build, adopt, or does it not exist?](decisions/M2-03-RESOLVED-experiment-queue.md) —
+  **no general-purpose orchestrator.** Adopt the compute substrate's own job primitive (Modal
+  `spawn` → durable handle → poll) and build a thin `JobRegistry` holding outstanding submissions.
+  Metaflow declined on *safety*, not fit: its versioned-artifact store is what the ledger already is,
+  and installing a second store that also looks authoritative creates ambiguity about which record is
+  the truth — the exact thing this project removes. Prefect declined as redundant (Modal already
+  supplies the durable state) and retained as the named fallback behind the same interface if
+  concurrency outgrows a file. Celery/RQ declined on operational weight; "nothing" was already dead
+  via M2-07. The blocking edge to M2-01 was stale for the same reason. Revisit at >~10 concurrent
+  experiments or a second lane needing cross-job scheduling.
 - [M2-04 — How do you preregister an inherently exploratory hill-climb?](decisions/M2-04-RESOLVED-preregistration.md) —
   **preregister the decision rule, not the hypothesis**, and split runs into exploratory (free,
   unlimited, *structurally* unpromotable) versus confirmatory (prereg filed and hashed first, fixed
@@ -67,13 +77,13 @@ way to a promotion. Done when nothing is left to decide before someone builds it
 
 ## Not yet specified
 
-- **Failure semantics across the split.** If the experiment queue loses a job, who notices — the
-  orchestrator, the tracker, or nobody? Map I's circuit breaker was scoped to the runner.
-  *Sharpened by M2-07:* Open SWE supplies no cross-job breaker, so this is ours to build.
-- **Where the ticket's state lives during a six-hour run.** The tracker says "In Progress" but the
-  agent session ended hours ago. Needs a state that means "running, unattended."
 - **Whether L1 review sees the experiment or only the verdict.** Reviewing a training run's *code* is
   a different act from reviewing its *result*.
+
+<!-- resolved by M2-03: failure semantics (the JobRegistry notices, and only it can —
+     an unresolved entry past its deadline trips the breaker, goes needs-human, and is
+     never auto-retried) and ticket state during a long run (a `running-unattended`
+     state entered on detach and exited only by the registry). -->
 
 <!-- resolved: the observability collision. M2-07 established LangSmith is a swappable
      default, not a forced dependency; tracing, ML tracking and adjudication sit at three
@@ -81,9 +91,9 @@ way to a promotion. Done when nothing is left to decide before someone builds it
 
 ## Frontier — takeable now
 
-- **M2-05** — build the G-07 preregistration gate and its fixtures (unblocked by M2-04).
-- **M2-03** — experiment queue: build, adopt, or does it not exist? Now the *load-bearing* open
-  ticket, since M2-07 confirmed Open SWE does not supply one.
+- **N-08** — build the `JobRegistry` + `ComputeSubstrate` protocol (unblocked by M2-03). Now the
+  load-bearing *build*.
+- ~~M2-05~~ — G-07 and G-08 are built, wired and fixtured. Done.
 - **M2-01** — the timeout test. **Downgraded from blocking to confirmatory** by M2-07: the objection
   is not "will a long call be killed" but "should an agent session be the thing that waits," and that
   answer is no at any timeout value. Still cheap, still worth running. Needs the user's machine.
