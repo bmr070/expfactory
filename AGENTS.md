@@ -39,6 +39,7 @@ promoted, stop and re-read this paragraph.
 | `docs/MAP.md`, `docs/MAP2.md` | Closed decisions and open territory. |
 | `docs/decisions/` | One file per decision, with rationale. |
 | `provision/` | CODEOWNERS, labels — needs the owner's accounts, applied by hand. |
+| `docs/TRACKING.md` | Linear vs GitHub Issues, and the `agent-ready` dispatch rule. |
 
 ## Commands
 
