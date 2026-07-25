@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from holdout import HoldoutBudget, HoldoutExhausted
+from expfactory.holdout import HoldoutBudget, HoldoutExhausted
 
 
 def test_budget_starts_full(tmp_path: Path):

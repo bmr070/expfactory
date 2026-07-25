@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from harness import GateResult
+from expfactory.harness import GateResult
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,7 @@ def gate_no_single_seed_dominance(exp, dominance: float = 0.5, **_):
 
     Calibrated against the ticket-04 fixtures rather than a hand-picked delta.
     """
-    from harness import GateResult
+    from expfactory.harness import GateResult
     vals = sorted((r.val_metric for r in exp.runs), reverse=True)
     if len(vals) < 3:
         return GateResult("no_single_seed_dominance", False,

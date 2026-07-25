@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from verifier import (
+from expfactory.verifier import (
     Candidate,
     VerdictBundle,
     Verifier,

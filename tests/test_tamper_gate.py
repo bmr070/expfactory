@@ -11,7 +11,7 @@ Written RED: the gate does not exist yet.
 """
 from __future__ import annotations
 
-from gates_v1 import gate_no_test_tampering, DiffEvidence
+from expfactory.gates_v1 import gate_no_test_tampering, DiffEvidence
 
 
 def _clean_diff() -> DiffEvidence:

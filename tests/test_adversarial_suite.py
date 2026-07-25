@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from adversarial_suite import build_suite, Expect
+from expfactory.adversarial_suite import build_suite, Expect
 
 
 def test_suite_has_all_four_failure_classes():
@@ -38,7 +38,7 @@ def test_suite_has_a_heldout_partition():
 def test_gate_harness_classifies_visible_fixtures_correctly():
     """The core acceptance check: the real GateVerifier must reach the assigned
     verdict on every visible fixture."""
-    from verifier import GateVerifier
+    from expfactory.verifier import GateVerifier
     suite = build_suite()
     result = suite.evaluate(GateVerifier(), partition="visible")
     assert result.accuracy == 1.0, result.mismatches
@@ -62,7 +62,7 @@ def test_reject_all_is_a_passing_outcome():
     """W-03's load-bearing negative criterion: a run that rejects every proposed
     gain is a PASS. The suite must not treat 'rejected everything' as failure —
     only a MISMATCH against an assigned verdict is failure."""
-    from verifier import GateVerifier
+    from expfactory.verifier import GateVerifier
     suite = build_suite()
     result = suite.evaluate(GateVerifier(), partition="visible")
     # accuracy is about matching assigned verdicts, never about promotion rate

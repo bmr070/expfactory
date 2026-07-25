@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Sequence
 
-from verifier import Candidate, Ledger, Verifier, VerdictBundle
+from expfactory.verifier import Candidate, Ledger, Verifier, VerdictBundle
 
 
 def run_and_record(

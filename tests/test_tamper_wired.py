@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from verifier import Candidate, GateVerifier, Ledger
-from gates_v1 import DiffEvidence
-from pipeline import run_and_record
+from expfactory.verifier import Candidate, GateVerifier, Ledger
+from expfactory.gates_v1 import DiffEvidence
+from expfactory.pipeline import run_and_record
 
 
 def _good_runs():

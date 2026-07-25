@@ -24,7 +24,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score
 from sklearn.preprocessing import StandardScaler
 
-from harness import Ledger, RunResult, code_fingerprint, report, run_experiment
+from expfactory.harness import Ledger, RunResult, code_fingerprint, report, run_experiment
 
 N_FEATURES = 20
 RNG_DATA = 12345  # dataset generation is fixed; only model seeds vary

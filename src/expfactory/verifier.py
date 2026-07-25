@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol, Sequence, runtime_checkable
 
 # reuse the prototype's gate functions and run record unchanged
-from harness import (
+from expfactory.harness import (
     Experiment,
     RunResult,
     DEFAULT_GATES,
@@ -107,13 +107,13 @@ class GateVerifier:
         exp.gates = [g(exp, **ctx) for g in self._gates]
         # Baseline-free calibration gate (ticket 03): always runs, catches the
         # single-lucky-seed case the baseline-dependent seed_variance gate misses.
-        from gates_v1 import gate_no_single_seed_dominance
+        from expfactory.gates_v1 import gate_no_single_seed_dominance
         exp.gates.append(gate_no_single_seed_dominance(exp))
         # Diff-level gates run only when the candidate carries diff evidence.
         # The runner always supplies one; a candidate without a diff simply skips
         # them rather than crashing (backward compatible).
         if candidate.diff is not None:
-            from gates_v1 import gate_no_test_tampering
+            from expfactory.gates_v1 import gate_no_test_tampering
             exp.gates.append(gate_no_test_tampering(candidate.diff))
         promoted = not exp.blocked_by     # derived, never set
         return VerdictBundle(

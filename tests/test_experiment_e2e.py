@@ -13,15 +13,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline import run_and_record
-from verifier import GateVerifier, Ledger
+from expfactory.pipeline import run_and_record
+from expfactory.verifier import GateVerifier, Ledger
 
 
 def _tiny_train_fn(config, seed):
     """A deterministic, dependency-free training stub: metric is a pure function
     of config+seed, no leakage. Keeps the e2e test fast; the real sklearn path is
     exercised in the drone demo, not the unit suite."""
-    from verifier import Candidate  # local import to avoid cycle at module load
+    from expfactory.verifier import Candidate  # local import to avoid cycle at module load
     base = 0.75 + 0.02 * config.get("depth", 0)
     return dict(seed=seed, val_metric=base, train_ids_hash="train",
                 eval_ids_hash="eval", overlap_count=0, wall_seconds=0.0)

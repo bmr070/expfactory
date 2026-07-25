@@ -13,8 +13,8 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any
 
-from verifier import Candidate, Verifier
-from gates_v1 import DiffEvidence
+from expfactory.verifier import Candidate, Verifier
+from expfactory.gates_v1 import DiffEvidence
 
 
 class Expect(enum.Enum):
