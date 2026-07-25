@@ -210,3 +210,89 @@ def test_baseline_is_read_from_the_ledger_not_the_preregistration(tmp_path: Path
     bundle = v.run(_candidate(metric=0.05, prereg_hash=forged.hash, parent_id=PARENT))
     assert not bundle.promoted
     assert "preregistration" in bundle.blocked_by
+
+
+# ---- the production entry point, not just the verifier ---------------------
+
+
+def _train(metric: float):
+    def train_fn(config: dict[str, object], seed: int) -> dict[str, object]:
+        return dict(
+            seed=seed,
+            val_metric=metric,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+        )
+
+    return train_fn
+
+
+def test_run_and_record_can_satisfy_g07(tmp_path: Path):
+    """`run_and_record` is the only entry the runner calls. Before it carried the
+    preregistration fields, G-07 could not be satisfied through the production
+    path at all — every run failed rule 1 regardless of how honest it was."""
+    from expfactory.pipeline import run_and_record
+
+    led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led)
+    p = _prereg()
+    led.append_prereg(p)
+
+    bundle = run_and_record(
+        train_fn=_train(0.75),
+        hypothesis="wider head",
+        config={"width": 256},
+        code_hash="abc123",
+        seeds=(0, 1, 2),
+        verifier=GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e1"),
+        ledger=led,
+        parent_id=PARENT,
+        prereg_hash=p.hash,
+    )
+    assert bundle.promoted, bundle.blocked_by
+
+
+def test_run_and_record_marks_exploratory_unpromotable(tmp_path: Path):
+    """The rule that matters most through this path: an exploratory run is never
+    promoted, however good the number. Unenforceable here until now."""
+    from expfactory.pipeline import run_and_record
+
+    led = Ledger(tmp_path / "l.jsonl")
+    bundle = run_and_record(
+        train_fn=_train(0.99),
+        hypothesis="exploring",
+        config={},
+        code_hash="x",
+        seeds=(0, 1, 2),
+        verifier=GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e2"),
+        ledger=led,
+        exploratory=True,
+    )
+    assert not bundle.promoted
+    assert "preregistration" in bundle.blocked_by
+
+
+def test_run_and_record_cannot_forge_a_baseline_through_the_pipeline(tmp_path: Path):
+    """Rule 8 holds through the production path too, not just the verifier."""
+    from expfactory.pipeline import run_and_record
+
+    led = Ledger(tmp_path / "l.jsonl")
+    _seed_parent(led, metric=0.70)
+    forged = _prereg(baseline_value=0.0)
+    led.append_prereg(forged)
+
+    bundle = run_and_record(
+        train_fn=_train(0.05),
+        hypothesis="garbage",
+        config={},
+        code_hash="x",
+        seeds=(0, 1, 2),
+        verifier=GateVerifier(require_prereg=True, prereg_store=led, id_factory=lambda: "e3"),
+        ledger=led,
+        parent_id=PARENT,
+        prereg_hash=forged.hash,
+    )
+    assert not bundle.promoted
+    assert "preregistration" in bundle.blocked_by

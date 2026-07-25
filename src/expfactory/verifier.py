@@ -29,6 +29,7 @@ from typing import Any, Protocol, runtime_checkable
 from expfactory.harness import (
     DEFAULT_GATES,
     Experiment,
+    HoldoutSource,
     RunResult,
 )
 from expfactory.prereg import (
@@ -260,7 +261,7 @@ class GateVerifier:
         self,
         gates: Sequence[Callable[..., Any]] = DEFAULT_GATES,
         baseline: Experiment | None = None,
-        ledger_ctx: Any = None,
+        ledger_ctx: HoldoutSource | None = None,
         id_factory: IdFactory = new_exp_id,
         require_prereg: bool = False,
         prereg_store: PreregStore | None = None,

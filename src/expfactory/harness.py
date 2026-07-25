@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 # --------------------------------------------------------------------------- #
 # Records
@@ -89,7 +89,20 @@ class Experiment:
 # --------------------------------------------------------------------------- #
 
 
-class Ledger:
+@runtime_checkable
+class HoldoutSource(Protocol):
+    """What gate_holdout_budget actually needs: a count of holdout queries spent.
+
+    Typed as a protocol rather than a concrete Ledger so that passing the wrong
+    ledger is a type error. It used to be `Any`, and since two different classes
+    were both called `Ledger`, handing over the one without this method
+    type-checked cleanly and blew up at runtime.
+    """
+
+    def holdout_queries_used(self) -> int: ...
+
+
+class ExperimentLedger:
     """Append-only JSONL experiment log. This is the proof-of-work artifact a human
     reviews instead of re-reading the agent's narrative summary."""
 
@@ -198,7 +211,7 @@ def gate_reproducible(exp: Experiment, tolerance: float = 1e-6, **_: Any) -> Gat
 
 
 def gate_holdout_budget(
-    exp: Experiment, ledger: Ledger | None = None, budget: int = 10, **_: Any
+    exp: Experiment, ledger: HoldoutSource | None = None, budget: int = 10, **_: Any
 ) -> GateResult:
     """The lockbox. Every look at the true holdout leaks a little information into
     your model-selection process. Budget the looks; when they're gone, they're gone."""
@@ -246,7 +259,7 @@ def run_experiment(
     hypothesis: str,
     config: dict[str, Any],
     train_fn: Callable[[dict[str, Any], int], RunResult],
-    ledger: Ledger,
+    ledger: ExperimentLedger,
     seeds: Sequence[int] = (0, 1, 2),
     parent: Experiment | None = None,
     baseline: Experiment | None = None,
