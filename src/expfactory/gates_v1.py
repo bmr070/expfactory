@@ -9,6 +9,7 @@ verifier".
 
 Every gate here traces to a fixture in the ticket-04 suite (standing rule from W-09).
 """
+
 from __future__ import annotations
 
 import re
@@ -96,9 +97,8 @@ def _floor(lines: list[str]) -> int | None:
 # Baseline-free single-seed-dominance gate (ticket 03 recalibration)
 # --------------------------------------------------------------------------- #
 
-def gate_no_single_seed_dominance(
-    exp: Experiment, dominance: float = 0.5, **_: Any
-) -> GateResult:
+
+def gate_no_single_seed_dominance(exp: Experiment, dominance: float = 0.5, **_: Any) -> GateResult:
     """Reject a candidate whose apparent performance rests on one lucky seed.
 
     The prototype's seed_variance gate needs a baseline; with none, a single-seed
@@ -110,19 +110,23 @@ def gate_no_single_seed_dominance(
     """
     vals = sorted((r.val_metric for r in exp.runs), reverse=True)
     if len(vals) < 3:
-        return GateResult("no_single_seed_dominance", False,
-                          "need >=3 seeds to judge dominance", blocking=True)
+        return GateResult(
+            "no_single_seed_dominance", False, "need >=3 seeds to judge dominance", blocking=True
+        )
     n = len(vals)
     best, rest = vals[0], vals[1:]
     rest_mean = sum(rest) / len(rest)
     full_mean = sum(vals) / n
-    lift = full_mean - rest_mean            # how much the full mean sits above the rest
+    lift = full_mean - rest_mean  # how much the full mean sits above the rest
     # the single best seed contributes exactly (best - rest_mean)/n to the full mean
     single_seed_contrib = (best - rest_mean) / n
     frac = (single_seed_contrib / lift) if lift > 1e-12 else 0.0
     dominated = lift > 1e-9 and frac > dominance
     ok = not dominated
-    detail = ("balanced across seeds" if ok else
-              f"SEED LOTTERY: one seed ({best:.3f}) accounts for {frac:.0%} of the "
-              f"lift over rest-mean {rest_mean:.3f}")
+    detail = (
+        "balanced across seeds"
+        if ok
+        else f"SEED LOTTERY: one seed ({best:.3f}) accounts for {frac:.0%} of the "
+        f"lift over rest-mean {rest_mean:.3f}"
+    )
     return GateResult("no_single_seed_dominance", ok, detail, blocking=True)

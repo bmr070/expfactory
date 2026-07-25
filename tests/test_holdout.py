@@ -10,6 +10,7 @@ and refusing further holdout queries once exhausted even across a fresh process.
 Seam under test: HoldoutBudget(path, limit) — .query() / .remaining / reload.
 Written RED: HoldoutBudget does not exist.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

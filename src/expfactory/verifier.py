@@ -13,6 +13,7 @@ The seam is assumed to be a *process* boundary, not an in-process Python call
 round-trip through JSON without losing or silently altering a field — see
 `to_dict`/`from_dict` and the NaN handling there.
 """
+
 from __future__ import annotations
 
 import json
@@ -47,6 +48,7 @@ def new_exp_id() -> str:
 # Candidate: what a caller submits for verification
 # --------------------------------------------------------------------------- #
 
+
 def _coerce_run(value: RunResult | Mapping[str, Any], index: int) -> RunResult:
     """Normalise one run record, naming the offending index if it is malformed.
 
@@ -60,8 +62,7 @@ def _coerce_run(value: RunResult | Mapping[str, Any], index: int) -> RunResult:
         return value
     if not isinstance(value, Mapping):
         raise TypeError(
-            f"Candidate.runs[{index}]: expected RunResult or mapping, "
-            f"got {type(value).__name__}"
+            f"Candidate.runs[{index}]: expected RunResult or mapping, got {type(value).__name__}"
         )
     try:
         return RunResult(**value)
@@ -77,13 +78,11 @@ class Candidate:
     runs: Sequence[RunResult]
     cost_usd: float = 0.0
     parent_id: str | None = None
-    diff: Any = None                        # DiffEvidence | None; drives the tamper gate
+    diff: Any = None  # DiffEvidence | None; drives the tamper gate
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise through object.__setattr__, exactly once
-        object.__setattr__(
-            self, "runs", tuple(_coerce_run(r, i) for i, r in enumerate(self.runs))
-        )
+        object.__setattr__(self, "runs", tuple(_coerce_run(r, i) for i, r in enumerate(self.runs)))
 
     def experiment(self, exp_id: str) -> Experiment:
         """Project this candidate into the harness's Experiment record."""
@@ -102,6 +101,7 @@ class Candidate:
 # --------------------------------------------------------------------------- #
 # VerdictBundle: what every verifier returns (frozen — promotion cannot be forged)
 # --------------------------------------------------------------------------- #
+
 
 @dataclass(frozen=True)
 class VerdictBundle:
@@ -127,7 +127,7 @@ class VerdictBundle:
         """
         return cls(
             exp_id=exp.exp_id,
-            promoted=not exp.blocked_by,          # derived, never set
+            promoted=not exp.blocked_by,  # derived, never set
             blocked_by=tuple(exp.blocked_by),
             config=exp.config,
             code_hash=exp.code_hash,
@@ -139,8 +139,7 @@ class VerdictBundle:
                 "exp_id": exp.exp_id,
                 "hypothesis": exp.hypothesis,
                 "gates": [
-                    {"name": g.name, "passed": g.passed, "detail": g.detail}
-                    for g in exp.gates
+                    {"name": g.name, "passed": g.passed, "detail": g.detail} for g in exp.gates
                 ],
             },
         )
@@ -165,7 +164,7 @@ class VerdictBundle:
             code_hash=candidate.code_hash,
             seeds=tuple(r.seed for r in candidate.runs),
             gate_names=("ci_exit_code",),
-            mean_metric=float("nan"),          # no metric in the deterministic lane
+            mean_metric=float("nan"),  # no metric in the deterministic lane
             cost_usd=candidate.cost_usd,
             artifact={
                 "exp_id": exp_id,
@@ -212,6 +211,7 @@ class VerdictBundle:
 # The interface
 # --------------------------------------------------------------------------- #
 
+
 @runtime_checkable
 class Verifier(Protocol):
     def run(self, candidate: Candidate) -> VerdictBundle: ...
@@ -220,6 +220,7 @@ class Verifier(Protocol):
 # --------------------------------------------------------------------------- #
 # Implementation 1: empirical gate harness
 # --------------------------------------------------------------------------- #
+
 
 class GateVerifier:
     """Wraps the prototype's gate set behind the plugin boundary."""
@@ -243,12 +244,14 @@ class GateVerifier:
         # Baseline-free calibration gate (ticket 03): always runs, catches the
         # single-lucky-seed case the baseline-dependent seed_variance gate misses.
         from expfactory.gates_v1 import gate_no_single_seed_dominance
+
         exp.gates.append(gate_no_single_seed_dominance(exp))
         # Diff-level gates run only when the candidate carries diff evidence.
         # The runner always supplies one; a candidate without a diff simply skips
         # them rather than crashing (backward compatible).
         if candidate.diff is not None:
             from expfactory.gates_v1 import gate_no_test_tampering
+
             exp.gates.append(gate_no_test_tampering(candidate.diff))
         return VerdictBundle.from_experiment(exp)
 
@@ -256,6 +259,7 @@ class GateVerifier:
 # --------------------------------------------------------------------------- #
 # Implementation 2: deterministic CI adapter (proves the seam admits two impls)
 # --------------------------------------------------------------------------- #
+
 
 class ExitCodeVerifier:
     """Shells out to a command; exit 0 -> promoted. The deterministic lane's
@@ -286,6 +290,7 @@ class ExitCodeVerifier:
 # --------------------------------------------------------------------------- #
 # Ledger: append-only, reconstructs from row alone
 # --------------------------------------------------------------------------- #
+
 
 class Ledger:
     def __init__(self, path: str | Path) -> None:

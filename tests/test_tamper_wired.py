@@ -6,6 +6,7 @@ with its tests is BLOCKED by the same call the runner makes.
 
 Written RED: Candidate carries no diff today, and GateVerifier never consults one.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,8 +17,17 @@ from expfactory.verifier import Candidate, GateVerifier, Ledger
 
 
 def _good_runs():
-    return [dict(seed=s, val_metric=0.95, train_ids_hash="t", eval_ids_hash="e",
-                 overlap_count=0, wall_seconds=0.0) for s in range(5)]
+    return [
+        dict(
+            seed=s,
+            val_metric=0.95,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+        )
+        for s in range(5)
+    ]
 
 
 def test_tampering_candidate_blocked_through_verifier():
@@ -25,10 +35,14 @@ def test_tampering_candidate_blocked_through_verifier():
     The verifier must block it. Before this fix, it promoted."""
     v = GateVerifier()
     cand = Candidate(
-        hypothesis="green by cheating", config={}, code_hash="x",
-        runs=_good_runs(), cost_usd=0.1,
-        diff=DiffEvidence(added_lines=[], removed_lines=["    assert ap > 0.7"],
-                          touched_paths=["test_model.py"]),
+        hypothesis="green by cheating",
+        config={},
+        code_hash="x",
+        runs=_good_runs(),
+        cost_usd=0.1,
+        diff=DiffEvidence(
+            added_lines=[], removed_lines=["    assert ap > 0.7"], touched_paths=["test_model.py"]
+        ),
     )
     bundle = v.run(cand)
     assert bundle.promoted is False
@@ -39,10 +53,14 @@ def test_clean_candidate_still_promotes_through_verifier():
     """A candidate with a clean diff is unaffected — no false positive."""
     v = GateVerifier()
     cand = Candidate(
-        hypothesis="honest", config={}, code_hash="x",
-        runs=_good_runs(), cost_usd=0.1,
-        diff=DiffEvidence(added_lines=["    assert new_case()"], removed_lines=[],
-                          touched_paths=["test_model.py"]),
+        hypothesis="honest",
+        config={},
+        code_hash="x",
+        runs=_good_runs(),
+        cost_usd=0.1,
+        diff=DiffEvidence(
+            added_lines=["    assert new_case()"], removed_lines=[], touched_paths=["test_model.py"]
+        ),
     )
     assert v.run(cand).promoted is True
 
@@ -51,8 +69,9 @@ def test_candidate_without_diff_still_works():
     """Backward compatible: a candidate with no diff skips the tamper gate rather
     than crashing. (The runner always supplies one; older callers may not.)"""
     v = GateVerifier()
-    cand = Candidate(hypothesis="no diff", config={}, code_hash="x",
-                     runs=_good_runs(), cost_usd=0.1)
+    cand = Candidate(
+        hypothesis="no diff", config={}, code_hash="x", runs=_good_runs(), cost_usd=0.1
+    )
     assert v.run(cand).promoted is True
 
 
@@ -62,15 +81,28 @@ def test_tampering_blocked_end_to_end_through_pipeline(tmp_path: Path):
     led = Ledger(tmp_path / "l.jsonl")
 
     def train_fn(cfg, seed):
-        return dict(seed=seed, val_metric=0.95, train_ids_hash="t",
-                    eval_ids_hash="e", overlap_count=0, wall_seconds=0.0)
+        return dict(
+            seed=seed,
+            val_metric=0.95,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+        )
 
     bundle = run_and_record(
-        train_fn=train_fn, hypothesis="cheat", config={}, code_hash="x",
-        seeds=(0, 1, 2, 3, 4), verifier=GateVerifier(), ledger=led, cost_usd=0.1,
-        diff=DiffEvidence(added_lines=["@pytest.mark.skip"], removed_lines=[],
-                          touched_paths=["test_model.py"]),
+        train_fn=train_fn,
+        hypothesis="cheat",
+        config={},
+        code_hash="x",
+        seeds=(0, 1, 2, 3, 4),
+        verifier=GateVerifier(),
+        ledger=led,
+        cost_usd=0.1,
+        diff=DiffEvidence(
+            added_lines=["@pytest.mark.skip"], removed_lines=[], touched_paths=["test_model.py"]
+        ),
     )
     assert bundle.promoted is False
     assert "no_test_tampering" in bundle.blocked_by
-    assert led.all()[0].promoted is False   # recorded, immutable
+    assert led.all()[0].promoted is False  # recorded, immutable

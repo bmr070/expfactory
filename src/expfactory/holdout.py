@@ -6,6 +6,7 @@ This backs the budget with a file the runner owns. Every look at the true holdou
 spends one unit; once spent, spent — even across a fresh process. The runner holds
 this, never the agent, so an experiment cannot grant itself more holdout access.
 """
+
 from __future__ import annotations
 
 import json

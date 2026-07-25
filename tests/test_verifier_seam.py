@@ -9,6 +9,7 @@ Seams under test (confirmed before writing):
 
 Written RED: the prototype has no Verifier protocol and no deterministic adapter yet.
 """
+
 from __future__ import annotations
 
 import sys
@@ -27,6 +28,7 @@ from expfactory.verifier import (
 
 # ---- seam 1: the plugin boundary -------------------------------------------
 
+
 def test_verifier_run_returns_a_verdict_bundle():
     """The one contract the dispatcher sees: give a candidate, get a bundle
     with a boolean verdict and an artifact record. Nothing about gates leaks."""
@@ -36,8 +38,17 @@ def test_verifier_run_returns_a_verdict_bundle():
         config={"model": "logreg"},
         code_hash="abc123",
         # a trivially good candidate: 5 identical seeds, no leakage
-        runs=[dict(seed=s, val_metric=0.80, train_ids_hash="t", eval_ids_hash="e",
-                   overlap_count=0, wall_seconds=0.0) for s in range(5)],
+        runs=[
+            dict(
+                seed=s,
+                val_metric=0.80,
+                train_ids_hash="t",
+                eval_ids_hash="e",
+                overlap_count=0,
+                wall_seconds=0.0,
+            )
+            for s in range(5)
+        ],
         cost_usd=0.4,
     )
     bundle = v.run(cand)
@@ -51,9 +62,20 @@ def test_gate_verifier_rejects_leakage():
     not be promoted, whatever the metric says."""
     v = GateVerifier()
     cand = Candidate(
-        hypothesis="leaky", config={}, code_hash="x",
-        runs=[dict(seed=s, val_metric=0.99, train_ids_hash="t", eval_ids_hash="e",
-                   overlap_count=17, wall_seconds=0.0) for s in range(5)],
+        hypothesis="leaky",
+        config={},
+        code_hash="x",
+        runs=[
+            dict(
+                seed=s,
+                val_metric=0.99,
+                train_ids_hash="t",
+                eval_ids_hash="e",
+                overlap_count=17,
+                wall_seconds=0.0,
+            )
+            for s in range(5)
+        ],
         cost_usd=0.1,
     )
     bundle = v.run(cand)
@@ -62,6 +84,7 @@ def test_gate_verifier_rejects_leakage():
 
 
 # ---- seam 2: append-only ledger + reconstruction ---------------------------
+
 
 def test_ledger_is_append_only(tmp_path: Path):
     led = Ledger(tmp_path / "l.jsonl")
@@ -87,13 +110,25 @@ def test_promoted_experiment_reconstructs_from_row_alone(tmp_path: Path):
 
 # ---- seam 3: promoted is derived, never forged -----------------------------
 
+
 def test_caller_cannot_forge_promotion():
     """A caller must not be able to hand-set promoted=True on a failing candidate."""
     v = GateVerifier()
     leaky = Candidate(
-        hypothesis="forge", config={}, code_hash="x",
-        runs=[dict(seed=s, val_metric=0.99, train_ids_hash="t", eval_ids_hash="e",
-                   overlap_count=5, wall_seconds=0.0) for s in range(5)],
+        hypothesis="forge",
+        config={},
+        code_hash="x",
+        runs=[
+            dict(
+                seed=s,
+                val_metric=0.99,
+                train_ids_hash="t",
+                eval_ids_hash="e",
+                overlap_count=5,
+                wall_seconds=0.0,
+            )
+            for s in range(5)
+        ],
         cost_usd=0.1,
     )
     bundle = v.run(leaky)
@@ -104,6 +139,7 @@ def test_caller_cannot_forge_promotion():
 
 
 # ---- seam 4: two implementations, one interface ----------------------------
+
 
 def test_gate_and_exitcode_verifiers_are_substitutable():
     """The deterministic CI adapter satisfies the same Verifier contract as the
@@ -124,11 +160,23 @@ def test_exitcode_verifier_maps_exit_code_to_verdict():
 
 # ---- helpers ---------------------------------------------------------------
 
+
 def _trivial_good_candidate() -> Candidate:
     return Candidate(
-        hypothesis="baseline", config={"model": "logreg"}, code_hash="abc123",
-        runs=[dict(seed=s, val_metric=0.80, train_ids_hash="t", eval_ids_hash="e",
-                   overlap_count=0, wall_seconds=0.0) for s in range(5)],
+        hypothesis="baseline",
+        config={"model": "logreg"},
+        code_hash="abc123",
+        runs=[
+            dict(
+                seed=s,
+                val_metric=0.80,
+                train_ids_hash="t",
+                eval_ids_hash="e",
+                overlap_count=0,
+                wall_seconds=0.0,
+            )
+            for s in range(5)
+        ],
         cost_usd=0.4,
     )
 

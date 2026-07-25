@@ -12,6 +12,7 @@ and an accuracy, and the held-out partition is only reachable via an explicit ca
 
 Written RED: the suite module does not exist.
 """
+
 from __future__ import annotations
 
 from expfactory.adversarial_suite import Expect, build_suite
@@ -37,6 +38,7 @@ def test_gate_harness_classifies_visible_fixtures_correctly():
     """The core acceptance check: the real GateVerifier must reach the assigned
     verdict on every visible fixture."""
     from expfactory.verifier import GateVerifier
+
     suite = build_suite()
     result = suite.evaluate(GateVerifier(), partition="visible")
     assert result.accuracy == 1.0, result.mismatches
@@ -61,6 +63,7 @@ def test_reject_all_is_a_passing_outcome():
     gain is a PASS. The suite must not treat 'rejected everything' as failure —
     only a MISMATCH against an assigned verdict is failure."""
     from expfactory.verifier import GateVerifier
+
     suite = build_suite()
     result = suite.evaluate(GateVerifier(), partition="visible")
     # accuracy is about matching assigned verdicts, never about promotion rate

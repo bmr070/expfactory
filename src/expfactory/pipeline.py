@@ -5,6 +5,7 @@ run_and_record is the single entry the runner (ticket 07) calls per experiment:
 train the seeds, verify through the plugin, append one immutable row. Promotion
 stays derived inside the verifier; this function never sets it.
 """
+
 from __future__ import annotations
 
 import time
@@ -44,9 +45,7 @@ def run_and_record(
         try:
             runs.append(RunResult(**r))
         except TypeError as exc:
-            raise TypeError(
-                f"train_fn returned a malformed record for seed {seed}: {exc}"
-            ) from exc
+            raise TypeError(f"train_fn returned a malformed record for seed {seed}: {exc}") from exc
 
     candidate = Candidate(
         hypothesis=hypothesis,

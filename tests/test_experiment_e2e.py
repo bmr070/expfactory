@@ -9,6 +9,7 @@ Uses the real sklearn training path from the drone demo, so this is an integrati
 test through every layer of the empirical lane: train -> verify -> ledger.
 Written RED: run_and_record does not exist yet.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,8 +23,14 @@ def _tiny_train_fn(config, seed):
     of config+seed, no leakage. Keeps the e2e test fast; the real sklearn path is
     exercised in the drone demo, not the unit suite."""
     base = 0.75 + 0.02 * config.get("depth", 0)
-    return dict(seed=seed, val_metric=base, train_ids_hash="train",
-                eval_ids_hash="eval", overlap_count=0, wall_seconds=0.0)
+    return dict(
+        seed=seed,
+        val_metric=base,
+        train_ids_hash="train",
+        eval_ids_hash="eval",
+        overlap_count=0,
+        wall_seconds=0.0,
+    )
 
 
 def test_experiment_runs_and_appends_one_row(tmp_path: Path):
@@ -45,15 +52,20 @@ def test_experiment_runs_and_appends_one_row(tmp_path: Path):
 def test_row_carries_full_provenance(tmp_path: Path):
     led = Ledger(tmp_path / "ledger.jsonl")
     run_and_record(
-        train_fn=_tiny_train_fn, hypothesis="h", config={"model": "logreg", "depth": 0},
-        code_hash="deadbeef", seeds=(0, 1, 2, 3, 4),
-        verifier=GateVerifier(), ledger=led, cost_usd=0.4,
+        train_fn=_tiny_train_fn,
+        hypothesis="h",
+        config={"model": "logreg", "depth": 0},
+        code_hash="deadbeef",
+        seeds=(0, 1, 2, 3, 4),
+        verifier=GateVerifier(),
+        ledger=led,
+        cost_usd=0.4,
     )
     row = led.all()[0]
     assert row.config == {"model": "logreg", "depth": 0}
     assert row.code_hash == "deadbeef"
     assert row.seeds == (0, 1, 2, 3, 4)
-    assert row.gate_names            # verdicts present
+    assert row.gate_names  # verdicts present
     assert row.cost_usd == 0.4
 
 
@@ -62,9 +74,14 @@ def test_reconstruct_from_ledger_alone(tmp_path: Path):
     described by the row — no in-memory state, no narrative."""
     p = tmp_path / "ledger.jsonl"
     run_and_record(
-        train_fn=_tiny_train_fn, hypothesis="h", config={"depth": 3},
-        code_hash="c0ffee", seeds=(0, 1, 2), verifier=GateVerifier(),
-        ledger=Ledger(p), cost_usd=0.1,
+        train_fn=_tiny_train_fn,
+        hypothesis="h",
+        config={"depth": 3},
+        code_hash="c0ffee",
+        seeds=(0, 1, 2),
+        verifier=GateVerifier(),
+        ledger=Ledger(p),
+        cost_usd=0.1,
     )
     reopened = Ledger(p).all()
     assert len(reopened) == 1
@@ -76,9 +93,14 @@ def test_history_is_immutable_across_runs(tmp_path: Path):
     led = Ledger(tmp_path / "ledger.jsonl")
     for d in (0, 1, 2):
         run_and_record(
-            train_fn=_tiny_train_fn, hypothesis=f"depth-{d}", config={"depth": d},
-            code_hash=f"h{d}", seeds=(0, 1, 2), verifier=GateVerifier(),
-            ledger=led, cost_usd=0.1,
+            train_fn=_tiny_train_fn,
+            hypothesis=f"depth-{d}",
+            config={"depth": d},
+            code_hash=f"h{d}",
+            seeds=(0, 1, 2),
+            verifier=GateVerifier(),
+            ledger=led,
+            cost_usd=0.1,
         )
     rows = led.all()
     assert len(rows) == 3

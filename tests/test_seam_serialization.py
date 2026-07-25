@@ -10,6 +10,7 @@ assumed to sit behind a process boundary rather than an in-process Python call:
      including the deterministic lane's NaN metric, and the ledger it lands in
      must be *valid* JSON that a non-Python reader can parse.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,18 +31,30 @@ from expfactory.verifier import (
 
 
 def _run(seed: int, metric: float = 0.80) -> dict[str, object]:
-    return dict(seed=seed, val_metric=metric, train_ids_hash="t",
-                eval_ids_hash="e", overlap_count=0, wall_seconds=0.0)
+    return dict(
+        seed=seed,
+        val_metric=metric,
+        train_ids_hash="t",
+        eval_ids_hash="e",
+        overlap_count=0,
+        wall_seconds=0.0,
+    )
 
 
 def _candidate(**over: object) -> Candidate:
-    base = dict(hypothesis="h", config={"model": "logreg"}, code_hash="abc123",
-                runs=[_run(s) for s in range(5)], cost_usd=0.4)
+    base = dict(
+        hypothesis="h",
+        config={"model": "logreg"},
+        code_hash="abc123",
+        runs=[_run(s) for s in range(5)],
+        cost_usd=0.4,
+    )
     base.update(over)
     return Candidate(**base)  # type: ignore[arg-type]
 
 
 # ---- candidate 1: malformed data fails at the boundary ---------------------
+
 
 def test_mapping_runs_are_normalised_to_runresult():
     """Dicts are accepted at the edge but stored as typed records, so no gate
@@ -74,6 +87,7 @@ def test_non_mapping_run_is_rejected_with_its_type():
 
 
 # ---- candidate 2: the bundle is a serialization contract -------------------
+
 
 def test_bundle_round_trips_through_json():
     bundle = GateVerifier(id_factory=lambda: "fixed-id").run(_candidate())

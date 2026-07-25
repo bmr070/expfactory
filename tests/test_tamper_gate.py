@@ -9,6 +9,7 @@ the harness itself — must be BLOCKED, regardless of the number it reports.
 This is the empirical-lane analogue of "don't let the agent edit the verifier".
 Written RED: the gate does not exist yet.
 """
+
 from __future__ import annotations
 
 from expfactory.gates_v1 import DiffEvidence, gate_no_test_tampering

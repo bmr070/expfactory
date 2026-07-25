@@ -32,9 +32,11 @@ from typing import Any
 # Records
 # --------------------------------------------------------------------------- #
 
+
 @dataclass
 class RunResult:
     """One seed of one experiment."""
+
     seed: int
     val_metric: float
     train_ids_hash: str
@@ -55,6 +57,7 @@ class GateResult:
 @dataclass
 class Experiment:
     """A node in the search tree. Parent linkage gives you the hill-climb history."""
+
     exp_id: str
     parent_id: str | None
     hypothesis: str
@@ -84,6 +87,7 @@ class Experiment:
 # --------------------------------------------------------------------------- #
 # Ledger
 # --------------------------------------------------------------------------- #
+
 
 class Ledger:
     """Append-only JSONL experiment log. This is the proof-of-work artifact a human
@@ -121,6 +125,7 @@ class Ledger:
 # Gates — each returns GateResult; all are pure functions of recorded evidence
 # --------------------------------------------------------------------------- #
 
+
 def gate_no_leakage(exp: Experiment, **_: Any) -> GateResult:
     """Train/eval index sets must be disjoint. The single most common way an agent
     manufactures a breakthrough — usually by 'fixing' a preprocessing step that
@@ -134,29 +139,35 @@ def gate_no_leakage(exp: Experiment, **_: Any) -> GateResult:
     )
 
 
-def gate_seed_variance(exp: Experiment, baseline: Experiment | None = None,
-                       min_seeds: int = 3, z: float = 2.0, **_: Any) -> GateResult:
+def gate_seed_variance(
+    exp: Experiment,
+    baseline: Experiment | None = None,
+    min_seeds: int = 3,
+    z: float = 2.0,
+    **_: Any,
+) -> GateResult:
     """An improvement must exceed the noise band, not just the baseline mean.
     Most reported gains in an unsupervised hill-climb are seed lottery."""
     if len(exp.runs) < min_seeds:
-        return GateResult("seed_variance", False,
-                          f"need >={min_seeds} seeds, got {len(exp.runs)}")
+        return GateResult("seed_variance", False, f"need >={min_seeds} seeds, got {len(exp.runs)}")
     if baseline is None:
         return GateResult("seed_variance", True, "no baseline; recorded as reference")
 
     delta = exp.mean_metric - baseline.mean_metric
-    pooled = (exp.std_metric ** 2 + baseline.std_metric ** 2) ** 0.5
+    pooled = (exp.std_metric**2 + baseline.std_metric**2) ** 0.5
     band = z * pooled / (len(exp.runs) ** 0.5)
     ok = delta > band
     return GateResult(
-        "seed_variance", ok,
+        "seed_variance",
+        ok,
         f"delta={delta:+.4f} vs noise band {band:.4f} "
         f"({'real' if ok else 'INDISTINGUISHABLE FROM NOISE'})",
     )
 
 
-def gate_too_good(exp: Experiment, baseline: Experiment | None = None,
-                  implausible_delta: float = 0.15, **_: Any) -> GateResult:
+def gate_too_good(
+    exp: Experiment, baseline: Experiment | None = None, implausible_delta: float = 0.15, **_: Any
+) -> GateResult:
     """A single change yielding a huge jump is more often a bug than a discovery.
     Non-blocking: it escalates to a human rather than killing the branch."""
     if baseline is None:
@@ -164,9 +175,11 @@ def gate_too_good(exp: Experiment, baseline: Experiment | None = None,
     delta = exp.mean_metric - baseline.mean_metric
     ok = delta <= implausible_delta
     return GateResult(
-        "too_good_to_be_true", ok,
-        f"delta={delta:+.4f}" if ok else
-        f"delta={delta:+.4f} exceeds {implausible_delta} — ESCALATE, do not auto-promote",
+        "too_good_to_be_true",
+        ok,
+        f"delta={delta:+.4f}"
+        if ok
+        else f"delta={delta:+.4f} exceeds {implausible_delta} — ESCALATE, do not auto-promote",
         blocking=False,
     )
 
@@ -179,21 +192,27 @@ def gate_reproducible(exp: Experiment, tolerance: float = 1e-6, **_: Any) -> Gat
         by_seed.setdefault(r.seed, []).append(r.val_metric)
     bad = {s: v for s, v in by_seed.items() if len(v) > 1 and (max(v) - min(v)) > tolerance}
     ok = not bad
-    return GateResult("reproducible", ok,
-                      "deterministic" if ok else f"nondeterministic seeds: {sorted(bad)}")
+    return GateResult(
+        "reproducible", ok, "deterministic" if ok else f"nondeterministic seeds: {sorted(bad)}"
+    )
 
 
-def gate_holdout_budget(exp: Experiment, ledger: Ledger | None = None,
-                        budget: int = 10, **_: Any) -> GateResult:
+def gate_holdout_budget(
+    exp: Experiment, ledger: Ledger | None = None, budget: int = 10, **_: Any
+) -> GateResult:
     """The lockbox. Every look at the true holdout leaks a little information into
     your model-selection process. Budget the looks; when they're gone, they're gone."""
     if ledger is None:
         return GateResult("holdout_budget", True, "no ledger context", blocking=False)
     used = ledger.holdout_queries_used()
     ok = used < budget
-    return GateResult("holdout_budget", ok,
-                      f"{used}/{budget} holdout queries used" if ok else
-                      f"HOLDOUT BURNED ({used}/{budget}) — freeze and collect new data")
+    return GateResult(
+        "holdout_budget",
+        ok,
+        f"{used}/{budget} holdout queries used"
+        if ok
+        else f"HOLDOUT BURNED ({used}/{budget}) — freeze and collect new data",
+    )
 
 
 def gate_cost(exp: Experiment, max_usd: float = 25.0, **_: Any) -> GateResult:
@@ -214,6 +233,7 @@ DEFAULT_GATES: tuple[Callable[..., GateResult], ...] = (
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
+
 
 def code_fingerprint(*sources: str) -> str:
     h = hashlib.sha256()
@@ -268,8 +288,7 @@ def report(exp: Experiment, baseline: Experiment | None = None) -> str:
         f"experiment {exp.exp_id}  (parent: {exp.parent_id or 'root'})",
         f"  hypothesis : {exp.hypothesis}",
         f"  config     : {json.dumps(exp.config, sort_keys=True)}",
-        f"  metric     : {exp.mean_metric:.4f} ± {exp.std_metric:.4f}  "
-        f"over {len(exp.runs)} seeds",
+        f"  metric     : {exp.mean_metric:.4f} ± {exp.std_metric:.4f}  over {len(exp.runs)} seeds",
     ]
     if baseline is not None:
         lines.append(f"  vs baseline: {exp.mean_metric - baseline.mean_metric:+.4f}")

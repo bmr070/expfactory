@@ -7,6 +7,7 @@ partition tunes the gates; a held-out partition is consulted only to measure
 whether tuning generalised — the same holdout discipline the factory enforces on
 experiments, turned on the factory itself.
 """
+
 from __future__ import annotations
 
 import enum
@@ -25,7 +26,7 @@ class Expect(enum.Enum):
 @dataclass(frozen=True)
 class Fixture:
     id: str
-    kind: str            # genuine | seed_noise | leakage | holdout_burn
+    kind: str  # genuine | seed_noise | leakage | holdout_burn
     expect: Expect
     candidate: Candidate
 
@@ -48,14 +49,20 @@ class SuiteResult:
         return not self.mismatches
 
 
-def _runs(
-    metric: float, seeds: int = 5, overlap: int = 0, jitter: float = 0.0
-) -> list[RunResult]:
+def _runs(metric: float, seeds: int = 5, overlap: int = 0, jitter: float = 0.0) -> list[RunResult]:
     out: list[RunResult] = []
     for s in range(seeds):
-        m = metric + (jitter if s == 0 else 0.0)   # jitter only on one lucky seed
-        out.append(RunResult(seed=s, val_metric=m, train_ids_hash="t",
-                             eval_ids_hash="e", overlap_count=overlap, wall_seconds=0.0))
+        m = metric + (jitter if s == 0 else 0.0)  # jitter only on one lucky seed
+        out.append(
+            RunResult(
+                seed=s,
+                val_metric=m,
+                train_ids_hash="t",
+                eval_ids_hash="e",
+                overlap_count=overlap,
+                wall_seconds=0.0,
+            )
+        )
     return out
 
 
@@ -87,8 +94,9 @@ class Suite:
 
 
 def build_suite() -> Suite:
-    clean = DiffEvidence(added_lines=["    assert ok"], removed_lines=[],
-                         touched_paths=["test_m.py"])
+    clean = DiffEvidence(
+        added_lines=["    assert ok"], removed_lines=[], touched_paths=["test_m.py"]
+    )
 
     def cand(
         hyp: str,
@@ -96,36 +104,57 @@ def build_suite() -> Suite:
         cost: float = 0.4,
         diff: DiffEvidence = clean,
     ) -> Candidate:
-        return Candidate(hypothesis=hyp, config={"m": "x"}, code_hash=hyp,
-                         runs=runs, cost_usd=cost, diff=diff)
+        return Candidate(
+            hypothesis=hyp, config={"m": "x"}, code_hash=hyp, runs=runs, cost_usd=cost, diff=diff
+        )
 
     visible = [
         # genuine: clean, tight, reproducible -> promote
-        Fixture("v-genuine-1", "genuine", Expect.PROMOTE,
-                cand("genuine strong", _runs(0.85))),
-        Fixture("v-genuine-2", "genuine", Expect.PROMOTE,
-                cand("genuine modest", _runs(0.78))),
+        Fixture("v-genuine-1", "genuine", Expect.PROMOTE, cand("genuine strong", _runs(0.85))),
+        Fixture("v-genuine-2", "genuine", Expect.PROMOTE, cand("genuine modest", _runs(0.78))),
         # leakage: train/eval overlap -> reject regardless of metric
-        Fixture("v-leak-1", "leakage", Expect.REJECT,
-                cand("leaky great number", _runs(0.99, overlap=12))),
+        Fixture(
+            "v-leak-1",
+            "leakage",
+            Expect.REJECT,
+            cand("leaky great number", _runs(0.99, overlap=12)),
+        ),
         # holdout_burn: tamper diff (proxy for reaching into the lockbox) -> reject
-        Fixture("v-burn-1", "holdout_burn", Expect.REJECT,
-                cand("removed assertion", _runs(0.95),
-                     diff=DiffEvidence(added_lines=[], removed_lines=["    assert ap>0.7"],
-                                       touched_paths=["test_m.py"]))),
+        Fixture(
+            "v-burn-1",
+            "holdout_burn",
+            Expect.REJECT,
+            cand(
+                "removed assertion",
+                _runs(0.95),
+                diff=DiffEvidence(
+                    added_lines=[], removed_lines=["    assert ap>0.7"], touched_paths=["test_m.py"]
+                ),
+            ),
+        ),
         # seed_noise: single-seed spike, indistinguishable from noise band -> reject
-        Fixture("v-noise-1", "seed_noise", Expect.REJECT,
-                cand("one lucky seed", _runs(0.50, jitter=0.45))),
+        Fixture(
+            "v-noise-1",
+            "seed_noise",
+            Expect.REJECT,
+            cand("one lucky seed", _runs(0.50, jitter=0.45)),
+        ),
     ]
 
     heldout = [
-        Fixture("h-genuine-1", "genuine", Expect.PROMOTE,
-                cand("held genuine", _runs(0.82))),
-        Fixture("h-leak-1", "leakage", Expect.REJECT,
-                cand("held leaky", _runs(0.97, overlap=8))),
-        Fixture("h-burn-1", "holdout_burn", Expect.REJECT,
-                cand("held tamper", _runs(0.9),
-                     diff=DiffEvidence(added_lines=["@pytest.mark.skip"], removed_lines=[],
-                                       touched_paths=["test_m.py"]))),
+        Fixture("h-genuine-1", "genuine", Expect.PROMOTE, cand("held genuine", _runs(0.82))),
+        Fixture("h-leak-1", "leakage", Expect.REJECT, cand("held leaky", _runs(0.97, overlap=8))),
+        Fixture(
+            "h-burn-1",
+            "holdout_burn",
+            Expect.REJECT,
+            cand(
+                "held tamper",
+                _runs(0.9),
+                diff=DiffEvidence(
+                    added_lines=["@pytest.mark.skip"], removed_lines=[], touched_paths=["test_m.py"]
+                ),
+            ),
+        ),
     ]
     return Suite(visible, heldout)
