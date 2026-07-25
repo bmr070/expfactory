@@ -149,6 +149,9 @@ class PreregContext:
     # here necessarily precedes this run.
     filed_hashes: frozenset[str] = field(default_factory=frozenset)
     cited_hash: str | None = None
+    # How many preregistrations exist in this candidate's lineage that never
+    # produced a promotion, including the current attempt. Drives G-08.
+    lineage_attempts: int = 0
 
 
 def gate_preregistration(
@@ -260,3 +263,59 @@ def gate_preregistration(
         f"{len(prereg.guardrails)} guardrail(s) held"
     )
     return GateResult(name, True, detail, blocking=True)
+
+
+# --------------------------------------------------------------------------- #
+# G-08 — preregistration churn (ticket N-04)
+# --------------------------------------------------------------------------- #
+
+# How many preregistrations may exist in one lineage, INCLUDING the current
+# attempt, before the pattern is better explained as metric-shopping than as
+# honest revision.
+#
+# Calibrated against the fixtures in tests/test_prereg_churn.py rather than
+# picked: one prior revision is routine, two is plausible, a fourth attempt after
+# three that never promoted is the S-hacking signature the literature describes.
+# Re-calibrate against real lineages once there are any — a threshold tuned on
+# synthetic fixtures is a starting point, not a finding.
+DEFAULT_MAX_ATTEMPTS = 3
+
+
+def gate_prereg_churn(
+    exp: Experiment,
+    prereg_ctx: PreregContext | None = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    **_: Any,
+) -> GateResult:
+    """G-08 — block serial re-filing until something lands.
+
+    G-07 makes each individual preregistration honest: the rule was fixed before
+    the run. It cannot see the pattern *across* preregistrations. An agent may
+    file eight rules naming eight primary metrics and promote on the eighth, and
+    every one of those eight passes G-07.
+
+    This gate counts. A lineage accumulating preregistrations that never promote
+    is metric-shopping regardless of how each one looked in isolation.
+
+    Exploratory runs are exempt: exploration is supposed to be unlimited, and it
+    cannot promote anyway.
+    """
+    name = "prereg_churn"
+    ctx = prereg_ctx or PreregContext()
+
+    if ctx.exploratory:
+        return GateResult(name, True, "exploratory: churn not counted", blocking=True)
+
+    attempts = ctx.lineage_attempts
+    if attempts > max_attempts:
+        return GateResult(
+            name,
+            False,
+            f"S-HACKING: {attempts} preregistrations filed in this lineage with no "
+            f"promotion (limit {max_attempts}) — escalate; the search is shopping "
+            "for a metric, not testing one",
+            blocking=True,
+        )
+    return GateResult(
+        name, True, f"{attempts}/{max_attempts} preregistration attempts in lineage", blocking=True
+    )

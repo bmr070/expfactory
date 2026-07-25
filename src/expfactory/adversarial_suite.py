@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
+from typing import Any
 
 from expfactory.gates_v1 import DiffEvidence
 from expfactory.harness import RunResult
+from expfactory.prereg import Preregistration
 from expfactory.verifier import Candidate, Verifier
 
 
@@ -158,3 +160,167 @@ def build_suite() -> Suite:
         ),
     ]
     return Suite(visible, heldout)
+
+
+# --------------------------------------------------------------------------- #
+# G-07 fixtures (ticket N-03)
+#
+# Invariant 4 says every gate traces to a fixture *in the adversarial suite*, not
+# merely to a unit test. G-07 needs its own builder because its fixtures are only
+# meaningful against a verifier configured with require_prereg=True and a store
+# holding the preregistrations — a configuration the base suite deliberately does
+# not use.
+# --------------------------------------------------------------------------- #
+
+
+def build_prereg_suite() -> tuple[list[Preregistration], Suite]:
+    """Return the preregistrations that must be filed first, plus the suite.
+
+    The caller files `preregs` into a ledger, points a verifier at it, and then
+    evaluates. Filing order is the point: a fixture that cites an unfiled prereg
+    must reject, so `p_unfiled` is deliberately absent from the returned list.
+    """
+    p_ok = Preregistration(
+        primary_metric="val_metric",
+        direction="maximize",
+        baseline_value=0.70,
+        minimum_effect=0.02,
+        seeds=(0, 1, 2),
+    )
+    p_guard = Preregistration(
+        primary_metric="val_metric",
+        direction="maximize",
+        baseline_value=0.70,
+        minimum_effect=0.02,
+        seeds=(0, 1, 2),
+        guardrails=(("latency_ms", 20.0),),
+    )
+    churn_lineage = "lineage-shopping"
+    p_churn = [
+        Preregistration(
+            primary_metric="val_metric",
+            direction="maximize",
+            baseline_value=0.70,
+            minimum_effect=0.02,
+            seeds=(0, 1, 2),
+            parent_id=churn_lineage,
+            decision_rule=f"attempt_{n}",
+        )
+        for n in range(4)
+    ]
+    p_unfiled = Preregistration(
+        primary_metric="val_metric",
+        direction="maximize",
+        baseline_value=0.70,
+        minimum_effect=0.02,
+        seeds=(0, 1, 2),
+        decision_rule="never_filed",
+    )
+
+    def runs(
+        metric: float, seeds: tuple[int, ...], extra: dict[str, float] | None = None
+    ) -> list[RunResult]:
+        return [
+            RunResult(
+                seed=s,
+                val_metric=metric,
+                train_ids_hash="t",
+                eval_ids_hash="e",
+                overlap_count=0,
+                wall_seconds=0.0,
+                extra=dict(extra or {}),
+            )
+            for s in seeds
+        ]
+
+    def cand(hyp: str, metric: float, seeds: tuple[int, ...] = (0, 1, 2), **over: Any) -> Candidate:
+        return Candidate(
+            hypothesis=hyp,
+            config={"m": "x"},
+            code_hash=hyp,
+            runs=runs(metric, seeds, over.pop("extra", None)),
+            cost_usd=0.4,
+            **over,
+        )
+
+    visible = [
+        Fixture(
+            "p-genuine-1",
+            "prereg_clean",
+            Expect.PROMOTE,
+            cand("filed and met", 0.75, prereg_hash=p_ok.hash),
+        ),
+        # the headline mode: primary flat against the declared baseline
+        Fixture(
+            "p-swap-1",
+            "metric_swap",
+            Expect.REJECT,
+            cand(
+                "primary flat, latency better",
+                0.70,
+                prereg_hash=p_ok.hash,
+                extra={"latency_ms": 5.0},
+            ),
+        ),
+        Fixture(
+            "p-hark-1",
+            "harking",
+            Expect.REJECT,
+            cand("filed after the fact", 0.80, prereg_hash=p_unfiled.hash),
+        ),
+        Fixture(
+            "p-seedshop-1",
+            "seed_shop",
+            Expect.REJECT,
+            cand("reported the best two", 0.80, seeds=(0, 1), prereg_hash=p_ok.hash),
+        ),
+        Fixture(
+            "p-explore-1",
+            "exploratory",
+            Expect.REJECT,
+            cand("great number, exploratory", 0.99, exploratory=True),
+        ),
+        Fixture("p-nocite-1", "no_prereg", Expect.REJECT, cand("confirmatory with no rule", 0.95)),
+        # G-08. Each of the four rules in this lineage is individually honest and
+        # passes G-07; only counting across them reveals the shopping. Note the
+        # numbers here are *good* — the rejection is about the pattern, not the
+        # result.
+        Fixture(
+            "p-churn-1",
+            "prereg_churn",
+            Expect.REJECT,
+            cand(
+                "fourth rule filed, none landed",
+                0.75,
+                prereg_hash=p_churn[-1].hash,
+                parent_id=churn_lineage,
+            ),
+        ),
+    ]
+
+    heldout = [
+        Fixture(
+            "hp-genuine-1",
+            "prereg_clean",
+            Expect.PROMOTE,
+            cand("held filed and met", 0.78, prereg_hash=p_guard.hash, extra={"latency_ms": 11.0}),
+        ),
+        Fixture(
+            "hp-guardrail-1",
+            "guardrail",
+            Expect.REJECT,
+            cand(
+                "real gain, latency blown",
+                0.85,
+                prereg_hash=p_guard.hash,
+                extra={"latency_ms": 44.0},
+            ),
+        ),
+        Fixture(
+            "hp-explore-1",
+            "exploratory",
+            Expect.REJECT,
+            cand("held exploratory", 0.97, exploratory=True),
+        ),
+    ]
+    return [p_ok, p_guard, *p_churn], Suite(visible, heldout)

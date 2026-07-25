@@ -25,7 +25,7 @@ of recorded evidence and never something a caller can assert.
 ```bash
 pip install -e ".[dev]"
 
-pytest                            # 43 tests
+pytest                            # 83 tests
 mypy                              # strict across the verification core
 ruff check src tests
 python -m expfactory.selfcheck    # boundary test: known-answer fixtures
@@ -73,7 +73,8 @@ factory, not a product.
 | `cost` | per-experiment spend |
 | `no_single_seed_dominance` | one lucky seed carrying the mean (baseline-free) |
 | `no_test_tampering` | diffs that weaken verification itself |
-| `G-07` preregistration | HARKing / metric-shopping — *designed, not yet built* |
+| `G-07` preregistration | HARKing / metric-shopping (opt in with `require_prereg=True`) |
+| `G-08` prereg churn | serial re-filing until one lands (opt in with `require_prereg=True`) |
 
 Every gate traces to a fixture in the adversarial suite. New gates are added only
 when a fixture proves the set misses something.

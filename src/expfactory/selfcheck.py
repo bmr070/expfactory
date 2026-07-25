@@ -29,13 +29,29 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
+from pathlib import Path
 
-from expfactory.adversarial_suite import SuiteResult, build_suite
-from expfactory.verifier import GateVerifier
+from expfactory.adversarial_suite import SuiteResult, build_prereg_suite, build_suite
+from expfactory.verifier import GateVerifier, Ledger
 
 
 def run(partition: str = "visible") -> SuiteResult:
     return build_suite().evaluate(GateVerifier(), partition=partition)
+
+
+def run_prereg(partition: str = "visible") -> SuiteResult:
+    """G-07's fixtures need a verifier configured for the hill-climb workflow —
+    require_prereg=True, with the declared preregistrations already filed. Filing
+    happens here rather than in the fixtures because *when* a prereg was filed is
+    the thing under test."""
+    preregs, suite = build_prereg_suite()
+    with tempfile.TemporaryDirectory() as tmp:
+        ledger = Ledger(Path(tmp) / "suite.jsonl")
+        for prereg in preregs:
+            ledger.append_prereg(prereg)
+        verifier = GateVerifier(require_prereg=True, prereg_store=ledger)
+        return suite.evaluate(verifier, partition=partition)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -52,17 +68,21 @@ def main(argv: list[str] | None = None) -> int:
         print("!! held-out partition: this is a measurement, not a tuning signal.")
         print("!! If it fails, do NOT tune until it passes. Record and think.\n")
 
-    result = run(partition)
+    suites = [("core gates", run(partition)), ("G-07 preregistration", run_prereg(partition))]
+
     print(f"partition : {partition}")
-    print(f"fixtures  : {result.correct}/{result.total} classified correctly")
-    for m in result.mismatches:
-        print(f"  MISMATCH  {m}")
+    ok = True
+    for label, result in suites:
+        print(f"  {label:<22} {result.correct}/{result.total} classified correctly")
+        for m in result.mismatches:
+            print(f"    MISMATCH  {m}")
+        ok = ok and result.is_pass
 
     # A pass is "matched every assigned verdict" — NOT "promoted something".
     # Rejecting every candidate is a pass when every candidate was meant to be
     # rejected (W-03's load-bearing negative criterion).
-    print("verdict   :", "PASS" if result.is_pass else "FAIL")
-    return 0 if result.is_pass else 1
+    print("verdict   :", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

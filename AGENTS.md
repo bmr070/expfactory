@@ -32,6 +32,7 @@ promoted, stop and re-read this paragraph.
 | `src/expfactory/holdout.py` | Durable holdout query budget, atomic across restarts. |
 | `src/expfactory/adversarial_suite.py` | Known-answer fixtures, visible + held-out. |
 | `src/expfactory/pipeline.py` | `run_and_record`: train → verify → append. |
+| `src/expfactory/prereg.py` | Preregistration record + the G-07 gate. |
 | `src/expfactory/selfcheck.py` | The boundary test. |
 | `examples/demo_drone.py` | Demo only. **Miscalibrated — see Gotchas.** |
 | `docs/SPEC.md` | The specification. Start here. |
@@ -43,7 +44,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 43 tests
+pytest                              # 83 tests
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
