@@ -27,12 +27,21 @@ def run_and_record(
     cost_usd: float = 0.0,
     parent_id: str | None = None,
     diff: Any = None,
+    prereg_hash: str | None = None,
+    exploratory: bool = False,
 ) -> VerdictBundle:
     """Drive one experiment end to end and append its verdict to the ledger.
 
     train_fn(config, seed) -> RunResult-shaped dict. All seeds are run before
     verification so seed-variance and reproducibility gates have data to judge.
     `diff`, when supplied, drives the diff-level tamper gate.
+
+    `prereg_hash` and `exploratory` drive G-07/G-08 when the verifier was built
+    with require_prereg=True. They live here because this is the only entry the
+    runner calls: without them the production path could not satisfy the gate at
+    all, and — worse — could not mark a run exploratory, so the rule that an
+    exploratory run is never promotable was unenforceable through the one code
+    path that matters.
     """
     runs: list[RunResult] = []
     for seed in seeds:
@@ -55,6 +64,8 @@ def run_and_record(
         cost_usd=cost_usd,
         parent_id=parent_id,
         diff=diff,
+        prereg_hash=prereg_hash,
+        exploratory=exploratory,
     )
     bundle = verifier.run(candidate)
     ledger.append(bundle)
