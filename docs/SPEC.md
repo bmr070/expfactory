@@ -170,12 +170,24 @@ confirmatory run must therefore descend from a **recorded** parent whose metric
 matches the declaration; the first run of a lineage is exploratory by
 construction, and it is what establishes the baseline.
 
-**Anti-HARKing, stated precisely.** The gate checks that the cited prereg is
-*already in the ledger at verification time*, which is set membership, not a
-position comparison. It is sound only because the verdict row is appended
-**after** verification, so anything already filed necessarily precedes the run.
-That is weaker than comparing recorded positions, and it does not cover
-re-verifying an already-appended verdict against a later-filed prereg. Tracked.
+**Anti-HARKing.** The cited preregistration must be in the ledger at
+verification time *and*, when a verdict for the experiment already exists, must
+sit at a **strictly earlier ledger position** than it. Membership alone was sound
+only while a verdict is appended straight after verification; it let an
+already-recorded verdict be re-verified against a rule filed afterwards, which is
+HARKing with extra steps. Positions are now compared, not assumed.
+
+**Guardrails are regression checks with a direction.** A `Guardrail` declares
+which way is *better* and how much slack is acceptable; the threshold is the
+parent's **recorded** value, read from the ledger. Two consequences: "recall must
+not drop" is expressible (a fixed lower-is-better bound could not state it, and
+would have fired on every improvement), and the threshold cannot be forged — the
+same defect rule 8 closed for the baseline. A guardrail with no recorded parent
+value **blocks**: an unmeasurable guardrail must not read as a satisfied one.
+
+Ledger rows now carry `metrics` — the mean of every metric reported, not just the
+primary. A row that cannot say what an experiment scored on latency cannot
+support a regression check at all.
 
 **Wiring.** `GateVerifier(require_prereg=True, prereg_store=ledger)` turns G-07
 on; `Ledger` holds verdicts and preregistrations in one ordered log so positions

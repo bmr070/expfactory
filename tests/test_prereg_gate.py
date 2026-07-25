@@ -12,8 +12,15 @@ harness is silent on it.
 
 from __future__ import annotations
 
+import pytest
+
 from expfactory.harness import Experiment, RunResult
-from expfactory.prereg import PreregContext, Preregistration, gate_preregistration
+from expfactory.prereg import (
+    Guardrail,
+    PreregContext,
+    Preregistration,
+    gate_preregistration,
+)
 
 BASELINE = 0.70
 PARENT = "exp-parent"
@@ -105,7 +112,7 @@ def test_metric_swap_is_blocked():
 def test_a_metric_cannot_be_both_promoter_and_guardrail():
     """The asymmetry is enforced at construction, not left to reviewer vigilance."""
     try:
-        _prereg(guardrails=(("val_metric", 1.0),))
+        _prereg(guardrails=(Guardrail("val_metric", "maximize"),))
     except ValueError as exc:
         assert "never both" in str(exc)
     else:
@@ -157,22 +164,24 @@ def test_extra_seeds_are_also_blocked():
 
 def test_guardrail_regression_blocks_a_genuine_primary_gain():
     """Primary genuinely improved; latency blew its declared bound. Still rejected."""
-    p = _prereg(guardrails=(("latency_ms", 20.0),))
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     exp = _exp([0.80, 0.81, 0.79], extra={"latency_ms": 35.0})
-    result = gate_preregistration(exp, prereg_ctx=_ctx(p))
+    result = gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0}))
     assert not result.passed
-    assert "GUARDRAIL BREACH" in result.detail
+    assert "GUARDRAIL REGRESSION" in result.detail
 
 
 def test_guardrail_within_bound_allows_promotion():
-    p = _prereg(guardrails=(("latency_ms", 20.0),))
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     exp = _exp([0.80, 0.81, 0.79], extra={"latency_ms": 15.0})
-    assert gate_preregistration(exp, prereg_ctx=_ctx(p)).passed
+    assert gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0})).passed
 
 
 def test_undeclared_guardrail_metric_blocks():
-    p = _prereg(guardrails=(("latency_ms", 20.0),))
-    result = gate_preregistration(_exp([0.80, 0.81, 0.79]), prereg_ctx=_ctx(p))
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
+    result = gate_preregistration(
+        _exp([0.80, 0.81, 0.79]), prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0})
+    )
     assert not result.passed
     assert "not reported" in result.detail
 
@@ -276,3 +285,70 @@ def test_unrecorded_parent_is_blocked():
     result = gate_preregistration(_exp([0.75, 0.75, 0.75]), prereg_ctx=_ctx(p, parent_metric=None))
     assert not result.passed
     assert "no recorded result" in result.detail
+
+
+# ---- #9: guardrails are regression checks, with a direction ----------------
+
+
+def test_a_maximize_guardrail_blocks_a_drop_not_an_improvement():
+    """The case the bound-based form could not express at all.
+
+    "Recall must not drop" is a guardrail whose good direction is up. Under a
+    hardcoded lower-is-better bound it would fire on every improvement, so it was
+    simply not expressible — and a guardrail you cannot state is one that does
+    not protect you.
+    """
+    p = _prereg(guardrails=(Guardrail("recall", "maximize"),))
+    improved = _exp([0.75, 0.75, 0.75], extra={"recall": 0.80})
+    assert gate_preregistration(
+        improved, prereg_ctx=_ctx(p, parent_metrics={"recall": 0.70})
+    ).passed
+
+    dropped = _exp([0.75, 0.75, 0.75], extra={"recall": 0.60})
+    result = gate_preregistration(dropped, prereg_ctx=_ctx(p, parent_metrics={"recall": 0.70}))
+    assert not result.passed
+    assert "GUARDRAIL" in result.detail
+
+
+def test_a_minimize_guardrail_blocks_a_rise():
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
+    worse = _exp([0.75, 0.75, 0.75], extra={"latency_ms": 30.0})
+    result = gate_preregistration(worse, prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0}))
+    assert not result.passed
+    assert "GUARDRAIL" in result.detail
+
+
+def test_the_guardrail_bound_comes_from_the_parent_not_the_prereg():
+    """Same forgery as rule 8, one field over. If the agent names the threshold
+    its guardrail is decorative."""
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
+    # parent was genuinely fast; this run is far slower and must not pass
+    result = gate_preregistration(
+        _exp([0.75, 0.75, 0.75], extra={"latency_ms": 900.0}),
+        prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 10.0}),
+    )
+    assert not result.passed
+
+
+def test_a_guardrail_tolerance_permits_declared_slack():
+    """Some regression is often acceptable and should be stated in advance."""
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize", tolerance=5.0),))
+    ctx = _ctx(p, parent_metrics={"latency_ms": 20.0})
+    assert gate_preregistration(_exp([0.75] * 3, extra={"latency_ms": 24.0}), prereg_ctx=ctx).passed
+    assert not gate_preregistration(
+        _exp([0.75] * 3, extra={"latency_ms": 26.0}), prereg_ctx=ctx
+    ).passed
+
+
+def test_an_unrecorded_guardrail_on_the_parent_blocks():
+    """No parent value means no regression can be computed. Fail closed."""
+    p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
+    result = gate_preregistration(
+        _exp([0.75] * 3, extra={"latency_ms": 5.0}), prereg_ctx=_ctx(p, parent_metrics={})
+    )
+    assert not result.passed
+
+
+def test_guardrail_direction_must_be_valid():
+    with pytest.raises(ValueError):
+        Guardrail("latency_ms", "sideways")  # type: ignore[arg-type]

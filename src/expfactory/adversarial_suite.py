@@ -16,7 +16,7 @@ from typing import Any
 
 from expfactory.gates_v1 import DiffEvidence
 from expfactory.harness import RunResult
-from expfactory.prereg import Preregistration
+from expfactory.prereg import Guardrail, Preregistration
 from expfactory.verifier import Candidate, Verifier
 
 
@@ -219,7 +219,7 @@ def build_prereg_suite() -> PreregSuiteSetup:
         minimum_effect=0.02,
         seeds=(0, 1, 2),
         parent_id=parent_ok,
-        guardrails=(("latency_ms", 20.0),),
+        guardrails=(Guardrail("latency_ms", "minimize"),),
     )
     p_churn = [
         Preregistration(
