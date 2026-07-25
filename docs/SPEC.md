@@ -104,7 +104,7 @@ invisible above this line.
 
 ---
 
-## 5. The gate set   **BUILT except G-07/G-08**
+## 5. The gate set   **BUILT except G-08**
 
 | Gate | Catches | Blocking | Status |
 |---|---|---|---|
@@ -116,7 +116,7 @@ invisible above this line.
 | `cost` | per-experiment spend | yes | BUILT |
 | `no_single_seed_dominance` | one lucky seed carries the mean; needs no baseline | yes | BUILT |
 | `no_test_tampering` | diff weakens verification itself | yes | BUILT |
-| `G-07` preregistration | HARKing / metric-shopping | yes | **DESIGNED** |
+| `G-07` preregistration | HARKing / metric-shopping | yes | **BUILT** |
 | `G-08` prereg churn | serial re-filing until one lands | yes | **DESIGNED** |
 
 **Bloat control (W-09/W-11): every gate traces to a fixture.** A gate may be added
@@ -133,11 +133,16 @@ only.** Running held-out on every commit would make each red build a tuning sign
 and burn the partition within a week. Held-out is a budgeted, human-initiated
 measurement behind `--heldout`.
 
-Baseline as of the scaffold commit: visible 5/5, held-out 3/3.
+Baseline, measured once before any gate tuning:
+
+| Suite | Visible | Held-out |
+|---|---|---|
+| core gates | 5/5 | 3/3 |
+| G-07 preregistration | 6/6 | 3/3 |
 
 ---
 
-## 6. Preregistration (G-07)   **DESIGNED** — see `decisions/M2-04-RESOLVED-preregistration.md`
+## 6. Preregistration (G-07)   **BUILT** — see `decisions/M2-04-RESOLVED-preregistration.md`
 
 Closes metric-shopping: primary metric flat, latency improved, latency reported as
 the win. Every built gate is silent on it, because nothing about the result is
@@ -157,6 +162,17 @@ Guardrails (latency) block only. Secondaries are recorded and never sufficient.
 Preregistration does not make metric-shopping impossible — it makes it
 **countable**. G-08 counts it. Ordering in the append-only ledger is the
 anti-HARKing proof: the prereg row must precede the run row.
+
+**Wiring.** `GateVerifier(require_prereg=True, prereg_store=ledger)` turns G-07
+on; `Ledger` holds verdicts and preregistrations in one ordered log so positions
+are comparable. `require_prereg` defaults to False because the same gate set also
+adjudicates candidates with no hill-climb lineage — **the hill-climb runner must
+set it True**, and no boundary test enforces that yet (it belongs with ticket 07).
+
+**Assumption made explicit:** the ledger is single-writer. Two processes appending
+concurrently can interleave partial lines, which would break both the ordering
+guarantee and the rows. If that stops holding, G-07's proof needs hash chaining
+instead.
 
 ---
 

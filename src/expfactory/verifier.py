@@ -31,6 +31,7 @@ from expfactory.harness import (
     Experiment,
     RunResult,
 )
+from expfactory.prereg import PreregContext, Preregistration, gate_preregistration
 
 IdFactory = Callable[[], str]
 
@@ -79,6 +80,10 @@ class Candidate:
     cost_usd: float = 0.0
     parent_id: str | None = None
     diff: Any = None  # DiffEvidence | None; drives the tamper gate
+    # Preregistration (N-02). `exploratory` runs are free and unlimited but can
+    # never be promoted; a confirmatory run must cite a prereg filed beforehand.
+    prereg_hash: str | None = None
+    exploratory: bool = False
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise through object.__setattr__, exactly once
@@ -222,6 +227,19 @@ class Verifier(Protocol):
 # --------------------------------------------------------------------------- #
 
 
+@runtime_checkable
+class PreregStore(Protocol):
+    """The slice of the ledger G-07 needs. `Ledger` satisfies it.
+
+    Kept separate from `ledger_ctx` rather than overloading it: `ledger_ctx` is
+    passed to every gate and the holdout gate expects a different shape, so one
+    parameter cannot serve both without the gates having to guess.
+    """
+
+    def prereg_hashes(self) -> frozenset[str]: ...
+    def get_prereg(self, prereg_hash: str) -> Preregistration | None: ...
+
+
 class GateVerifier:
     """Wraps the prototype's gate set behind the plugin boundary."""
 
@@ -231,16 +249,44 @@ class GateVerifier:
         baseline: Experiment | None = None,
         ledger_ctx: Any = None,
         id_factory: IdFactory = new_exp_id,
+        require_prereg: bool = False,
+        prereg_store: PreregStore | None = None,
     ) -> None:
+        """
+        `require_prereg` turns G-07 on. It is off by default because this same
+        gate set adjudicates one-off candidates that have no hill-climb lineage —
+        the adversarial fixtures among them — and requiring a preregistration
+        there would reject everything and destroy their diagnostic value.
+
+        **The hill-climb runner must construct this with require_prereg=True.**
+        That is the production configuration; see docs/SPEC.md §6. This is a
+        workflow switch, not a security toggle that may be left off.
+        """
         self._gates = gates
         self._baseline = baseline
         self._ledger_ctx = ledger_ctx
         self._id_factory = id_factory
+        self._require_prereg = require_prereg
+        self._prereg_store = prereg_store
+
+    def _prereg_ctx(self, candidate: Candidate) -> PreregContext:
+        store = self._prereg_store
+        cited = candidate.prereg_hash
+        return PreregContext(
+            prereg=store.get_prereg(cited) if (store and cited) else None,
+            exploratory=candidate.exploratory,
+            filed_hashes=store.prereg_hashes() if store else frozenset(),
+            cited_hash=cited,
+        )
 
     def run(self, candidate: Candidate) -> VerdictBundle:
         exp = candidate.experiment(self._id_factory())
         ctx = dict(baseline=self._baseline, ledger=self._ledger_ctx)
         exp.gates = [g(exp, **ctx) for g in self._gates]
+        # G-07 (M2-04). Runs before the diff gates so a run that had no business
+        # being promoted is rejected on its claim, not only on its diff.
+        if self._require_prereg:
+            exp.gates.append(gate_preregistration(exp, prereg_ctx=self._prereg_ctx(candidate)))
         # Baseline-free calibration gate (ticket 03): always runs, catches the
         # single-lucky-seed case the baseline-dependent seed_variance gate misses.
         from expfactory.gates_v1 import gate_no_single_seed_dominance
@@ -291,20 +337,99 @@ class ExitCodeVerifier:
 # Ledger: append-only, reconstructs from row alone
 # --------------------------------------------------------------------------- #
 
+KIND_VERDICT = "verdict"
+KIND_PREREG = "prereg"
+
+
+@dataclass(frozen=True)
+class LedgerRow:
+    position: int
+    kind: str
+    payload: VerdictBundle | Preregistration
+
 
 class Ledger:
+    """Append-only log holding both verdicts and preregistrations.
+
+    Both kinds share **one** log deliberately (ticket N-01). G-07 proves a
+    preregistration preceded its run, and positions cannot be compared across two
+    files. Ordering is therefore part of the contract, not an accident of how
+    JSONL happens to read:
+
+        position == line index, and lines are only ever appended.
+
+    **Single-writer is assumed.** Two processes appending to one path can
+    interleave partial lines, which would corrupt both the ordering guarantee and
+    the rows themselves. The runner owns the ledger; agents submit through it and
+    never hold it open. If that ever stops being true, G-07's ordering proof stops
+    being sound and needs a different mechanism (hash chaining).
+
+    Rows are wrapped as {"kind": ..., "row": {...}}. A bare, unwrapped object is
+    read as a verdict, so ledgers written before preregistration existed still
+    load.
+    """
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
 
+    # -- writing -----------------------------------------------------------
+
     def append(self, bundle: VerdictBundle) -> None:
+        self._write(KIND_VERDICT, bundle.to_dict())
+
+    def append_prereg(self, prereg: Preregistration) -> None:
+        """File a preregistration. Must happen before the run it governs."""
+        self._write(KIND_PREREG, prereg.to_dict())
+
+    def _write(self, kind: str, row: dict[str, Any]) -> None:
         with self.path.open("a") as f:
-            f.write(bundle.to_json() + "\n")
+            f.write(json.dumps({"kind": kind, "row": row}, sort_keys=True) + "\n")
+
+    # -- reading -----------------------------------------------------------
+
+    def rows(self) -> list[LedgerRow]:
+        """Every row, in append order, with its position."""
+        out: list[LedgerRow] = []
+        for position, line in enumerate(self.path.read_text().splitlines()):
+            if not line.strip():
+                continue
+            raw = json.loads(line)
+            if "kind" not in raw:  # pre-preregistration ledger: a bare verdict
+                out.append(LedgerRow(position, KIND_VERDICT, VerdictBundle.from_dict(raw)))
+                continue
+            payload = (
+                Preregistration.from_dict(raw["row"])
+                if raw["kind"] == KIND_PREREG
+                else VerdictBundle.from_dict(raw["row"])
+            )
+            out.append(LedgerRow(position, raw["kind"], payload))
+        return out
 
     def all(self) -> list[VerdictBundle]:
-        return [
-            VerdictBundle.from_json(line)
-            for line in self.path.read_text().splitlines()
-            if line.strip()
-        ]
+        """Verdict rows only, in order."""
+        return [r.payload for r in self.rows() if isinstance(r.payload, VerdictBundle)]
+
+    def preregs(self) -> list[Preregistration]:
+        return [r.payload for r in self.rows() if isinstance(r.payload, Preregistration)]
+
+    # -- the PreregStore contract G-07 depends on ---------------------------
+
+    def prereg_hashes(self) -> frozenset[str]:
+        """Hashes already filed. Membership is G-07's anti-HARKing proof: the log
+        is append-only and a verdict is written *after* verification, so anything
+        in here necessarily precedes the run being judged."""
+        return frozenset(p.hash for p in self.preregs())
+
+    def get_prereg(self, prereg_hash: str) -> Preregistration | None:
+        for p in self.preregs():
+            if p.hash == prereg_hash:
+                return p
+        return None
+
+    def position_of_prereg(self, prereg_hash: str) -> int | None:
+        for row in self.rows():
+            if isinstance(row.payload, Preregistration) and row.payload.hash == prereg_hash:
+                return row.position
+        return None

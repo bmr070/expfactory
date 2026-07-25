@@ -9,15 +9,28 @@ Tickets `01`–`11` in this directory are the prior session's slices. `02`, `03`
 (2 of 3), `04`, `05` are complete and now live in `src/expfactory/`. `06`–`11`
 still need infrastructure that does not exist yet.
 
-| ID | Slice | Depends on | Needs |
-|---|---|---|---|
-| N-01 | Ledger ordering becomes an explicit, tested guarantee | — | — |
-| N-02 | `Preregistration` record + `prereg_hash` / `exploratory` on `Candidate` | N-01 | — |
-| N-03 | G-07 preregistration gate + fixtures | N-02 | — |
-| N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — |
-| N-05 | Resolve M2-03 — the experiment queue | — | grilling session |
-| N-06 | Ticket 01 provisioning | — | **owner's accounts** |
-| N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** |
+| ID | Slice | Depends on | Needs | Status |
+|---|---|---|---|---|
+| N-01 | Ledger ordering becomes an explicit, tested guarantee | — | — | **DONE** |
+| N-02 | `Preregistration` record + `prereg_hash` / `exploratory` on `Candidate` | N-01 | — | **DONE** |
+| N-03 | G-07 preregistration gate + fixtures, wired into the verifier | N-02 | — | **DONE** |
+| N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | open |
+| N-05 | Resolve M2-03 — the experiment queue | — | grilling session | open |
+| N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
+| N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
+
+**N-01/02/03 landed.** G-07 runs inside `GateVerifier` when constructed with
+`require_prereg=True`, backed by a `PreregStore` (which `Ledger` satisfies). The
+gate has 18 unit fixtures plus 9 suite fixtures across both partitions. Baseline
+measurement: visible 6/6, held-out 3/3.
+
+One judgement call worth revisiting: `require_prereg` defaults to **False**. The
+same gate set adjudicates one-off candidates with no hill-climb lineage — the
+core adversarial fixtures among them — and requiring a preregistration there
+would reject everything and destroy their diagnostic value. It is a workflow
+switch, not a security toggle. **The hill-climb runner must set it True**, and
+nothing yet enforces that it does; that enforcement belongs with the runner
+(ticket 07) and should be a boundary test when the runner exists.
 
 ---
 
