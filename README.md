@@ -111,5 +111,9 @@ two-substrate execution split are designed but not built — they need
 infrastructure (GPU substrate, live tracker, durable store) that the prior
 environment did not have.
 
-Provisioning in [`provision/`](provision/) needs the owner's GitHub and Linear
-accounts and is applied by hand, never by an agent.
+Provisioning in [`provision/`](provision/) is applied by hand, never by an agent.
+`main` is protected: PR required, CI green on 3.11 and 3.13, and code-owner
+review on the verification substrate.
+
+One gap remains before a real agent can be dispatched here — see
+[`docs/DISPATCH-READINESS.md`](docs/DISPATCH-READINESS.md).
