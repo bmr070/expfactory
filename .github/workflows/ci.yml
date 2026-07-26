@@ -63,19 +63,57 @@ jobs:
           EXPFACTORY_REQUIRE_DEMO: 1
         run: pytest
 
-      - name: Substrate guard — does this PR edit the verification layer?
-        # Only meaningful on a PR; a push to main has no base to diff against.
-        # Deliberately keyed on WHAT changed, never on who authored it: if the
-        # agent runtime opens PRs as the triggering human, authorship carries no
-        # signal and no review-based rule can tell agent work from the owner's.
-        if: github.event_name == 'pull_request'
-        run: |
-          git fetch --no-tags --depth=50 origin "$GITHUB_BASE_REF"
-          python -m expfactory.substrate_guard --base "origin/$GITHUB_BASE_REF"
-
       - name: Boundary test — adversarial suite (visible partition)
         # The held-out partition is deliberately NOT run here. Running it every
         # commit would turn each red build into a tuning signal and burn the
         # partition, which is the exact offence the harness exists to catch.
         # See src/expfactory/selfcheck.py.
         run: python -m expfactory.selfcheck
+
+  # A SEPARATE JOB, deliberately.
+  #
+  # This used to be the second-to-last step of `check`. The job shell is `bash -e`,
+  # so the first failure aborts everything after it — and this step fails BY DESIGN
+  # on any PR touching the protected set. The result was that on exactly the PRs
+  # where the gate set changed, the boundary test that checks whether the gates
+  # still work never ran. Twice in a row (#29, #31) a substrate change merged with
+  # its adversarial suite unexecuted in CI.
+  #
+  # That is backwards. This guard is not a correctness check: it is a "a human must
+  # look at this" signal, answered by an admin override. The boundary test IS a
+  # correctness check. Ordering the policy signal ahead of the correctness check
+  # meant the override was granted with *less* evidence than an ordinary PR gets,
+  # not more.
+  #
+  # As its own job it cannot short-circuit anything, and it reads honestly in the
+  # required-checks list as the separate question it is.
+  # No `name:` override. The job id is what branch protection lists as a required
+  # check, and a required-check context is easier to configure and read when it is
+  # a plain ASCII slug.
+  substrate-guard:
+    runs-on: ubuntu-latest
+    # Only meaningful on a PR; a push to main has no base to diff against.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the guard diffs against the merge base, which needs history
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # No extras: the guard shells out to git and imports one module. Installing
+      # the dev and demo stacks here would only add ways for this to fail for
+      # reasons unrelated to what it checks.
+      - name: Install
+        run: pip install -e .
+
+      - name: Guard
+        # Deliberately keyed on WHAT changed, never on who authored it: if the
+        # agent runtime opens PRs as the triggering human, authorship carries no
+        # signal and no review-based rule can tell agent work from the owner's.
+        run: |
+          git fetch --no-tags --depth=50 origin "$GITHUB_BASE_REF"
+          python -m expfactory.substrate_guard --base "origin/$GITHUB_BASE_REF"
