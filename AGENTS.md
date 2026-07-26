@@ -122,3 +122,16 @@ Declined on evidence; re-suggesting wastes a session. Full list in `docs/MAP.md`
   see `docs/decisions/M2-07-RESOLVED-open-swe.md`.
 - A five-database knowledge stack.
 - Deferring cost caps or security to a later phase. Both are day-one, fail-closed.
+
+## Agent skills
+
+### Issue tracker
+
+Work lives in **Linear** (team `Brett`, project `expfactory — empirical software
+factory`). GitHub holds code, PRs and CI, not the work queue, and there is no
+sync between them. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context. Decision records live in `docs/decisions/`, **not** `docs/adr/`.
+See `docs/agents/domain.md`.
