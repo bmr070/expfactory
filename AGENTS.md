@@ -36,6 +36,7 @@ promoted, stop and re-read this paragraph.
 | `src/expfactory/selfcheck.py` | The boundary test. |
 | `src/expfactory/registry.py` | JobRegistry + ComputeSubstrate seam. Holds the GPU credential. |
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
+| `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
 | `examples/demo_drone.py` | Demo only. **Miscalibrated — see Gotchas.** |
 | `docs/SPEC.md` | The specification. Start here. |
 | `docs/DISPATCH-READINESS.md` | What must be true before a real agent runs here. |

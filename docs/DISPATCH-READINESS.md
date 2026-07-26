@@ -123,7 +123,7 @@ right mattered more than reaching I/O:
 
 | Protocol | Needs | Note |
 |---|---|---|
-| `runner.Tracker` | GitHub Issues adapter | `label_actor` maps to the timeline's `labeled` event actor |
+| ~~`runner.Tracker`~~ | **done** — `github_tracker.GitHubTracker` | needs an `HttpTransport` carrying the App token |
 | `runner.AgentSession` | sandboxed agent | must construct its verifier with `require_prereg=True` (#4) |
 | `registry.ComputeSubstrate` | Modal adapter | `spawn` → durable handle → poll |
 

@@ -47,6 +47,9 @@ _HARNESS_PATHS = (
     "pipeline.py",
     # Decides what gets dispatched. Editing it edits the trust boundary itself.
     "runner.py",
+    # Answers "who applied this label", which is what the trust boundary rests on.
+    # Make label_actor always return the owner and eligibility is bypassed wholesale.
+    "github_tracker.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
@@ -55,7 +58,8 @@ _HARNESS_PATHS = (
 # exemptions are the thing that needs justifying. A test asserts every module is
 # in one list or the other, which makes adding a module force the decision
 # instead of relying on someone remembering — prereg.py, selfcheck.py and
-# registry.py were each missed on first addition, which is three for three.
+# registry.py were each missed on first addition, three for three. Since the
+# check went in it has caught runner.py and github_tracker.py automatically.
 _NOT_SUBSTRATE = (
     "__init__.py",  # re-exports only; no logic to weaken
 )

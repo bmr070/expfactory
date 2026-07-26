@@ -1,0 +1,178 @@
+"""
+github_tracker — the GitHub Issues implementation of `runner.Tracker`.
+
+GitHub Issues is the machine control plane (W-07). Linear is the human board, and
+the sync is one-way Linear → Issues, so this adapter only ever reads what a human
+already put on the machine side.
+
+## A design tension this surfaced, and how it is resolved
+
+The runner's rule was "never write labels", because labels are the human's channel
+for granting dispatch rights and a runner that can set them can grant itself work.
+
+But GitHub Issues have no arbitrary state field — `In Progress` / `In Review` /
+`Needs Human` have to live *somewhere*, and on GitHub that somewhere is labels
+(or Projects, which is heavier and still label-shaped underneath).
+
+So the rule was too broad. Sharpened: **the runner may not write
+dispatch-granting labels.** Writing its own state is its job.
+
+That is enforced here rather than documented — `_WRITABLE_LABELS` is an
+allowlist, and `agent-ready` is not in it. An adapter asked to write anything
+outside the allowlist raises. A rule that lives in a constant beats a rule that
+lives in a comment, because only one of them survives someone being in a hurry.
+
+## Credentials
+
+The transport carries the token; this class never sees it. That keeps the
+credential in the runner's secret store rather than anywhere an agent's workspace
+could reach (invariant 6), and it makes the whole adapter testable without one.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Sequence
+from typing import Any, Protocol, runtime_checkable
+
+from expfactory.runner import (
+    LABEL_AGENT_READY,
+    STATE_IN_PROGRESS,
+    STATE_IN_REVIEW,
+    STATE_NEEDS_HUMAN,
+    Ticket,
+)
+
+# Runner state -> the label that represents it on GitHub.
+STATE_LABELS: dict[str, str] = {
+    STATE_IN_PROGRESS: "state:in-progress",
+    STATE_IN_REVIEW: "state:in-review",
+    STATE_NEEDS_HUMAN: "needs-human",
+}
+
+# The only labels this adapter will ever write. `agent-ready` is deliberately
+# absent: it is how a human grants dispatch rights, and nothing automated may
+# grant itself those.
+_WRITABLE_LABELS = frozenset(STATE_LABELS.values())
+
+
+class LabelWriteRefused(RuntimeError):
+    """The adapter was asked to write a label outside its allowlist."""
+
+
+class LabelNotPresent(LookupError):
+    """Removing a label the issue does not carry.
+
+    Named rather than guessed at: the adapter has to distinguish "that label was
+    already gone", which is fine, from "the request failed", which is not. A
+    transport signals the former by raising this and lets everything else
+    propagate — swallowing a broad Exception here would hide an auth failure as a
+    successful no-op.
+    """
+
+
+@runtime_checkable
+class HttpTransport(Protocol):
+    """Minimal GitHub REST surface, injected so the token stays outside this class
+    and so every path here is testable without a network or an account."""
+
+    def get(self, path: str) -> Any: ...
+    def post(self, path: str, body: dict[str, Any]) -> Any: ...
+    def delete(self, path: str) -> Any: ...
+
+
+class GitHubTracker:
+    def __init__(self, repo: str, transport: HttpTransport) -> None:
+        """`repo` is "owner/name"."""
+        self._repo = repo
+        self._http = transport
+
+    # -- reads --------------------------------------------------------------
+
+    def open_tickets(self) -> Sequence[Ticket]:
+        issues = self._http.get(f"/repos/{self._repo}/issues?state=open&per_page=100")
+        out: list[Ticket] = []
+        for issue in issues:
+            # The REST issues endpoint returns PRs too; they are not tickets.
+            if "pull_request" in issue:
+                continue
+            labels = frozenset(
+                lbl["name"] if isinstance(lbl, dict) else str(lbl)
+                for lbl in issue.get("labels", [])
+            )
+            out.append(
+                Ticket(
+                    id=str(issue["number"]),
+                    title=issue.get("title") or "",
+                    body=issue.get("body") or "",
+                    labels=labels,
+                    state=self._state_from(labels),
+                )
+            )
+        return out
+
+    @staticmethod
+    def _state_from(labels: frozenset[str]) -> str:
+        for state, label in STATE_LABELS.items():
+            if label in labels:
+                return state
+        return "Todo"
+
+    def label_actor(self, ticket_id: str, label: str) -> str | None:
+        """Who applied `label`, from the issue timeline.
+
+        This is the check the runner's trust boundary rests on. Asking *who*
+        applied a label does not race with the label-stripping workflow, whereas
+        asking whether it is currently present does.
+
+        The most recent `labeled` event wins: a label removed and re-applied by a
+        different account should report the account that most recently granted
+        it, not the first one ever to.
+        """
+        events = self._http.get(f"/repos/{self._repo}/issues/{ticket_id}/timeline?per_page=100")
+        actor: str | None = None
+        for event in events:
+            if event.get("event") != "labeled":
+                continue
+            if (event.get("label") or {}).get("name") != label:
+                continue
+            login = (event.get("actor") or {}).get("login")
+            if login:
+                actor = login
+        return actor
+
+    # -- writes -------------------------------------------------------------
+
+    def comment(self, ticket_id: str, body: str) -> None:
+        self._http.post(f"/repos/{self._repo}/issues/{ticket_id}/comments", {"body": body})
+
+    def set_state(self, ticket_id: str, state: str) -> None:
+        """Move the ticket by swapping its state label.
+
+        Refuses any label outside the allowlist, so this cannot become a path to
+        writing `agent-ready`.
+        """
+        label = STATE_LABELS.get(state)
+        if label is None:
+            raise LabelWriteRefused(
+                f"no label mapping for state {state!r}; known: {sorted(STATE_LABELS)}"
+            )
+        self._write_label(ticket_id, label)
+        for other in _WRITABLE_LABELS - {label}:
+            self._remove_label(ticket_id, other)
+
+    def _write_label(self, ticket_id: str, label: str) -> None:
+        if label not in _WRITABLE_LABELS:
+            raise LabelWriteRefused(
+                f"refusing to write label {label!r}: not in the adapter's allowlist. "
+                f"{LABEL_AGENT_READY!r} in particular is how a human grants dispatch "
+                "rights, and nothing automated may grant itself those."
+            )
+        self._http.post(f"/repos/{self._repo}/issues/{ticket_id}/labels", {"labels": [label]})
+
+    def _remove_label(self, ticket_id: str, label: str) -> None:
+        if label not in _WRITABLE_LABELS:
+            raise LabelWriteRefused(f"refusing to remove label {label!r}: not in the allowlist")
+        # Already absent is fine; anything else must surface.
+        with contextlib.suppress(LabelNotPresent):
+            self._http.delete(f"/repos/{self._repo}/issues/{ticket_id}/labels/{label}")
