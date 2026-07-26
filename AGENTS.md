@@ -38,6 +38,7 @@ promoted, stop and re-read this paragraph.
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
 | `examples/demo_drone.py` | Demo only. **Miscalibrated — see Gotchas.** |
 | `docs/SPEC.md` | The specification. Start here. |
+| `docs/DISPATCH-READINESS.md` | What must be true before a real agent runs here. |
 | `docs/MAP.md`, `docs/MAP2.md` | Closed decisions and open territory. |
 | `docs/decisions/` | One file per decision, with rationale. |
 | `provision/` | CODEOWNERS, labels — needs the owner's accounts, applied by hand. |
