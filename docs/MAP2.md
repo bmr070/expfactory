@@ -91,6 +91,11 @@ way to a promotion. Done when nothing is left to decide before someone builds it
 
 ## Frontier — takeable now
 
+- **M2-08** — [where does the runner live, and is it polled or pushed?](decisions/M2-08-where-does-the-runner-live.md)
+  Raised because agent identity was being chosen before hosting, which is backwards — a scheduled
+  Action supplies an identity free, a daemon does not. Also asks whether Open SWE's dispatch (adopted
+  in M2-07) already subsumes the `Runner` that was built, which may delete code.
+
 - **N-08** — build the `JobRegistry` + `ComputeSubstrate` protocol (unblocked by M2-03). Now the
   load-bearing *build*.
 - ~~M2-05~~ — G-07 and G-08 are built, wired and fixtured. Done.
