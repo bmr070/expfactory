@@ -4,13 +4,13 @@ Per decision [W-07](decisions/W-07-provision-the-issue-tracker.md).
 
 | Layer | System | Role |
 |---|---|---|
-| Human board | **Linear** (private workspace) | Objectives, decisions, judgement calls |
-| Machine control plane | **GitHub Issues** — [bmr070/expfactory](https://github.com/bmr070/expfactory/issues) | What runners read. **GitHub only.** |
-| Code, PRs, CI | **GitHub** | `main` protected; CI green required |
+| Work queue | **Linear** (private workspace) | Everything agents pull from, and everything humans decide |
+| Code, PRs, CI | **GitHub** — [bmr070/expfactory](https://github.com/bmr070/expfactory) | `main` protected; CI green required. **Not a work queue.** |
 
-**Sync is one-way: Linear → GitHub Issues.** Runners never read Linear. Two-way
-sync introduces races between a human editing the board and a runner editing
-state, and the resulting ambiguity is not worth the convenience.
+**There is no sync.** An earlier version of this document had Linear syncing
+one-way into GitHub Issues, with runners reading GitHub only, to avoid two-way
+state races. Removing the mirror removes the race outright — see
+[W-07-AMENDMENT](decisions/W-07-AMENDMENT-linear-as-machine-plane.md).
 
 ## The dispatch rule
 
@@ -33,15 +33,10 @@ this repo up. The label exists; nothing carries it.
 
 ## Current mapping
 
-| GitHub | Linear | What |
-|---|---|---|
-| [#1](https://github.com/bmr070/expfactory/issues/1) | BRE-11 | Experiment queue (M2-03) — **load-bearing open decision** |
-| [#2](https://github.com/bmr070/expfactory/issues/2) | BRE-12 | Finish provisioning — branch protection, Linear→Issues sync |
-| [#3](https://github.com/bmr070/expfactory/issues/3) | BRE-13 | Timeout / handoff test (M2-01) — confirmatory |
-| [#4](https://github.com/bmr070/expfactory/issues/4) | BRE-14 | Enforce `require_prereg=True` in the runner |
-| [#5](https://github.com/bmr070/expfactory/issues/5) | BRE-14 | Re-calibrate the G-08 churn threshold |
-| [#6](https://github.com/bmr070/expfactory/issues/6) | — | `examples/demo_drone.py` miscalibrated scenario |
-| [#7](https://github.com/bmr070/expfactory/issues/7) | BRE-14 | Egress policy vs dataset downloads |
+Work is being consolidated into Linear per the amendment. GitHub issues that
+remain open are code-level findings that pair with a PR; new work is filed in
+Linear only.
+
 
 Build slices and their rationale stay in [`tickets/NEXT.md`](tickets/NEXT.md);
 the trackers hold status, the repo holds reasoning.
