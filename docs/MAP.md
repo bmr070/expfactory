@@ -78,6 +78,7 @@ This map produces **decisions, not the build**. The build is the next effort.
   restart state, a global circuit breaker, and a compute-tuned stall timeout. Shared tracker above
   both. LangGraph/CrewAI/AutoGen rejected as a category error.
 - [W-07 — Provision the issue tracker](tickets/) —
+  **[AMENDED — see W-07-AMENDMENT: Linear is the work queue and there is no sync.]**
   Linear = human board, GitHub Issues = machine control plane, one-way Linear→Issues sync (runners
   read GitHub only; avoids two-way races). Labels + states + CODEOWNERS trust lanes defined up front;
   only human-applied `agent-ready` is dispatch-eligible (untrusted-tracker defense).

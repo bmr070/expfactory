@@ -4,7 +4,7 @@ These are the artifacts the runner and trust model depend on. Creating accounts,
 repos, and changing settings are actions only you can take — apply these, don't
 hand them to an agent.
 
-## GitHub (the machine control plane)
+## GitHub (code, PRs and CI — not the work queue; see the W-07 amendment)
 1. Create the factory repo; enable Issues.
 2. `gh label create` each entry in `labels.json` (or import via the API).
 3. Commit `CODEOWNERS` to `.github/CODEOWNERS`. Replace `@harness-owner` with the

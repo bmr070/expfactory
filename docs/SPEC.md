@@ -272,8 +272,13 @@ review work is *context isolation*, not vendor diversity.
 - **Tracker is untrusted input.** Anyone who can file a ticket can prompt-inject
   the factory. Only a **human-applied `agent-ready` label** is dispatch-eligible;
   no ticket self-promotes.
-- **Linear = human board; GitHub Issues = machine control plane**, one-way
-  Linear→Issues sync. Runners read GitHub only, avoiding two-way races.
+- **Linear is the work queue; GitHub holds code, PRs and CI. There is no sync**
+  ([W-07 amendment](decisions/W-07-AMENDMENT-linear-as-machine-plane.md)). W-07
+  originally mirrored Linear into GitHub Issues one-way so runners could read
+  GitHub only, to avoid two-way state races. Deleting the mirror removes the race
+  outright, and Linear types bot actors distinctly in issue history — a stronger
+  answer to "did a human make this dispatch-eligible" than matching a login
+  string against an allowlist.
 - **Two hard caps, runner-enforced:** agent inference per-day, and GPU compute
   per-experiment plus per-day aggregate — the surface with no native guard.
 - **Breach = fail-closed** via the circuit breaker; ticket → `needs-human`; **no
