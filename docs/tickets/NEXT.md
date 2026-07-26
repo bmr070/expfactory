@@ -15,7 +15,9 @@ still need infrastructure that does not exist yet.
 | N-02 | `Preregistration` record + `prereg_hash` / `exploratory` on `Candidate` | N-01 | — | **DONE** |
 | N-03 | G-07 preregistration gate + fixtures, wired into the verifier | N-02 | — | **DONE** |
 | N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | **DONE** |
-| N-05 | Resolve M2-03 — the experiment queue | — | grilling session | open |
+| N-05 | Resolve M2-03 — the experiment queue | — | grilling session | **DONE** |
+| N-08 | JobRegistry + ComputeSubstrate protocol | M2-03 | — | **DONE** |
+| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | adapters + creds | **core DONE** |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
 

@@ -45,6 +45,8 @@ _HARNESS_PATHS = (
     "registry.py",
     # Builds Candidates from train_fn output; editing it can fabricate run records.
     "pipeline.py",
+    # Decides what gets dispatched. Editing it edits the trust boundary itself.
+    "runner.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
