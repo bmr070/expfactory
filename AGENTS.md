@@ -16,11 +16,18 @@ real. The thesis:
 > Adopt infrastructure. Build verification. No existing system has a ledger or
 > anti-fooling gates, because they all verify code against tests.
 
-The proving workload (multimodal drone-vs-bird detection) is a **vehicle, not a
-ship target**. The acceptance bar is "the gates behaved correctly," not "the model
+The proving workload (drone detection) is a **vehicle, not a ship target**. The
+acceptance bar for the factory is "the gates behaved correctly," not "the model
 beat a benchmark." **A run in which every proposed improvement is correctly
 rejected is a passing run.** If you find yourself trying to make something get
 promoted, stop and re-read this paragraph.
+
+**Amended 2026-07-26 (L-01).** A hill-climb may now carry a *published external
+target*, and beating it is a permitted **outcome** — never an acceptance
+criterion. `promoted` is still derived only from the gates. The live target is
+[`docs/research/acoustic-drone-detection.md`](docs/research/acoustic-drone-detection.md),
+and note which number it competes against: the honest session-grouped 0.745, not
+the leaked 0.796.
 
 ## Layout
 
@@ -28,7 +35,10 @@ promoted, stop and re-read this paragraph.
 |---|---|
 | `src/expfactory/verifier.py` | The plugin boundary. `Verifier.run(candidate) -> VerdictBundle`. |
 | `src/expfactory/harness.py` | The original six gates, behind the boundary. |
-| `src/expfactory/gates_v1.py` | Tamper gate + baseline-free seed-dominance gate. |
+| `src/expfactory/gates_v1.py` | Tamper gate, seed-dominance gate, and G-09 group leakage. |
+| `src/expfactory/literature.py` | Paper/mechanism/hypothesis provenance. Substrate; the corpus it reads is not. |
+| `docs/literature/corpus.json` | The reading list and the mechanisms extracted from it. Data, not substrate. |
+| `docs/research/` | Live hill-climb targets, their protocols and their published bars. |
 | `src/expfactory/holdout.py` | Durable holdout query budget, atomic across restarts. |
 | `src/expfactory/adversarial_suite.py` | Known-answer fixtures, visible + held-out. |
 | `src/expfactory/pipeline.py` | `run_and_record`: train → verify → append. |
@@ -50,7 +60,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 170 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 197 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -96,6 +106,16 @@ not by reasoning. Breaking one silently guts the verification layer.
   nothing ran it. `tests/test_demo_drone.py` now asserts every verdict and CI
   sets `EXPFACTORY_REQUIRE_DEMO=1` so it cannot silently skip. **If you retune a
   scenario, measure it — do not relabel it.**
+- **`gate_no_leakage` cannot see session-level leakage.** It intersects train and
+  eval *sample ids*; clips cut from one continuous recording have distinct ids and
+  it passes. That is what G-09 (`gate_no_group_leakage`) is for, and G-09 only
+  bites when the task supplies a `DatasetGrouping` to the verifier. Declaring the
+  grouping is therefore part of defining a task, not an optional extra. Found in
+  the literature, not by a bug: EchoHawk (arXiv:2606.29589) measures the inflation
+  at 0.796 -> 0.745 Pd@1%FAR.
+- **Test-time adaptation reintroduces that leak after the split**, where G-09
+  cannot reach it. See the H5 hazard in `docs/research/acoustic-drone-detection.md`
+  before proposing any per-session adaptation.
 - **The dominance gate in `gates_v1.py` was wrong on first implementation**
   (inverted ratio) and passed nothing. A fixture caught it. If you modify it,
   verify against *both* suite partitions.

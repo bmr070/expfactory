@@ -32,7 +32,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from expfactory.adversarial_suite import SuiteResult, build_prereg_suite, build_suite
+from expfactory.adversarial_suite import (
+    SuiteResult,
+    build_group_suite,
+    build_prereg_suite,
+    build_suite,
+)
 from expfactory.harness import RunResult
 from expfactory.verifier import Candidate, GateVerifier, Ledger, VerdictBundle
 
@@ -77,6 +82,17 @@ def run_prereg(partition: str = "visible") -> SuiteResult:
         return setup.suite.evaluate(verifier, partition=partition)
 
 
+def run_group(partition: str = "visible") -> SuiteResult:
+    """G-09's fixtures need a verifier the *task* configured with a grouping.
+
+    Built here rather than carried on the fixtures because that is where the real
+    declaration lives: if a candidate could supply its own grouping it could also
+    decline to, and the gate would be advisory.
+    """
+    setup = build_group_suite()
+    return setup.suite.evaluate(GateVerifier(grouping=setup.grouping), partition=partition)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -91,7 +107,11 @@ def main(argv: list[str] | None = None) -> int:
         print("!! held-out partition: this is a measurement, not a tuning signal.")
         print("!! If it fails, do NOT tune until it passes. Record and think.\n")
 
-    suites = [("core gates", run(partition)), ("G-07 preregistration", run_prereg(partition))]
+    suites = [
+        ("core gates", run(partition)),
+        ("G-07 preregistration", run_prereg(partition)),
+        ("G-09 group leakage", run_group(partition)),
+    ]
 
     print(f"partition : {partition}")
     ok = True

@@ -1,11 +1,19 @@
 """
-gates_v1 — hardenings added in ticket 03.
+gates_v1 — hardenings beyond the prototype's six gates.
 
-The prototype's six gates operate on run *results*. This module adds a gate that
-operates on the candidate's *diff*, because the most dangerous fooling — reaching
-green by mutilating verification — is invisible in the metrics. It is the
-empirical-lane analogue of the deterministic lane's "the agent may not edit the
-verifier".
+The prototype's six gates operate on run *results*. This module adds gates that
+operate on everything else the record carries:
+
+- `gate_no_test_tampering` reads the candidate's *diff*, because the most
+  dangerous fooling — reaching green by mutilating verification — is invisible
+  in the metrics. It is the empirical-lane analogue of the deterministic lane's
+  "the agent may not edit the verifier".
+- `gate_no_single_seed_dominance` needs no baseline, catching the lucky-seed
+  case that the baseline-dependent variance gate misses.
+- `gate_no_group_leakage` (G-09) reads *group* membership, because the standard
+  leakage check compares sample ids and the most common leak in sensor data has
+  disjoint ids by construction. Added from the literature rather than from a
+  bug; see the block comment above it.
 
 Every gate here traces to a fixture in the ticket-04 suite (standing rule from W-09).
 """
@@ -53,6 +61,11 @@ _HARNESS_PATHS = (
     # The PR-level wall. Listed here so it guards itself: a change that disables
     # the check cannot merge past the check.
     "substrate_guard.py",
+    # Adjudicates whether a hypothesis is attributed to real literature. An agent
+    # that can edit `provenance_of` can cite a paper that does not exist. The
+    # corpus it reads is deliberately NOT here -- docs/literature/corpus.json is
+    # data, so the reading list can grow without an override on the gate layer.
+    "literature.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
@@ -168,3 +181,118 @@ def gate_no_single_seed_dominance(exp: Experiment, dominance: float = 0.5, **_: 
         f"lift over rest-mean {rest_mean:.3f}"
     )
     return GateResult("no_single_seed_dominance", ok, detail, blocking=True)
+
+
+# --------------------------------------------------------------------------- #
+# G-09 — group-level leakage
+#
+# `gate_no_leakage` compares train and eval *sample ids* and blocks when they
+# intersect. That is necessary and it is not sufficient, because the most common
+# leak in sensor data has disjoint ids by construction.
+#
+# EchoHawk (arXiv 2606.29589, June 2026) documents the case in this repository's
+# own domain: a widely used public drone-audio dataset ships pre-segmented into
+# short clips, so a clip-level split puts adjacent slices of one continuous
+# recording on both sides. Every sample id is distinct. `gate_no_leakage` passes.
+# The model learns the session -- its background, its microphone, that specific
+# airframe -- and the reported number is measuring memorisation.
+#
+# The size of the effect, from the paper: enforcing recording-session-grouped
+# cross-validation drops a random-forest baseline's detection probability at 1%
+# false-alarm rate from 0.796 to 0.745. Five points of Pd, invisible to every
+# gate the factory had.
+#
+# This is the ratchet (W-11) applied to a finding from the literature rather than
+# from a bug: the reading becomes a mechanism at the cheapest sufficient point.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class DatasetGrouping:
+    """A declaration that samples in this dataset cluster, and by what.
+
+    **Supplied by the task, never by the candidate.** This is the same rule that
+    governs baselines and guardrail thresholds: a property the agent can choose
+    not to declare is not a constraint on the agent. It is passed to the verifier
+    at construction, alongside `require_prereg`, so a training function cannot
+    reach it.
+    """
+
+    group_key: str
+    rationale: str
+    source: str = ""
+
+
+def _groups(value: Any) -> frozenset[Any] | None:
+    """Read a group collection out of `RunResult.extra`, or None if absent.
+
+    Deliberately strict about types. A string is a common and silent mistake --
+    it is iterable, so it would be read as a set of characters and would almost
+    always look disjoint.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str | bytes):
+        return None
+    try:
+        return frozenset(value)
+    except TypeError:
+        return None
+
+
+def gate_no_group_leakage(
+    exp: Experiment, grouping: DatasetGrouping | None = None, **_: Any
+) -> GateResult:
+    """Train and eval must be disjoint at the group level, not only per sample.
+
+    Three states, and the middle one is the point:
+
+    - **No grouping declared** -> non-blocking warning. Plenty of data genuinely
+      has no group structure, and blocking there would make the gate something
+      everyone routes around. The warning still says what was *not* checked, so a
+      reader is never told more than was verified.
+    - **Grouping declared, run recorded no groups** -> blocks. The task said this
+      data clusters; a run that then declines to record which cluster each sample
+      came from has not shown its split is clean. Fail-closed, because the
+      alternative is that omitting a field is the way to pass.
+    - **Groups intersect** -> blocks, naming the shared groups.
+    """
+    if grouping is None:
+        return GateResult(
+            "no_group_leakage",
+            True,
+            "no grouping declared for this task; sample-id disjointness only, "
+            "which does not exclude session-level leakage",
+            blocking=False,
+        )
+
+    shared: set[Any] = set()
+    undeclared: list[int] = []
+    for r in exp.runs:
+        tr = _groups(r.extra.get("train_groups"))
+        ev = _groups(r.extra.get("eval_groups"))
+        if tr is None or ev is None or not tr or not ev:
+            undeclared.append(r.seed)
+            continue
+        shared |= tr & ev
+
+    if undeclared:
+        return GateResult(
+            "no_group_leakage",
+            False,
+            f"task declares grouping by '{grouping.group_key}' ({grouping.rationale}) "
+            f"but seeds {sorted(undeclared)} recorded no train/eval group ids, so "
+            "disjointness is unproven",
+            blocking=True,
+        )
+
+    ok = not shared
+    sample = sorted(map(str, shared))[:5]
+    detail = (
+        f"train/eval disjoint by '{grouping.group_key}'"
+        if ok
+        else f"GROUP LEAK: {len(shared)} shared '{grouping.group_key}' value(s) "
+        f"across train and eval, e.g. {sample} — sample ids may be distinct while "
+        "the recordings are the same"
+    )
+    return GateResult("no_group_leakage", ok, detail, blocking=True)

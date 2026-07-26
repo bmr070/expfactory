@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 # reuse the prototype's gate functions and run record unchanged
+from expfactory.gates_v1 import DatasetGrouping
 from expfactory.harness import (
     DEFAULT_GATES,
     Experiment,
@@ -290,6 +291,7 @@ class GateVerifier:
         id_factory: IdFactory = new_exp_id,
         require_prereg: bool = False,
         prereg_store: PreregStore | None = None,
+        grouping: DatasetGrouping | None = None,
     ) -> None:
         """
         `require_prereg` turns G-07 on. It is off by default because this same
@@ -300,6 +302,12 @@ class GateVerifier:
         **The hill-climb runner must construct this with require_prereg=True.**
         That is the production configuration; see docs/SPEC.md §6. This is a
         workflow switch, not a security toggle that may be left off.
+
+        `grouping` turns G-09 from a warning into a wall. Supply it whenever the
+        task's data is segmented from longer captures — recordings, sessions,
+        sites, subjects, devices. It lives here rather than on the candidate for
+        the same reason the baseline does: a constraint the agent may decline to
+        declare is not a constraint.
         """
         self._gates = gates
         self._baseline = baseline
@@ -307,6 +315,7 @@ class GateVerifier:
         self._id_factory = id_factory
         self._require_prereg = require_prereg
         self._prereg_store = prereg_store
+        self._grouping = grouping
 
     def _prereg_ctx(self, candidate: Candidate, exp_id: str) -> PreregContext:
         store = self._prereg_store
@@ -347,6 +356,13 @@ class GateVerifier:
         from expfactory.gates_v1 import gate_no_single_seed_dominance
 
         exp.gates.append(gate_no_single_seed_dominance(exp))
+        # G-09: group-level leakage. Always runs. Non-blocking and explicit about
+        # what it did not check when the task declares no grouping; blocking when
+        # it does. `grouping` comes from the constructor, never from the
+        # candidate, so a training function cannot switch it off.
+        from expfactory.gates_v1 import gate_no_group_leakage
+
+        exp.gates.append(gate_no_group_leakage(exp, grouping=self._grouping))
         # Diff-level gates run only when the candidate carries diff evidence.
         # The runner always supplies one; a candidate without a diff simply skips
         # them rather than crashing (backward compatible).
