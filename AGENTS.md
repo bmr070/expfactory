@@ -35,6 +35,7 @@ promoted, stop and re-read this paragraph.
 | `src/expfactory/prereg.py` | Preregistration record + the G-07 gate. |
 | `src/expfactory/selfcheck.py` | The boundary test. |
 | `src/expfactory/registry.py` | JobRegistry + ComputeSubstrate seam. Holds the GPU credential. |
+| `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
 | `examples/demo_drone.py` | Demo only. **Miscalibrated — see Gotchas.** |
 | `docs/SPEC.md` | The specification. Start here. |
 | `docs/MAP.md`, `docs/MAP2.md` | Closed decisions and open territory. |
