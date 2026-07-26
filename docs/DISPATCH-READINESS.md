@@ -7,7 +7,16 @@ agent's change from a human's, and the red lane is advisory.
 
 This is the checklist. Items marked **you** need an account action.
 
-## 1. A separate machine identity  ·  **you**  ·  the remaining blocker
+## 0. Decide where the runner runs first  ·  **[M2-08](decisions/M2-08-where-does-the-runner-live.md)**
+
+§1 below picks a GitHub identity. That choice is downstream of *where the runner
+executes*, and this document had it the wrong way round: a scheduled GitHub
+Action supplies `github-actions[bot]` free, a daemon supplies nothing. Resolve
+M2-08 before acting on §1.
+
+The Linear half of §1 is unaffected — it is free and needed either way.
+
+## 1. A separate machine identity  ·  **you**
 
 Pick one:
 
@@ -134,8 +143,9 @@ right mattered more than reaching I/O:
 
 ## The shortest honest path
 
-1. Create the GitHub App with the permissions above; install it on this repo
-2. Put its token in the runner's secret store
+1. Create the free Linear agent (`actor=app`) — needed under every option
+2. Resolve M2-08 (where the runner runs), then take the GitHub identity it implies
+   and put its credential in that host's secret store
 3. Set the two cost caps
 4. Write the three adapters in §7
 5. Apply `agent-ready` to exactly one ticket, by hand, and watch it
