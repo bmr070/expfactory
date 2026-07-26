@@ -70,6 +70,9 @@ _HARNESS_PATHS = (
     # against. Edit the cost model to zero and every cap passes forever while
     # still looking enforced.
     "local_substrate.py",
+    # Holds the outbound allowlist. The whole control is that widening it takes a
+    # reviewed diff, so a change here IS the thing a human must look at.
+    "egress.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
