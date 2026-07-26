@@ -234,3 +234,32 @@ def test_reconcile_reports_finished_jobs_still_listed_open(tmp_path: Path):
     reg.submit(_spec(), cost_estimate_usd=5.0)
     sub.status["job-0"] = JobState.RESOLVED
     assert reg.reconcile() == ["job-0"]
+
+
+def test_a_corrupt_row_does_not_brick_the_registry(tmp_path: Path):
+    """Refusing has to stay recoverable.
+
+    An earlier version raised while *parsing*, so one malformed line jammed the
+    registry permanently: `reset_breaker` appended fine and then
+    `breaker_reason` raised again reading it back. A breaker with no path to
+    reset is not a breaker, it is a brick.
+
+    Good rows still parse, the damage is reported, and repairing the log clears
+    the refusal without anyone having to edit history.
+    """
+    sub, clock = FakeSubstrate(), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec(), cost_estimate_usd=7.0)
+
+    path = tmp_path / "jobs.jsonl"
+    good = path.read_text()
+    path.write_text(good + "{corrupt\n")
+
+    assert reg.log_damage() == 1
+    assert [r.ticket for r in reg.outstanding()] == ["BRE-1"], "good rows still parse"
+    with pytest.raises(BreakerTripped, match="unreadable row"):
+        reg.submit(_spec(), cost_estimate_usd=1.0)
+
+    path.write_text(good)  # repair
+    assert reg.log_damage() == 0
+    reg.submit(_spec(), cost_estimate_usd=1.0)  # recovered, no raise

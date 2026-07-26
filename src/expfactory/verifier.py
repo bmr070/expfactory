@@ -322,11 +322,6 @@ class GateVerifier:
             ),
             # Read from the ledger, deliberately not from the prereg: the whole
             # point of rule 8 is that the agent does not get to supply this.
-            parent_metric=(
-                store.get_verdict_metric(record.parent_id)
-                if (store and record is not None and record.parent_id)
-                else None
-            ),
             parent_metrics=(
                 store.get_verdict_metrics(record.parent_id)
                 if (store and record is not None and record.parent_id)

@@ -124,6 +124,9 @@ right mattered more than reaching I/O:
 | Protocol | Needs | Note |
 |---|---|---|
 | ~~`runner.Tracker`~~ | **done** — `github_tracker.GitHubTracker` | needs an `HttpTransport` carrying the App token |
+| workspace isolation | **not built** | ticket 07 box 1; the runner trusts the AgentSession |
+| secret store | **not built** | ticket 07 box 4; the token rides on the transport today |
+| runner ↔ registry | **not wired** | the detach path M2-03 designed does not connect yet |
 | `runner.AgentSession` | sandboxed agent | must construct its verifier with `require_prereg=True` (#4) |
 | `registry.ComputeSubstrate` | Modal adapter | `spawn` → durable handle → poll |
 
@@ -139,3 +142,9 @@ right mattered more than reaching I/O:
 
 Step 1 is what converts the red lane from advisory to enforced. Nothing should
 dispatch before it.
+
+**And note what step 4 really covers.** The runner today calls an `AgentSession`
+synchronously and waits for a verdict. That is fine for a minutes-long job and
+wrong for the hours-long GPU path M2-03 was decided for — the registry exists to
+be submitted to and detached from, and nothing wires the two together yet. A
+first live run should be a short deterministic ticket, not a training run.

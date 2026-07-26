@@ -132,6 +132,7 @@ class JobRegistry:
         self._per_day_cap = per_day_cap_usd
         self._default_deadline_s = default_deadline_s
         self._clock = clock
+        self._damaged = 0
 
     # -- event log ---------------------------------------------------------
 
@@ -140,14 +141,45 @@ class JobRegistry:
             f.write(json.dumps(event, sort_keys=True) + "\n")
 
     def _events(self) -> list[dict[str, Any]]:
+        """Parse the log, or refuse.
+
+        Fail closed: treating an unreadable log as "no spend so far" would hand
+        an unbounded GPU budget to whatever corrupted it.
+
+        But refusing must stay *recoverable*. An earlier version raised from
+        here and nowhere else, which meant a single malformed line jammed the
+        registry permanently — `reset_breaker` appends fine, and then
+        `breaker_reason` raises again reading it back. A breaker with no path to
+        reset is not a breaker, it is a brick.
+
+        So a corrupt line is quarantined rather than fatal: everything parseable
+        is returned, and the damage is reported through `log_damage()`, which
+        `submit` consults and a human can see and act on.
+        """
+        out: list[dict[str, Any]] = []
+        self._damaged = 0
         try:
-            return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
-        except (OSError, json.JSONDecodeError) as exc:
-            # Fail closed. Treating an unreadable log as "no spend so far" would
-            # hand an unbounded GPU budget to whatever corrupted it.
+            lines = self.path.read_text().splitlines()
+        except OSError as exc:
             raise BreakerTripped(
-                f"job log at {self.path} is unreadable ({exc}); refusing to submit"
+                f"job log at {self.path} cannot be read ({exc}); refusing to submit"
             ) from exc
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                # Counted, not dropped silently: an unreadable row may have been
+                # a submission, so spend accounting is no longer trustworthy.
+                self._damaged += 1
+        return out
+
+    def log_damage(self) -> int:
+        """Unparseable rows seen on the last read. Non-zero means spend accounting
+        is incomplete, because a corrupt row may have been a submission."""
+        self._events()
+        return self._damaged
 
     def records(self) -> dict[str, JobRecord]:
         """Current state, derived by replaying the log in order."""
@@ -228,6 +260,14 @@ class JobRegistry:
         reason = self.breaker_reason()
         if reason is not None:
             raise BreakerTripped(f"breaker open: {reason} — reset required before submitting")
+
+        if self._damaged:
+            # Spend accounting is incomplete, so the caps below cannot be trusted.
+            raise BreakerTripped(
+                f"{self._damaged} unreadable row(s) in {self.path}: a corrupt row may "
+                "have been a submission, so today's spend is unknown. Repair or "
+                "archive the log before submitting."
+            )
 
         if cost_estimate_usd > self._per_job_cap:
             raise CostCapExceeded(
