@@ -58,14 +58,18 @@ about the current state. GitHub will not let anyone approve their own PR, so wit
 admin enforcement on, a solo owner could never merge — the repo would deadlock on
 its first red-lane change.
 
-The consequence, stated plainly: **protection does not bind `@bmr070` today.** It
-binds every non-admin, which is exactly the population that matters once §1
-lands. A GitHub App is not an admin, so it will be fully bound — it opens a PR,
-CI must pass, and a code owner must approve anything touching the verification
-substrate.
+What that means in practice, measured rather than assumed: the normal merge path
+is blocked for the owner too. `gh pr merge` refuses with *"the base branch policy
+prohibits the merge"*. An admin can override, but only by asking explicitly with
+`--admin`. So the owner's bypass is a **deliberate act, not a silent default** —
+which is most of what a control like this is for.
 
-Until §1, protection is real for a hypothetical agent and advisory for the owner.
+A GitHub App is not an admin and has no such escape hatch: it opens a PR, CI must
+pass, and a code owner must approve anything touching the verification substrate.
 Do **not** grant the App an admin bypass, or this reverts to decorative.
+
+Every `--admin` merge is recorded in the PR timeline, so the override is auditable
+after the fact even though it is available.
 
 ## 3. CODEOWNERS stays owner-only  ·  done
 
