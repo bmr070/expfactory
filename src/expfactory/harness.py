@@ -28,6 +28,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+# 64 bits of sha256. Long enough that a collision across a ledger's lifetime is
+# not a practical concern, short enough to read in a PR body (GH#12).
+_HASH_CHARS = 16
+
 # --------------------------------------------------------------------------- #
 # Records
 # --------------------------------------------------------------------------- #
@@ -192,7 +196,7 @@ def gate_too_good(
         ok,
         f"delta={delta:+.4f}"
         if ok
-        else f"delta={delta:+.4f} exceeds {implausible_delta} — ESCALATE, do not auto-promote",
+        else f"delta={delta:+.4f} exceeds {implausible_delta}: ESCALATE, do not auto-promote",
         blocking=False,
     )
 
@@ -252,7 +256,7 @@ def code_fingerprint(*sources: str) -> str:
     h = hashlib.sha256()
     for s in sources:
         h.update(s.encode())
-    return h.hexdigest()[:16]
+    return h.hexdigest()[:_HASH_CHARS]
 
 
 def run_experiment(
@@ -301,7 +305,12 @@ def report(exp: Experiment, baseline: Experiment | None = None) -> str:
         f"experiment {exp.exp_id}  (parent: {exp.parent_id or 'root'})",
         f"  hypothesis : {exp.hypothesis}",
         f"  config     : {json.dumps(exp.config, sort_keys=True)}",
-        f"  metric     : {exp.mean_metric:.4f} ± {exp.std_metric:.4f}  over {len(exp.runs)} seeds",
+        # ASCII only (GH#28). This block is the human-facing proof of work and is
+        # read on Windows consoles, where cp1252 turns U+00B1 into a replacement
+        # character — mojibake in a verdict reads as a broken tool rather than a
+        # considered result. Same rule the substrate guard's output already has.
+        f"  metric     : {exp.mean_metric:.4f} +/- {exp.std_metric:.4f}  "
+        f"over {len(exp.runs)} seeds",
     ]
     if baseline is not None:
         lines.append(f"  vs baseline: {exp.mean_metric - baseline.mean_metric:+.4f}")

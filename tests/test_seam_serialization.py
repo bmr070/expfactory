@@ -121,3 +121,41 @@ def test_ledger_reconstructs_nan_metric_from_row(tmp_path: Path):
 
 def _reject_constant(name: str) -> object:
     raise AssertionError(f"ledger emitted non-JSON constant {name!r}")
+
+
+# ---- GH#12: a frozen verdict must not alias what it was built from ----------
+
+
+def test_a_bundle_does_not_alias_the_experiment_it_was_built_from():
+    """`from_experiment` passed `config=exp.config` straight through while
+    `from_exit_code` copied it. So an empirical verdict shared a dict with the
+    Experiment, and mutating that experiment afterwards silently rewrote a bundle
+    which advertises itself as frozen."""
+    from expfactory.harness import RunResult
+    from expfactory.verifier import Candidate, GateVerifier
+
+    runs = [RunResult(s, 0.8, "t", "e", 0, 0.0) for s in range(3)]
+    candidate = Candidate(hypothesis="h", config={"lr": 0.01}, code_hash="c", runs=runs)
+    experiment = candidate.experiment("e1")
+
+    bundle = GateVerifier(id_factory=lambda: "e1").run(candidate)
+    experiment.config["lr"] = 999
+    experiment.config["injected"] = True
+
+    assert bundle.config == {"lr": 0.01}
+
+
+def test_both_named_constructors_copy_their_mappings():
+    """The two lanes differed, which is how the aliasing went unnoticed: the
+    deterministic one was already correct."""
+    from expfactory.harness import RunResult
+    from expfactory.verifier import Candidate, VerdictBundle
+
+    runs = [RunResult(0, 0.8, "t", "e", 0, 0.0)]
+    config = {"lr": 0.01}
+    candidate = Candidate(hypothesis="h", config=config, code_hash="c", runs=runs)
+
+    ci = VerdictBundle.from_exit_code("e1", candidate, ("pytest",), 0, "out", "err")
+    config["lr"] = 999
+
+    assert ci.config == {"lr": 0.01}

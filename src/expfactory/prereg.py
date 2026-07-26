@@ -41,6 +41,10 @@ from typing import Any, Literal
 
 from expfactory.harness import Experiment, GateResult, RunResult
 
+# 64 bits of sha256. Long enough that a collision across a ledger's lifetime is
+# not a practical concern, short enough to read in a PR body (GH#12).
+_HASH_CHARS = 16
+
 Direction = Literal["maximize", "minimize"]
 
 # The metric name meaning "the RunResult.val_metric field itself" rather than a
@@ -166,7 +170,7 @@ class Preregistration:
         types only: no `id()`, no object repr, no dict-ordering dependence.
         """
         payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+        return hashlib.sha256(payload.encode()).hexdigest()[:_HASH_CHARS]
 
 
 def metric_value(run: RunResult, name: str) -> float | None:

@@ -43,13 +43,19 @@ from expfactory.prereg import (
 IdFactory = Callable[[], str]
 
 
+# Named rather than inlined (GH#12). Each was a bare slice whose reason lived
+# only in whoever wrote it.
+_EXP_ID_CHARS = 12  # 48 bits of uuid4: collision-free at any plausible ledger size
+_LOG_TAIL_CHARS = 500  # enough to see a traceback's last frames, not a whole log
+
+
 def new_exp_id() -> str:
     """Default experiment id.
 
     Injected rather than called inline so a test, a replay, or a resumed run can
     pin the id *through the seam* instead of rewriting a bundle after the fact.
     """
-    return uuid.uuid4().hex[:12]
+    return uuid.uuid4().hex[:_EXP_ID_CHARS]
 
 
 # --------------------------------------------------------------------------- #
@@ -152,6 +158,23 @@ class VerdictBundle:
     # regression cannot be measured against a parent at all.
     metrics: dict[str, float] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Copy the mapping fields, so a verdict cannot change after it is reached.
+
+        `from_experiment` passed `config=exp.config` straight through while
+        `from_exit_code` copied it, so an empirical verdict *aliased* the
+        Experiment it was built from. Mutating that experiment afterwards
+        silently rewrote a bundle which advertises itself as frozen.
+
+        This closes the aliasing. It does not make the dicts read-only — that
+        wants `MappingProxyType`, which `asdict()` cannot serialise, and the
+        remaining exposure does not justify the machinery: since GH#33 the agent
+        never receives a `VerdictBundle` at all, so what is left is internal code
+        mutating its own verdict by accident, which copying prevents.
+        """
+        for name in ("config", "artifact", "metrics"):
+            object.__setattr__(self, name, dict(getattr(self, name)))
+
     # -- named constructors: one per lane, so neither verifier hand-rolls the shape
 
     @classmethod
@@ -208,8 +231,8 @@ class VerdictBundle:
                 "exp_id": exp_id,
                 "command": list(command),
                 "returncode": returncode,
-                "stdout_tail": stdout[-500:],
-                "stderr_tail": stderr[-500:],
+                "stdout_tail": stdout[-_LOG_TAIL_CHARS:],
+                "stderr_tail": stderr[-_LOG_TAIL_CHARS:],
             },
         )
 

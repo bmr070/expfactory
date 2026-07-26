@@ -296,7 +296,7 @@ def gate_no_group_leakage(
         f"train/eval disjoint by '{grouping.group_key}'"
         if ok
         else f"GROUP LEAK: {len(shared)} shared '{grouping.group_key}' value(s) "
-        f"across train and eval, e.g. {sample} — sample ids may be distinct while "
+        f"across train and eval, e.g. {sample}: sample ids may be distinct while "
         "the recordings are the same"
     )
     return GateResult("no_group_leakage", ok, detail, blocking=True)

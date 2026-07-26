@@ -205,7 +205,7 @@ class Runner:
         if LABEL_AGENT_READY not in ticket.labels:
             return "not agent-ready"
         if self._lane not in ticket.labels:
-            return f"no {self._lane} label — the runner cannot verify this lane"
+            return f"no {self._lane} label: the runner cannot verify this lane"
         if LABEL_NEEDS_HUMAN in ticket.labels:
             return "needs-human: a breaker tripped or this is a red-lane path"
         if ticket.state in (STATE_IN_PROGRESS, STATE_IN_REVIEW):
@@ -252,7 +252,7 @@ class Runner:
             self._tracker.comment(
                 ticket.id,
                 f"Agent session failed and produced no candidate: {exc}\n\n"
-                "Moved to needs-human rather than retried — a failure whose cause "
+                "Moved to needs-human rather than retried: a failure whose cause "
                 "is unknown may repeat at cost.",
             )
             self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
@@ -268,7 +268,7 @@ class Runner:
                 ticket.id,
                 f"Candidate could not be adjudicated: {exc}\n\n"
                 "The evidence the agent returned did not survive verification. "
-                "This is not a rejected experiment — it is a candidate the gates "
+                "This is not a rejected experiment; it is a candidate the gates "
                 "could not judge at all. Moved to needs-human.",
             )
             self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
@@ -316,7 +316,7 @@ def proof_of_work(bundle: VerdictBundle) -> str:
     """
     verdict = "PROMOTED" if bundle.promoted else f"REJECTED ({', '.join(bundle.blocked_by)})"
     lines = [
-        f"**{verdict}** — experiment `{bundle.exp_id}`",
+        f"**{verdict}** - experiment `{bundle.exp_id}`",
         "",
         f"- metric: `{bundle.mean_metric:.4f}` over {len(bundle.seeds)} seeds {list(bundle.seeds)}",
         f"- code: `{bundle.code_hash}`",
@@ -333,7 +333,7 @@ def proof_of_work(bundle: VerdictBundle) -> str:
     lines += ["", "Gates:"]
     for gate in bundle.artifact.get("gates", []):
         mark = "PASS" if gate["passed"] else "FAIL"
-        lines.append(f"  - [{mark}] `{gate['name']}` — {gate['detail']}")
+        lines.append(f"  - [{mark}] `{gate['name']}`: {gate['detail']}")
     lines += [
         "",
         "_A rejection is a correct outcome. The bar is that the gates behaved, "

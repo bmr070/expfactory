@@ -25,12 +25,44 @@ class Expect(enum.Enum):
     REJECT = "reject"
 
 
+class Kind(enum.StrEnum):
+    """What a fixture is an example of.
+
+    An enum rather than a bare str with the valid values in a trailing comment
+    (GH#12). `Expect` directly above it was already an enum, and the comment had
+    drifted badly: it listed four kinds while twelve were in use, so eight ways a
+    fixture could be miscategorised were invisible to a reader and to the type
+    checker.
+    """
+
+    # core gate set
+    GENUINE = "genuine"
+    SEED_NOISE = "seed_noise"
+    LEAKAGE = "leakage"
+    HOLDOUT_BURN = "holdout_burn"
+    # G-07 / G-08 preregistration
+    PREREG_CLEAN = "prereg_clean"
+    NO_PREREG = "no_prereg"
+    HARKING = "harking"
+    METRIC_SWAP = "metric_swap"
+    SEED_SHOP = "seed_shop"
+    GUARDRAIL = "guardrail"
+    EXPLORATORY = "exploratory"
+    PREREG_CHURN = "prereg_churn"
+
+
 @dataclass(frozen=True)
 class Fixture:
     id: str
-    kind: str  # genuine | seed_noise | leakage | holdout_burn
+    kind: Kind
     expect: Expect
     candidate: Candidate
+
+    def __post_init__(self) -> None:
+        # StrEnum accepts its own members and equal strings; this rejects a typo
+        # at construction rather than letting it sit in the suite as a category
+        # nothing counts.
+        object.__setattr__(self, "kind", Kind(self.kind))
 
 
 @dataclass
@@ -120,19 +152,19 @@ def build_suite() -> Suite:
 
     visible = [
         # genuine: clean, tight, reproducible -> promote
-        Fixture("v-genuine-1", "genuine", Expect.PROMOTE, cand("genuine strong", _runs(0.85))),
-        Fixture("v-genuine-2", "genuine", Expect.PROMOTE, cand("genuine modest", _runs(0.78))),
+        Fixture("v-genuine-1", Kind.GENUINE, Expect.PROMOTE, cand("genuine strong", _runs(0.85))),
+        Fixture("v-genuine-2", Kind.GENUINE, Expect.PROMOTE, cand("genuine modest", _runs(0.78))),
         # leakage: train/eval overlap -> reject regardless of metric
         Fixture(
             "v-leak-1",
-            "leakage",
+            Kind.LEAKAGE,
             Expect.REJECT,
             cand("leaky great number", _runs(0.99, overlap=12)),
         ),
         # holdout_burn: tamper diff (proxy for reaching into the lockbox) -> reject
         Fixture(
             "v-burn-1",
-            "holdout_burn",
+            Kind.HOLDOUT_BURN,
             Expect.REJECT,
             cand(
                 "removed assertion",
@@ -145,18 +177,20 @@ def build_suite() -> Suite:
         # seed_noise: single-seed spike, indistinguishable from noise band -> reject
         Fixture(
             "v-noise-1",
-            "seed_noise",
+            Kind.SEED_NOISE,
             Expect.REJECT,
             cand("one lucky seed", _runs(0.50, jitter=0.45)),
         ),
     ]
 
     heldout = [
-        Fixture("h-genuine-1", "genuine", Expect.PROMOTE, cand("held genuine", _runs(0.82))),
-        Fixture("h-leak-1", "leakage", Expect.REJECT, cand("held leaky", _runs(0.97, overlap=8))),
+        Fixture("h-genuine-1", Kind.GENUINE, Expect.PROMOTE, cand("held genuine", _runs(0.82))),
+        Fixture(
+            "h-leak-1", Kind.LEAKAGE, Expect.REJECT, cand("held leaky", _runs(0.97, overlap=8))
+        ),
         Fixture(
             "h-burn-1",
-            "holdout_burn",
+            Kind.HOLDOUT_BURN,
             Expect.REJECT,
             cand(
                 "held tamper",
@@ -272,14 +306,14 @@ def build_prereg_suite() -> PreregSuiteSetup:
     visible = [
         Fixture(
             "p-genuine-1",
-            "prereg_clean",
+            Kind.PREREG_CLEAN,
             Expect.PROMOTE,
             cand("filed and met", 0.75, prereg_hash=p_ok.hash, parent_id=parent_ok),
         ),
         # the headline mode: primary flat against the declared baseline
         Fixture(
             "p-swap-1",
-            "metric_swap",
+            Kind.METRIC_SWAP,
             Expect.REJECT,
             cand(
                 "primary flat, latency better",
@@ -291,13 +325,13 @@ def build_prereg_suite() -> PreregSuiteSetup:
         ),
         Fixture(
             "p-hark-1",
-            "harking",
+            Kind.HARKING,
             Expect.REJECT,
             cand("filed after the fact", 0.80, prereg_hash=p_unfiled.hash, parent_id=parent_ok),
         ),
         Fixture(
             "p-seedshop-1",
-            "seed_shop",
+            Kind.SEED_SHOP,
             Expect.REJECT,
             cand(
                 "reported the best two",
@@ -309,18 +343,20 @@ def build_prereg_suite() -> PreregSuiteSetup:
         ),
         Fixture(
             "p-explore-1",
-            "exploratory",
+            Kind.EXPLORATORY,
             Expect.REJECT,
             cand("great number, exploratory", 0.99, exploratory=True),
         ),
-        Fixture("p-nocite-1", "no_prereg", Expect.REJECT, cand("confirmatory with no rule", 0.95)),
+        Fixture(
+            "p-nocite-1", Kind.NO_PREREG, Expect.REJECT, cand("confirmatory with no rule", 0.95)
+        ),
         # G-08. Each of the four rules in this lineage is individually honest and
         # passes G-07; only counting across them reveals the shopping. Note the
         # numbers here are *good* — the rejection is about the pattern, not the
         # result.
         Fixture(
             "p-churn-1",
-            "prereg_churn",
+            Kind.PREREG_CHURN,
             Expect.REJECT,
             cand(
                 "fourth rule filed, none landed",
@@ -334,7 +370,7 @@ def build_prereg_suite() -> PreregSuiteSetup:
     heldout = [
         Fixture(
             "hp-genuine-1",
-            "prereg_clean",
+            Kind.PREREG_CLEAN,
             Expect.PROMOTE,
             cand(
                 "held filed and met",
@@ -346,7 +382,7 @@ def build_prereg_suite() -> PreregSuiteSetup:
         ),
         Fixture(
             "hp-guardrail-1",
-            "guardrail",
+            Kind.GUARDRAIL,
             Expect.REJECT,
             cand(
                 "real gain, latency blown",
@@ -357,7 +393,7 @@ def build_prereg_suite() -> PreregSuiteSetup:
         ),
         Fixture(
             "hp-explore-1",
-            "exploratory",
+            Kind.EXPLORATORY,
             Expect.REJECT,
             cand("held exploratory", 0.97, exploratory=True),
         ),
@@ -448,7 +484,7 @@ def build_group_suite() -> GroupSuiteSetup:
         # Clean: sessions genuinely held apart -> promote.
         Fixture(
             "g-clean-1",
-            "genuine",
+            Kind.GENUINE,
             Expect.PROMOTE,
             cand("sessions held apart", _grouped_runs(0.85, ("s1", "s2", "s3"), ("s9",))),
         ),
@@ -456,7 +492,7 @@ def build_group_suite() -> GroupSuiteSetup:
         # sees overlap_count == 0 and passes; G-09 must reject.
         Fixture(
             "g-leak-1",
-            "leakage",
+            Kind.LEAKAGE,
             Expect.REJECT,
             cand("clip-level split", _grouped_runs(0.97, ("s1", "s2"), ("s2", "s9"))),
         ),
@@ -464,7 +500,7 @@ def build_group_suite() -> GroupSuiteSetup:
         # Fail-closed, or omitting the field becomes the way to pass.
         Fixture(
             "g-undeclared-1",
-            "leakage",
+            Kind.LEAKAGE,
             Expect.REJECT,
             cand("no groups recorded", _grouped_runs(0.88, (), (), declare=False)),
         ),
@@ -473,13 +509,13 @@ def build_group_suite() -> GroupSuiteSetup:
     heldout = [
         Fixture(
             "g-clean-2",
-            "genuine",
+            Kind.GENUINE,
             Expect.PROMOTE,
             cand("held clean sessions", _grouped_runs(0.80, ("a", "b"), ("c",))),
         ),
         Fixture(
             "g-leak-2",
-            "leakage",
+            Kind.LEAKAGE,
             Expect.REJECT,
             cand("held one shared site", _grouped_runs(0.93, ("a", "b", "c"), ("c",))),
         ),

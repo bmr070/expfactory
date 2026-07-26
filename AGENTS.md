@@ -61,7 +61,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 258 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 269 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
