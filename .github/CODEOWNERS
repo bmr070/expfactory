@@ -30,6 +30,7 @@
 /src/expfactory/substrate_guard.py     @bmr070
 /src/expfactory/literature.py          @bmr070
 /src/expfactory/local_substrate.py     @bmr070
+/src/expfactory/egress.py              @bmr070
 
 # CI is the enforcement surface; changing it changes what "green" means.
 /.github/workflows/    @bmr070

@@ -48,6 +48,7 @@ the leaked 0.796.
 | `src/expfactory/local_substrate.py` | The local GPU behind that seam. Detached jobs, imputed cost. |
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on, and who adjudicates it. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
+| `src/expfactory/egress.py` | Outbound allowlist + artifact pinning. Widening it is a reviewed diff, by design. |
 | `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
 | `examples/demo_drone.py` | Worked example. End-to-end check on the gate set; pinned by `tests/test_demo_drone.py`. |
 | `docs/SPEC.md` | The specification. Start here. |
@@ -61,7 +62,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 269 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 295 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -156,6 +157,12 @@ not by reasoning. Breaking one silently guts the verification layer.
   verifier. A runner built without them still refuses its own verdicts — the
   `required_gates` check now catches a misconfigured *runner* rather than a
   misconfigured agent.
+- **The egress allowlist is code, and exact-match only.** No env var, no config
+  file, no runtime API — inside a sandbox the agent can set env vars and write
+  config, but it cannot merge a PR, and that is the whole control. Matching is
+  exact because `endswith` accepts `evil-huggingface.co`, substring accepts
+  `huggingface.co.evil.example`, and both accept `huggingface.co@evil.example`.
+  Host matching alone is not integrity either: pin the SHA-256.
 - **Neither a baseline nor a guardrail threshold is agent-declared.** Both are
   read from the parent's recorded verdict. A threshold the agent names is
   decorative.
