@@ -29,6 +29,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # substrate_guard diffs against the merge base, which needs history
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -50,6 +53,16 @@ jobs:
 
       - name: Tests
         run: pytest
+
+      - name: Substrate guard — does this PR edit the verification layer?
+        # Only meaningful on a PR; a push to main has no base to diff against.
+        # Deliberately keyed on WHAT changed, never on who authored it: if the
+        # agent runtime opens PRs as the triggering human, authorship carries no
+        # signal and no review-based rule can tell agent work from the owner's.
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags --depth=50 origin "$GITHUB_BASE_REF"
+          python -m expfactory.substrate_guard --base "origin/$GITHUB_BASE_REF"
 
       - name: Boundary test — adversarial suite (visible partition)
         # The held-out partition is deliberately NOT run here. Running it every

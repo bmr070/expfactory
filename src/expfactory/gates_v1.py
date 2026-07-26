@@ -50,6 +50,9 @@ _HARNESS_PATHS = (
     # Answers "who applied this label", which is what the trust boundary rests on.
     # Make label_actor always return the owner and eligibility is bypassed wholesale.
     "github_tracker.py",
+    # The PR-level wall. Listed here so it guards itself: a change that disables
+    # the check cannot merge past the check.
+    "substrate_guard.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.

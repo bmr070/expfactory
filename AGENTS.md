@@ -37,6 +37,7 @@ promoted, stop and re-read this paragraph.
 | `src/expfactory/registry.py` | JobRegistry + ComputeSubstrate seam. Holds the GPU credential. |
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
+| `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
 | `examples/demo_drone.py` | Demo only. **Miscalibrated — see Gotchas.** |
 | `docs/SPEC.md` | The specification. Start here. |
 | `docs/DISPATCH-READINESS.md` | What must be true before a real agent runs here. |
@@ -49,7 +50,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 154 tests
+pytest                              # 162 tests
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core

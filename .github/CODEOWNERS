@@ -27,6 +27,7 @@
 /src/expfactory/pipeline.py            @bmr070
 /src/expfactory/runner.py              @bmr070
 /src/expfactory/github_tracker.py      @bmr070
+/src/expfactory/substrate_guard.py     @bmr070
 
 # CI is the enforcement surface; changing it changes what "green" means.
 /.github/workflows/    @bmr070
