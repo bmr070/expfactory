@@ -14,7 +14,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Any
 
-from expfactory.gates_v1 import DiffEvidence
+from expfactory.gates_v1 import DatasetGrouping, DiffEvidence
 from expfactory.harness import RunResult
 from expfactory.prereg import Guardrail, Preregistration
 from expfactory.verifier import Candidate, Verifier
@@ -374,3 +374,114 @@ def build_prereg_suite() -> PreregSuiteSetup:
         ],
         suite=Suite(visible, heldout),
     )
+
+
+# --------------------------------------------------------------------------- #
+# G-09 — group-level leakage (invariant 4: every gate traces to a fixture)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class GroupSuiteSetup:
+    """The G-09 suite plus the task grouping a verifier must be built with.
+
+    Separate from the core suite because the declaration lives on the verifier,
+    not on the candidate — deliberately, since a candidate-supplied grouping
+    could be omitted by the candidate. Evaluating these fixtures against a
+    verifier with `grouping=None` would (correctly) promote the leaky one, which
+    is the whole point of the design and would look like a suite failure.
+    """
+
+    grouping: DatasetGrouping
+    suite: Suite
+
+
+def _grouped_runs(
+    metric: float,
+    train_groups: tuple[str, ...],
+    eval_groups: tuple[str, ...],
+    seeds: int = 5,
+    declare: bool = True,
+) -> list[RunResult]:
+    """Runs whose sample ids are always disjoint, and whose *groups* may not be.
+
+    `overlap_count=0` throughout, on purpose: these fixtures must be invisible to
+    `gate_no_leakage`. If a fixture here were also caught by the id-level gate it
+    would prove nothing about G-09.
+    """
+    extra: dict[str, Any] = (
+        {"train_groups": list(train_groups), "eval_groups": list(eval_groups)} if declare else {}
+    )
+    return [
+        RunResult(
+            seed=s,
+            val_metric=metric,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+            extra=dict(extra),
+        )
+        for s in range(seeds)
+    ]
+
+
+def build_group_suite() -> GroupSuiteSetup:
+    """Fixtures for the leak that has disjoint sample ids.
+
+    Modelled on the case EchoHawk (arXiv 2606.29589) documents: a dataset
+    pre-segmented into clips, split at clip level, so slices of one recording sit
+    on both sides. Every id distinct, every existing gate green, the number
+    inflated. The paper measures the inflation at roughly five points of
+    detection probability.
+    """
+    grouping = DatasetGrouping(
+        group_key="recording_session",
+        rationale="clips are segmented from longer continuous captures",
+        source="EchoHawk, arXiv:2606.29589",
+    )
+
+    def cand(hyp: str, runs: list[RunResult]) -> Candidate:
+        return Candidate(hypothesis=hyp, config={"m": "x"}, code_hash=hyp, runs=runs, cost_usd=0.4)
+
+    visible = [
+        # Clean: sessions genuinely held apart -> promote.
+        Fixture(
+            "g-clean-1",
+            "genuine",
+            Expect.PROMOTE,
+            cand("sessions held apart", _grouped_runs(0.85, ("s1", "s2", "s3"), ("s9",))),
+        ),
+        # THE fixture. One shared session, ids fully disjoint. `gate_no_leakage`
+        # sees overlap_count == 0 and passes; G-09 must reject.
+        Fixture(
+            "g-leak-1",
+            "leakage",
+            Expect.REJECT,
+            cand("clip-level split", _grouped_runs(0.97, ("s1", "s2"), ("s2", "s9"))),
+        ),
+        # Declared grouping, no group ids recorded -> unproven, so rejected.
+        # Fail-closed, or omitting the field becomes the way to pass.
+        Fixture(
+            "g-undeclared-1",
+            "leakage",
+            Expect.REJECT,
+            cand("no groups recorded", _grouped_runs(0.88, (), (), declare=False)),
+        ),
+    ]
+
+    heldout = [
+        Fixture(
+            "g-clean-2",
+            "genuine",
+            Expect.PROMOTE,
+            cand("held clean sessions", _grouped_runs(0.80, ("a", "b"), ("c",))),
+        ),
+        Fixture(
+            "g-leak-2",
+            "leakage",
+            Expect.REJECT,
+            cand("held one shared site", _grouped_runs(0.93, ("a", "b", "c"), ("c",))),
+        ),
+    ]
+    return GroupSuiteSetup(grouping=grouping, suite=Suite(visible, heldout))
