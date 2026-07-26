@@ -128,7 +128,15 @@ def test_a_failing_job_still_resolves_with_its_exit_code(tmp_path: Path):
 def test_a_job_killed_without_finishing_reads_as_lost(tmp_path: Path):
     """No completion record and no live process. Reporting SUBMITTED forever
     would leave the registry waiting out a deadline on a job that is already
-    gone."""
+    gone.
+
+    This failed on Linux and passed on Windows, which is the argument for the
+    matrix. On POSIX a dead child stays in the process table until reaped, and
+    `os.kill(pid, 0)` succeeds the whole time — and this module holds no `Popen`
+    objects by design, so nothing ever reaped. A killed job read as alive
+    indefinitely and the registry would sit out its full six-hour deadline before
+    calling it lost. One burned slot per crash on a one-card box.
+    """
     sub = LocalGpuSubstrate(tmp_path, prober=_no_gpu)
     handle = sub.submit(_spec([PY, "-c", "import time; time.sleep(120)"]))
     assert sub.poll(handle) is JobState.SUBMITTED

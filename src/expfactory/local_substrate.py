@@ -417,6 +417,23 @@ def _alive(pid: int) -> bool:
 
     Cannot distinguish a reused pid from the original, which is exactly why
     `done.json` — not this — is what declares a job finished.
+
+    ## Zombies
+
+    On POSIX a dead child stays in the process table until someone reaps it, and
+    `os.kill(pid, 0)` succeeds the whole time. This module deliberately holds no
+    `Popen` objects — all state is on disk, so a fresh process can poll — which
+    means nothing ever reaps. The naive check therefore reported a killed job as
+    alive *forever*, and the registry would sit out its full deadline (six hours
+    by default) before calling it lost. On a one-card box that is a slot burned
+    per crash.
+
+    Caught by CI on Linux; Windows does not have the failure mode, which is a
+    good argument for the matrix.
+
+    Two steps, because there are two cases. If the job is our own child,
+    `waitpid` reaps it and we learn it exited. If it is not — the submitter
+    exited and init inherited it — we ask the OS for its state.
     """
     if pid <= 0:
         return False
@@ -425,13 +442,43 @@ def _alive(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
         )
         return str(pid) in out.stdout
+
+    try:
+        reaped, _status = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            # Our child, and it has now exited. (0, 0) means still running.
+            return False
+    except (ChildProcessError, OSError):
+        # Not our child, which is the normal case after the submitter exits.
+        pass
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
+        # Someone else's process. It exists, so treat it as live rather than
+        # declaring a job lost on the basis of a permission error.
         return True
-    return True
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    """Whether a pid is an unreaped corpse rather than a running process."""
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("State:"):
+                return "Z" in line.partition(":")[2]
+    except OSError:
+        # No /proc — macOS, or the process vanished between calls.
+        pass
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.stdout.strip().startswith("Z")
 
 
 # The payload runs under this. It exists so that `done.json` is written on every
