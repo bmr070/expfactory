@@ -30,18 +30,8 @@ from expfactory.verifier import Candidate, GateVerifier
 HUMANS = frozenset({"bmr070"})
 
 
-def _bundle(metric: float = 0.80, overlap: int = 0, adjudicated: bool = True):
-    """A verdict as the hill-climb lane produces them.
-
-    `adjudicated` controls whether the bundle carries the preregistration gates.
-    It defaults to True because that is what a correctly-configured agent session
-    returns, and the runner now refuses anything else.
-
-    The gate names are grafted on rather than produced by filing a real prereg:
-    what the runner checks is `bundle.gate_names`, and standing up a ledger and a
-    matching preregistration in every runner test would be testing G-07 here
-    instead of in its own file. `adjudicated=False` is the misconfigured agent.
-    """
+def _candidate(metric: float = 0.80, overlap: int = 0) -> Candidate:
+    """The evidence an agent session returns. Not a verdict — the runner judges."""
     runs = [
         dict(
             seed=s,
@@ -54,13 +44,37 @@ def _bundle(metric: float = 0.80, overlap: int = 0, adjudicated: bool = True):
         )
         for s in range(3)
     ]
-    cand = Candidate(hypothesis="h", config={}, code_hash="abc", runs=runs, cost_usd=0.4)
-    bundle = GateVerifier(id_factory=lambda: "e1").run(cand)
-    if adjudicated:
-        bundle = dataclasses.replace(
-            bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))
-        )
-    return bundle
+    return Candidate(hypothesis="h", config={}, code_hash="abc", runs=runs, cost_usd=0.4)
+
+
+class FakeVerifier:
+    """Stands in for a correctly-configured hill-climb verifier.
+
+    Wraps the real `GateVerifier` and appends the preregistration gate names,
+    rather than filing an actual preregistration. What the runner checks is
+    `bundle.gate_names`; standing up a ledger and a matching prereg in every
+    runner test would be testing G-07 here instead of in its own file.
+
+    `adjudicating=False` is the *misconfigured runner* — a verifier built without
+    require_prereg — which is now the only way those gates can go missing, since
+    the agent no longer supplies the verifier.
+    """
+
+    def __init__(self, adjudicating: bool = True, raises: Exception | None = None) -> None:
+        self._adjudicating = adjudicating
+        self._raises = raises
+        self.seen: list[Candidate] = []
+
+    def run(self, candidate: Candidate):
+        self.seen.append(candidate)
+        if self._raises is not None:
+            raise self._raises
+        bundle = GateVerifier(id_factory=lambda: "e1").run(candidate)
+        if self._adjudicating:
+            bundle = dataclasses.replace(
+                bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))
+            )
+        return bundle
 
 
 class FakeTracker:
@@ -88,8 +102,8 @@ class FakeTracker:
 
 
 class FakeAgent:
-    def __init__(self, bundle=None, raises: Exception | None = None) -> None:
-        self._bundle = bundle if bundle is not None else _bundle()
+    def __init__(self, candidate=None, raises: Exception | None = None) -> None:
+        self._candidate = candidate if candidate is not None else _candidate()
         self._raises = raises
         self.seen: list[Ticket] = []
 
@@ -97,17 +111,17 @@ class FakeAgent:
         self.seen.append(ticket)
         if self._raises is not None:
             raise self._raises
-        return self._bundle
+        return self._candidate
 
 
 def _ticket(tid="BRE-1", labels=(LABEL_AGENT_READY, LANE_EMPIRICAL), state="Todo") -> Ticket:
     return Ticket(id=tid, title="t", body="do the thing", labels=frozenset(labels), state=state)
 
 
-def _runner(tracker, agent, **over):
+def _runner(tracker, agent, verifier=None, **over):
     kwargs = dict(human_allowlist=HUMANS, max_concurrent=1)
     kwargs.update(over)
-    return Runner(tracker, agent, **kwargs)  # type: ignore[arg-type]
+    return Runner(tracker, agent, verifier or FakeVerifier(), **kwargs)  # type: ignore[arg-type]
 
 
 def test_protocols_are_satisfied_structurally():
@@ -170,7 +184,7 @@ def test_an_empty_allowlist_is_refused_at_construction():
     """An empty allowlist would make every label acceptable — the opposite of
     what this control is for. Fail closed rather than vacuously true."""
     with pytest.raises(ValueError, match="at least one human"):
-        Runner(FakeTracker([]), FakeAgent(), human_allowlist=frozenset())
+        Runner(FakeTracker([]), FakeAgent(), FakeVerifier(), human_allowlist=frozenset())
 
 
 # ---- concurrency ------------------------------------------------------------
@@ -211,7 +225,7 @@ def test_a_rejected_experiment_is_still_a_completed_run():
     """Rejecting every proposed gain is a passing run (W-03). A rejection is
     reported and reviewed, not treated as a failure of the runner."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    agent = FakeAgent(bundle=_bundle(overlap=9))  # leakage -> rejected
+    agent = FakeAgent(candidate=_candidate(overlap=9))  # leakage -> rejected
     result = _runner(tracker, agent).tick()
 
     assert result.dispatched == ["BRE-1"]
@@ -253,7 +267,7 @@ def test_ticket_body_is_passed_to_the_agent_as_data():
 
 
 def test_proof_of_work_reconstructs_the_verdict_without_narrative():
-    text = proof_of_work(_bundle())
+    text = proof_of_work(FakeVerifier().run(_candidate()))
     assert "PROMOTED" in text
     assert "`abc`" in text  # code hash
     assert "[0, 1, 2]" in text  # seeds
@@ -262,7 +276,7 @@ def test_proof_of_work_reconstructs_the_verdict_without_narrative():
 
 
 def test_proof_of_work_names_the_blocking_gates_on_rejection():
-    text = proof_of_work(_bundle(overlap=4))
+    text = proof_of_work(FakeVerifier().run(_candidate(overlap=4)))
     assert "REJECTED" in text
     assert "no_leakage" in text
 
@@ -279,9 +293,7 @@ def test_a_verdict_without_the_prereg_gates_is_refused():
     """The hole GH#4 describes. A verdict that never faced G-07 cannot show it
     was not metric-shopped."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    agent = FakeAgent(bundle=_bundle(adjudicated=False))
-
-    result = _runner(tracker, agent).tick()
+    result = _runner(tracker, FakeAgent(), verifier=FakeVerifier(adjudicating=False)).tick()
 
     assert result.dispatched == []
     assert "BRE-1" in result.refused
@@ -296,7 +308,7 @@ def test_a_refused_verdict_never_reaches_the_review_queue():
     invisible unless they think to check for an absence.
     """
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=False))).tick()
+    _runner(tracker, FakeAgent(), verifier=FakeVerifier(adjudicating=False)).tick()
 
     states = [s for tid, s in tracker.states if tid == "BRE-1"]
     assert STATE_IN_REVIEW not in states
@@ -307,7 +319,7 @@ def test_a_refusal_says_what_was_missing():
     """A ticket parked in needs-human with no reason is indistinguishable from
     one nobody looked at."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=False))).tick()
+    _runner(tracker, FakeAgent(), verifier=FakeVerifier(adjudicating=False)).tick()
 
     body = "\n".join(b for tid, b in tracker.comments if tid == "BRE-1")
     assert "prereg_churn" in body and "preregistration" in body
@@ -319,7 +331,7 @@ def test_a_refusal_is_not_counted_as_an_agent_failure():
     broke', `refused` is 'the agent returned something we will not accept'. One
     is retryable in principle, the other is a configuration fault."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    result = _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=False))).tick()
+    result = _runner(tracker, FakeAgent(), verifier=FakeVerifier(adjudicating=False)).tick()
 
     assert result.failed == []
     assert result.refused
@@ -328,7 +340,7 @@ def test_a_refusal_is_not_counted_as_an_agent_failure():
 def test_a_properly_adjudicated_verdict_still_dispatches():
     """The check must not swallow good work."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    result = _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=True))).tick()
+    result = _runner(tracker, FakeAgent()).tick()
 
     assert result.dispatched == ["BRE-1"]
     assert result.refused == {}
@@ -338,7 +350,7 @@ def test_a_rejected_but_adjudicated_verdict_still_dispatches():
     """W-03 again: rejecting a proposed gain is a completed run. Refusal is about
     *whether the verdict was judged*, never about which way it went."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    agent = FakeAgent(bundle=_bundle(overlap=9, adjudicated=True))  # leakage -> rejected
+    agent = FakeAgent(candidate=_candidate(overlap=9))  # leakage -> rejected
 
     result = _runner(tracker, agent).tick()
 
@@ -350,7 +362,7 @@ def test_the_empirical_lane_requires_the_gates_by_default():
     """Opt-in safety fails quietly, so the default is the safe one. Nobody has to
     remember to pass required_gates."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    runner = Runner(tracker, FakeAgent(), human_allowlist=HUMANS)  # type: ignore[arg-type]
+    runner = Runner(tracker, FakeAgent(), FakeVerifier(), human_allowlist=HUMANS)  # type: ignore[arg-type]
 
     assert runner._required_gates == REQUIRED_EMPIRICAL_GATES
 
@@ -359,8 +371,83 @@ def test_the_check_can_be_disabled_but_only_deliberately():
     """An explicit empty frozenset is easy to spot in review. The distinction
     that matters is between a chosen exemption and a default nobody chose."""
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
-    agent = FakeAgent(bundle=_bundle(adjudicated=False))
-
-    result = _runner(tracker, agent, required_gates=frozenset()).tick()
+    result = _runner(
+        tracker, FakeAgent(), verifier=FakeVerifier(adjudicating=False), required_gates=frozenset()
+    ).tick()
 
     assert result.dispatched == ["BRE-1"]
+
+
+# ---- GH#33: the agent returns evidence, the runner adjudicates --------------
+
+
+def test_the_agent_returns_a_candidate_not_a_verdict():
+    """The shape change that makes the rest possible. If the agent hands over a
+    verdict, every check the runner performs is on data the agent authored."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    verifier = FakeVerifier()
+    _runner(tracker, FakeAgent(), verifier=verifier).tick()
+
+    assert len(verifier.seen) == 1
+    assert isinstance(verifier.seen[0], Candidate)
+
+
+def test_an_agent_cannot_promote_itself_by_claiming_it_passed():
+    """The point of GH#33, stated as an attack.
+
+    A sandboxed agent that wants a promotion no longer has a channel for it. It
+    can return whatever Candidate it likes; `promoted` is derived here, from
+    gates it does not run, in a process it does not control.
+    """
+
+    class LyingAgent:
+        """Returns evidence of a blatant leak while 'reporting' a great result."""
+
+        def run(self, ticket):
+            return _candidate(metric=0.99, overlap=500)
+
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    _runner(tracker, LyingAgent()).tick()
+
+    body = "\n".join(b for tid, b in tracker.comments if tid == "BRE-1")
+    assert "REJECTED" in body
+    assert "PROMOTED" not in body
+
+
+def test_the_verifier_is_the_runners_not_the_agents():
+    """A candidate is judged by the runner's verifier even when the agent would
+    have preferred a different answer. There is no path from the agent to the
+    adjudication."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    verifier = FakeVerifier()
+
+    _runner(tracker, FakeAgent(candidate=_candidate(overlap=7)), verifier=verifier).tick()
+
+    bundle = verifier.run(_candidate(overlap=7))
+    assert not bundle.promoted and "no_leakage" in bundle.blocked_by
+
+
+def test_a_candidate_that_cannot_be_adjudicated_goes_to_needs_human():
+    """Distinct from a rejection. A rejected experiment was judged; this one
+    could not be, and treating the two the same would file 'the verifier crashed'
+    as a scientific result."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    verifier = FakeVerifier(raises=RuntimeError("gate exploded"))
+
+    result = _runner(tracker, FakeAgent(), verifier=verifier).tick()
+
+    assert result.dispatched == []
+    assert result.failed == ["BRE-1"]
+    assert [s for tid, s in tracker.states if tid == "BRE-1"][-1] == STATE_NEEDS_HUMAN
+    body = "\n".join(b for tid, b in tracker.comments if tid == "BRE-1")
+    assert "could not be adjudicated" in body
+
+
+def test_an_agent_that_raises_is_still_handled():
+    """Unchanged by the refactor, and worth re-asserting: the failure path now
+    happens before adjudication rather than after."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    result = _runner(tracker, FakeAgent(raises=RuntimeError("sandbox died"))).tick()
+
+    assert result.failed == ["BRE-1"]
+    assert [s for tid, s in tracker.states if tid == "BRE-1"][-1] == STATE_NEEDS_HUMAN

@@ -31,6 +31,29 @@ from expfactory.runner import (
 REPO = "bmr070/expfactory"
 
 
+def _adjudicating_verifier():
+    """A verifier configured the way the hill-climb runner must configure one.
+
+    The preregistration gate names are grafted on rather than produced by filing
+    a real prereg: these tests are about the GitHub adapter driving the runner,
+    and standing up a ledger would turn them into G-07 tests. The refusal path
+    has its own coverage in tests/test_runner.py.
+    """
+    import dataclasses
+
+    from expfactory.runner import REQUIRED_EMPIRICAL_GATES
+    from expfactory.verifier import GateVerifier
+
+    class _V:
+        def run(self, candidate):
+            bundle = GateVerifier(id_factory=lambda: "e1").run(candidate)
+            return dataclasses.replace(
+                bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))
+            )
+
+    return _V()
+
+
 class FakeHttp:
     def __init__(self, responses: dict[str, object] | None = None) -> None:
         self.responses = responses or {}
@@ -174,8 +197,10 @@ def test_the_adapter_drives_the_real_runner():
     tracker = GitHubTracker(REPO, http)
 
     class Agent:
+        """Returns evidence only. Adjudication is the runner's job (GH#33)."""
+
         def run(self, ticket):
-            from expfactory.verifier import Candidate, GateVerifier
+            from expfactory.verifier import Candidate
 
             runs = [
                 dict(
@@ -188,23 +213,11 @@ def test_the_adapter_drives_the_real_runner():
                 )
                 for s in range(3)
             ]
-            cand = Candidate(hypothesis="h", config={}, code_hash="c", runs=runs, cost_usd=0.1)
-            bundle = GateVerifier(id_factory=lambda: "e1").run(cand)
-            # A correctly-configured hill-climb session builds its verifier with
-            # require_prereg=True, so its verdict carries the G-07/G-08 gates and
-            # the runner will accept it. Grafted on here rather than filing a real
-            # preregistration: this test is about the GitHub adapter driving the
-            # runner, and standing up a ledger would move it to testing G-07.
-            # The refusal path itself is covered in tests/test_runner.py.
-            import dataclasses
+            return Candidate(hypothesis="h", config={}, code_hash="c", runs=runs, cost_usd=0.1)
 
-            from expfactory.runner import REQUIRED_EMPIRICAL_GATES
-
-            return dataclasses.replace(
-                bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))
-            )
-
-    result = Runner(tracker, Agent(), human_allowlist=frozenset({"bmr070"})).tick()
+    result = Runner(
+        tracker, Agent(), _adjudicating_verifier(), human_allowlist=frozenset({"bmr070"})
+    ).tick()
 
     assert result.dispatched == ["1"]
     assert any("PROMOTED" in body["body"] for _, body in http.posts if "body" in body)
@@ -225,7 +238,10 @@ def test_a_bot_applied_label_is_refused_end_to_end():
             raise AssertionError("must not dispatch")
 
     result = Runner(
-        GitHubTracker(REPO, http), NeverCalled(), human_allowlist=frozenset({"bmr070"})
+        GitHubTracker(REPO, http),
+        NeverCalled(),
+        _adjudicating_verifier(),
+        human_allowlist=frozenset({"bmr070"}),
     ).tick()
     assert result.dispatched == []
 
