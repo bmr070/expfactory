@@ -46,6 +46,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+# 64 bits of sha256. Long enough that a collision across a ledger's lifetime is
+# not a practical concern, short enough to read in a PR body (GH#12).
+_HASH_CHARS = 16
+
 
 class VenueTier(enum.StrEnum):
     """How hard a filter the work passed, best-effort and deliberately coarse.
@@ -159,7 +163,7 @@ class ResearchHypothesis:
             },
             sort_keys=True,
         )
-        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+        return hashlib.sha256(payload.encode()).hexdigest()[:_HASH_CHARS]
 
 
 @dataclass
