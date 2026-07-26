@@ -66,6 +66,10 @@ _HARNESS_PATHS = (
     # corpus it reads is deliberately NOT here -- docs/literature/corpus.json is
     # data, so the reading list can grow without an override on the gate layer.
     "literature.py",
+    # Imputes the dollar cost that the registry's caps and breaker are checked
+    # against. Edit the cost model to zero and every cap passes forever while
+    # still looking enforced.
+    "local_substrate.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.

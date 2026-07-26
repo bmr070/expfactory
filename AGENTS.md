@@ -45,6 +45,7 @@ the leaked 0.796.
 | `src/expfactory/prereg.py` | Preregistration record + the G-07 gate. |
 | `src/expfactory/selfcheck.py` | The boundary test. |
 | `src/expfactory/registry.py` | JobRegistry + ComputeSubstrate seam. Holds the GPU credential. |
+| `src/expfactory/local_substrate.py` | The local GPU behind that seam. Detached jobs, imputed cost. |
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
 | `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
@@ -60,11 +61,12 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 197 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 236 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
 python -m expfactory.selfcheck      # boundary test, visible partition
+python -m expfactory.local_substrate  # what compute is available, and its imputed cost
 ```
 
 ## Invariants — do not break these
@@ -116,6 +118,18 @@ not by reasoning. Breaking one silently guts the verification layer.
 - **Test-time adaptation reintroduces that leak after the split**, where G-09
   cannot reach it. See the H5 hazard in `docs/research/acoustic-drone-detection.md`
   before proposing any per-session adaptation.
+- **Local GPU cost is imputed, and must never be zero.** The registry's caps and
+  breaker are in dollars; hardware you own has no invoice. `CostModel` charges
+  ~$0.09/GPU-hour so the caps still bind. Setting it to zero does not "simplify
+  free compute" — it silently disables every cap while leaving them looking
+  enforced. Same shape as the zero-width noise band.
+- **A pid is not proof a job is alive.** Pids are reused, and the liveness probe
+  costs ~250 ms on Windows, long enough for a short job to finish inside it.
+  `done.json` is the authority; the probe is a hint. Getting this backwards
+  marked finished jobs LOST, which opens the breaker and needs a human to reset.
+- **The local card drives the display.** ~1.2 GB is gone before any job starts and
+  it moves when a browser opens, so `reserve_mib` headroom is not optional. 12 GB
+  total is also a real ceiling on what hypotheses are runnable here.
 - **The dominance gate in `gates_v1.py` was wrong on first implementation**
   (inverted ratio) and passed nothing. A fixture caught it. If you modify it,
   verify against *both* suite partitions.
