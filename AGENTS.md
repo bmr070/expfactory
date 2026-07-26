@@ -38,7 +38,7 @@ promoted, stop and re-read this paragraph.
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
 | `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
-| `examples/demo_drone.py` | Demo only. **Miscalibrated — see Gotchas.** |
+| `examples/demo_drone.py` | Worked example. End-to-end check on the gate set; pinned by `tests/test_demo_drone.py`. |
 | `docs/SPEC.md` | The specification. Start here. |
 | `docs/DISPATCH-READINESS.md` | What must be true before a real agent runs here. |
 | `docs/MAP.md`, `docs/MAP2.md` | Closed decisions and open territory. |
@@ -50,7 +50,7 @@ promoted, stop and re-read this paragraph.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 162 tests
+pytest                              # 170 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -86,10 +86,16 @@ not by reasoning. Breaking one silently guts the verification layer.
 
 ## Gotchas
 
-- **`examples/demo_drone.py` is miscalibrated.** A scenario planted as "seed
-  noise" turned out to be a genuine improvement, so the demo validates less than
-  it appears to. It lives outside the package for this reason. **Trust the
-  adversarial suite, not the demo.**
+- **`examples/demo_drone.py` is calibrated by measurement, and by a test.** It
+  was not. It planted labels by intent and was wrong about three of four
+  scenarios — the "noise" case was the best model in the demo, the "leak" case
+  gained +0.0005 over the honest one, and every seed returned an identical
+  number, so `gate_seed_variance` had a zero-width band and promoted anything
+  positive while appearing to scrutinise it. It had also stopped importing
+  entirely at the `Ledger` -> `ExperimentLedger` rename, unnoticed, because
+  nothing ran it. `tests/test_demo_drone.py` now asserts every verdict and CI
+  sets `EXPFACTORY_REQUIRE_DEMO=1` so it cannot silently skip. **If you retune a
+  scenario, measure it — do not relabel it.**
 - **The dominance gate in `gates_v1.py` was wrong on first implementation**
   (inverted ratio) and passed nothing. A fixture caught it. If you modify it,
   verify against *both* suite partitions.
