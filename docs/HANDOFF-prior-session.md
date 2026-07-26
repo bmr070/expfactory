@@ -101,9 +101,10 @@ order they should be tackled:
 
 **Two cautionary notes about the existing code:**
 
-- The demo in `demo_drone.py` has a **miscalibrated scenario** — a case planted as "seed noise" turned
-  out to be a genuine improvement, so the demo validates less than it appears to. The adversarial suite
-  is the real test; trust that, not the demo.
+- ~~The demo in `demo_drone.py` has a **miscalibrated scenario**~~ — **RESOLVED**, and it was worse than
+  this note knew. Measurement found three of four scenarios wrong, a seed-variance band of exactly zero,
+  and a file that had not imported since the `Ledger` rename. Recalibrated against measured numbers and
+  pinned by `tests/test_demo_drone.py`. See `AGENTS.md#gotchas`.
 - The dominance gate in `gates_v1.py` was **wrong on first implementation** (inverted ratio) and passed
   nothing. The fixture caught it. If you modify that gate, verify against both suite partitions.
 
