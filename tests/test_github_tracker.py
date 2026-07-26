@@ -189,7 +189,20 @@ def test_the_adapter_drives_the_real_runner():
                 for s in range(3)
             ]
             cand = Candidate(hypothesis="h", config={}, code_hash="c", runs=runs, cost_usd=0.1)
-            return GateVerifier(id_factory=lambda: "e1").run(cand)
+            bundle = GateVerifier(id_factory=lambda: "e1").run(cand)
+            # A correctly-configured hill-climb session builds its verifier with
+            # require_prereg=True, so its verdict carries the G-07/G-08 gates and
+            # the runner will accept it. Grafted on here rather than filing a real
+            # preregistration: this test is about the GitHub adapter driving the
+            # runner, and standing up a ledger would move it to testing G-07.
+            # The refusal path itself is covered in tests/test_runner.py.
+            import dataclasses
+
+            from expfactory.runner import REQUIRED_EMPIRICAL_GATES
+
+            return dataclasses.replace(
+                bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))
+            )
 
     result = Runner(tracker, Agent(), human_allowlist=frozenset({"bmr070"})).tick()
 

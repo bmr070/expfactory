@@ -61,7 +61,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 236 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 253 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -138,6 +138,14 @@ not by reasoning. Breaking one silently guts the verification layer.
   readable by whatever language the runner ends up in.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would.
+- **The runner checks the verdict, not the verifier's configuration.** G-07/G-08
+  only run when `GateVerifier` is built with `require_prereg=True`, and the runner
+  cannot force that because the *agent session* builds the verifier and the agent
+  is the untrusted party. So the runner refuses any empirical-lane verdict whose
+  `gate_names` lack `preregistration`/`prereg_churn` — needs-human, never review.
+  Same move as the substrate guard: ask what the evidence says, never who
+  produced it. **A verdict the agent fabricates wholesale is still out of scope**
+  — see GH#33.
 - **Neither a baseline nor a guardrail threshold is agent-declared.** Both are
   read from the parent's recorded verdict. A threshold the agent names is
   decorative.

@@ -47,6 +47,26 @@ STATE_IN_PROGRESS = "In Progress"
 STATE_IN_REVIEW = "In Review"
 STATE_NEEDS_HUMAN = "Needs Human"
 
+# Gates a hill-climb verdict must have been adjudicated under before this runner
+# will pass it to a human as reviewable work.
+#
+# G-07 and G-08 only run when `GateVerifier` is built with `require_prereg=True`,
+# and that defaults to False for a good reason: the same gate set judges one-off
+# candidates with no lineage, the adversarial fixtures among them, where
+# demanding a preregistration would reject everything and destroy their
+# diagnostic value.
+#
+# Sound, and it leaves the safe configuration opt-in — and opt-in safety fails
+# quietly. The runner cannot fix that by setting the flag, because **the runner
+# does not build the verifier; the agent session does**, and the agent is the
+# untrusted party. Asking it to enable its own anti-metric-shopping gate is not a
+# control.
+#
+# So the check is on the artifact instead of the configuration: a returned
+# verdict must *show* it was judged by these gates. Same move as the substrate
+# guard — ask what the evidence says, never who produced it.
+REQUIRED_EMPIRICAL_GATES = frozenset({"preregistration", "prereg_churn"})
+
 
 @dataclass(frozen=True)
 class Ticket:
@@ -89,6 +109,10 @@ class TickResult:
     dispatched: list[str] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
+    # Kept apart from `failed` because they mean different things to whoever
+    # reads the tick summary: `failed` is "the agent broke", `refused` is "the
+    # agent returned something we will not accept as adjudicated".
+    refused: dict[str, str] = field(default_factory=dict)
 
 
 class Runner:
@@ -100,7 +124,17 @@ class Runner:
         human_allowlist: frozenset[str],
         max_concurrent: int = 1,
         lane: str = LANE_EMPIRICAL,
+        required_gates: frozenset[str] | None = None,
     ) -> None:
+        """
+        `required_gates` names gates a returned verdict must have been judged by.
+        Defaults to `REQUIRED_EMPIRICAL_GATES` on the empirical lane and to
+        nothing elsewhere — the deterministic lane has no preregistration.
+
+        Pass an explicit `frozenset()` to disable the check. That is deliberately
+        awkward to write and easy to spot in review: it is the difference between
+        a deliberate exemption and a default nobody chose.
+        """
         if not human_allowlist:
             # Fail closed. An empty allowlist would make every label acceptable,
             # which is the opposite of what this control is for.
@@ -110,6 +144,9 @@ class Runner:
         self._humans = human_allowlist
         self._max_concurrent = max_concurrent
         self._lane = lane
+        if required_gates is None:
+            required_gates = REQUIRED_EMPIRICAL_GATES if lane == LANE_EMPIRICAL else frozenset()
+        self._required_gates = required_gates
 
     # -- the trust boundary -------------------------------------------------
 
@@ -174,6 +211,32 @@ class Runner:
             )
             self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
             result.failed.append(ticket.id)
+            return
+
+        missing = self._required_gates - set(bundle.gate_names)
+        if missing:
+            # Refused before a human is asked to review it. A verdict that never
+            # faced G-07 cannot show it was not metric-shopped, and putting it in
+            # the review queue anyway launders that: the reviewer sees a
+            # proof-of-work block that looks like every other one.
+            #
+            # Not retried, and deliberately not "fixed" by re-running with the
+            # gate on. Whatever produced an unadjudicated verdict is a
+            # configuration problem in the agent session, and re-running it
+            # spends GPU to reach the same place.
+            names = ", ".join(sorted(missing))
+            self._tracker.comment(
+                ticket.id,
+                f"Verdict refused: adjudicated without {names}.\n\n"
+                "On the empirical lane a verdict must show it was judged by the "
+                "preregistration gates. This one carries "
+                f"[{', '.join(bundle.gate_names)}].\n\n"
+                "The agent session builds its own verifier, so this is a "
+                "configuration fault there, not a result to review. Moved to "
+                "needs-human rather than retried.",
+            )
+            self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
+            result.refused[ticket.id] = f"missing gates: {names}"
             return
 
         self._tracker.comment(ticket.id, proof_of_work(bundle))

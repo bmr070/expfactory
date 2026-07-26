@@ -8,11 +8,14 @@ something it should not have is worse than one that dispatches nothing.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from expfactory.runner import (
     LABEL_AGENT_READY,
     LANE_EMPIRICAL,
+    REQUIRED_EMPIRICAL_GATES,
     STATE_IN_PROGRESS,
     STATE_IN_REVIEW,
     STATE_NEEDS_HUMAN,
@@ -27,7 +30,18 @@ from expfactory.verifier import Candidate, GateVerifier
 HUMANS = frozenset({"bmr070"})
 
 
-def _bundle(metric: float = 0.80, overlap: int = 0):
+def _bundle(metric: float = 0.80, overlap: int = 0, adjudicated: bool = True):
+    """A verdict as the hill-climb lane produces them.
+
+    `adjudicated` controls whether the bundle carries the preregistration gates.
+    It defaults to True because that is what a correctly-configured agent session
+    returns, and the runner now refuses anything else.
+
+    The gate names are grafted on rather than produced by filing a real prereg:
+    what the runner checks is `bundle.gate_names`, and standing up a ledger and a
+    matching preregistration in every runner test would be testing G-07 here
+    instead of in its own file. `adjudicated=False` is the misconfigured agent.
+    """
     runs = [
         dict(
             seed=s,
@@ -41,7 +55,12 @@ def _bundle(metric: float = 0.80, overlap: int = 0):
         for s in range(3)
     ]
     cand = Candidate(hypothesis="h", config={}, code_hash="abc", runs=runs, cost_usd=0.4)
-    return GateVerifier(id_factory=lambda: "e1").run(cand)
+    bundle = GateVerifier(id_factory=lambda: "e1").run(cand)
+    if adjudicated:
+        bundle = dataclasses.replace(
+            bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))
+        )
+    return bundle
 
 
 class FakeTracker:
@@ -246,3 +265,102 @@ def test_proof_of_work_names_the_blocking_gates_on_rejection():
     text = proof_of_work(_bundle(overlap=4))
     assert "REJECTED" in text
     assert "no_leakage" in text
+
+
+# ---- GH#4: a verdict must show it was adjudicated --------------------------
+#
+# G-07 and G-08 only run when the verifier is built with require_prereg=True, and
+# nothing forced that. The runner cannot fix it by setting the flag, because the
+# runner does not build the verifier — the agent session does, and the agent is
+# the untrusted party. So the check is on the artifact, not the configuration.
+
+
+def test_a_verdict_without_the_prereg_gates_is_refused():
+    """The hole GH#4 describes. A verdict that never faced G-07 cannot show it
+    was not metric-shopped."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent(bundle=_bundle(adjudicated=False))
+
+    result = _runner(tracker, agent).tick()
+
+    assert result.dispatched == []
+    assert "BRE-1" in result.refused
+    assert "preregistration" in result.refused["BRE-1"]
+
+
+def test_a_refused_verdict_never_reaches_the_review_queue():
+    """The point of refusing at all.
+
+    Putting an unadjudicated verdict in review launders it: the reviewer sees a
+    proof-of-work block that looks like every other one, and the missing gate is
+    invisible unless they think to check for an absence.
+    """
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=False))).tick()
+
+    states = [s for tid, s in tracker.states if tid == "BRE-1"]
+    assert STATE_IN_REVIEW not in states
+    assert states[-1] == STATE_NEEDS_HUMAN
+
+
+def test_a_refusal_says_what_was_missing():
+    """A ticket parked in needs-human with no reason is indistinguishable from
+    one nobody looked at."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=False))).tick()
+
+    body = "\n".join(b for tid, b in tracker.comments if tid == "BRE-1")
+    assert "prereg_churn" in body and "preregistration" in body
+    assert "refused" in body.lower()
+
+
+def test_a_refusal_is_not_counted_as_an_agent_failure():
+    """Different things to whoever reads the tick summary: `failed` is 'the agent
+    broke', `refused` is 'the agent returned something we will not accept'. One
+    is retryable in principle, the other is a configuration fault."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    result = _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=False))).tick()
+
+    assert result.failed == []
+    assert result.refused
+
+
+def test_a_properly_adjudicated_verdict_still_dispatches():
+    """The check must not swallow good work."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    result = _runner(tracker, FakeAgent(bundle=_bundle(adjudicated=True))).tick()
+
+    assert result.dispatched == ["BRE-1"]
+    assert result.refused == {}
+
+
+def test_a_rejected_but_adjudicated_verdict_still_dispatches():
+    """W-03 again: rejecting a proposed gain is a completed run. Refusal is about
+    *whether the verdict was judged*, never about which way it went."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent(bundle=_bundle(overlap=9, adjudicated=True))  # leakage -> rejected
+
+    result = _runner(tracker, agent).tick()
+
+    assert result.dispatched == ["BRE-1"]
+    assert result.refused == {}
+
+
+def test_the_empirical_lane_requires_the_gates_by_default():
+    """Opt-in safety fails quietly, so the default is the safe one. Nobody has to
+    remember to pass required_gates."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    runner = Runner(tracker, FakeAgent(), human_allowlist=HUMANS)  # type: ignore[arg-type]
+
+    assert runner._required_gates == REQUIRED_EMPIRICAL_GATES
+
+
+def test_the_check_can_be_disabled_but_only_deliberately():
+    """An explicit empty frozenset is easy to spot in review. The distinction
+    that matters is between a chosen exemption and a default nobody chose."""
+    tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent(bundle=_bundle(adjudicated=False))
+
+    result = _runner(tracker, agent, required_gates=frozenset()).tick()
+
+    assert result.dispatched == ["BRE-1"]
