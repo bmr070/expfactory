@@ -198,8 +198,12 @@ class PreregContext:
     lineage_attempts: int = 0
     # The parent experiment's RECORDED metric, read from the ledger — never from
     # the preregistration. See the baseline rule in gate_preregistration.
-    parent_metric: float | None = None
-    # Every metric the parent recorded, for guardrail regression checks.
+    # Every metric the parent recorded, keyed by name. Rule 8 and rule 6 both
+    # read from here. It is deliberately NOT a single number: an earlier version
+    # carried only the parent's mean val_metric, so a preregistration naming an
+    # `extra` key as primary had its baseline validated against a different
+    # metric than the one its effect was measured on — which reopened the
+    # forgery hole for every non-default primary metric.
     parent_metrics: Mapping[str, float] = field(default_factory=dict)
     # Ledger positions. `verdict_position` is None on a first verification, which
     # is the normal case; it is set only when a verdict for this experiment was
@@ -345,20 +349,22 @@ def gate_preregistration(
             "checked, so the claim is unverifiable. Run it as exploratory first.",
             blocking=True,
         )
-    if ctx.parent_metric is None:
+    parent_baseline = ctx.parent_metrics.get(prereg.primary_metric)
+    if parent_baseline is None:
         return GateResult(
             name,
             False,
-            f"parent {prereg.parent_id} has no recorded result in the ledger — "
+            f"parent {prereg.parent_id} recorded no {prereg.primary_metric!r} — "
             "nothing to measure the declared baseline against",
             blocking=True,
         )
-    if abs(ctx.parent_metric - prereg.baseline_value) > BASELINE_TOLERANCE:
+    if abs(parent_baseline - prereg.baseline_value) > BASELINE_TOLERANCE:
         return GateResult(
             name,
             False,
-            f"FORGED BASELINE: declared {prereg.baseline_value:.4f} but parent "
-            f"{prereg.parent_id} actually scored {ctx.parent_metric:.4f}",
+            f"FORGED BASELINE: declared {prereg.baseline_value:.4f} for "
+            f"{prereg.primary_metric!r} but parent {prereg.parent_id} actually "
+            f"scored {parent_baseline:.4f}",
             blocking=True,
         )
 

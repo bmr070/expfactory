@@ -17,9 +17,23 @@ still need infrastructure that does not exist yet.
 | N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | **DONE** |
 | N-05 | Resolve M2-03 — the experiment queue | — | grilling session | **DONE** |
 | N-08 | JobRegistry + ComputeSubstrate protocol | M2-03 | — | **DONE** |
-| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | adapters + creds | **core DONE** |
+| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | see below | **PARTIAL** |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
+
+**Ticket 07 is PARTIAL, not core-done.** Two of its four acceptance boxes are
+unmet and were being hidden by the summary:
+
+- *"prepares an isolated workspace"* — `Runner._dispatch` does no workspace
+  isolation at all. It hands the ticket to an `AgentSession` and trusts it.
+- *"Tracker credentials live in the runner's secret store"* — no secret store
+  exists; the token rides on a caller-supplied transport.
+
+Also unconnected: the runner and the `JobRegistry` do not talk to each other.
+`AgentSession.run` returns a finished verdict synchronously, so the runner blocks
+for the whole GPU run — which is the detach model M2-03 exists to serve. Nothing
+calls `sweep()`, so the ticket-side half of "lost job → needs-human" is absent,
+and `running-unattended` is specified but not implemented.
 
 **N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
 constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`

@@ -41,16 +41,17 @@ def run(partition: str = "visible") -> SuiteResult:
     return build_suite().evaluate(GateVerifier(), partition=partition)
 
 
-def _recorded_parent(exp_id: str, metric: float) -> VerdictBundle:
+def _recorded_parent(exp_id: str, metrics: dict[str, float]) -> VerdictBundle:
     """A minimal past result for a fixture lineage to descend from."""
     runs = [
         RunResult(
             seed=s,
-            val_metric=metric,
+            val_metric=metrics["val_metric"],
             train_ids_hash="t",
             eval_ids_hash="e",
             overlap_count=0,
             wall_seconds=0.0,
+            extra={k: v for k, v in metrics.items() if k != "val_metric"},
         )
         for s in range(3)
     ]
@@ -68,8 +69,8 @@ def run_prereg(partition: str = "visible") -> SuiteResult:
         ledger = Ledger(Path(tmp) / "suite.jsonl")
         # Record the ancestors first: rule 8 checks each declared baseline against
         # what the parent actually scored, read from the ledger.
-        for exp_id, metric in setup.parents:
-            ledger.append(_recorded_parent(exp_id, metric))
+        for exp_id, metrics in setup.parents:
+            ledger.append(_recorded_parent(exp_id, metrics))
         for prereg in setup.preregs:
             ledger.append_prereg(prereg)
         verifier = GateVerifier(require_prereg=True, prereg_store=ledger)

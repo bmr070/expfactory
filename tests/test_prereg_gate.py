@@ -69,16 +69,17 @@ def _ctx(
     prereg: Preregistration,
     *,
     filed: bool = True,
-    parent_metric: float | None = BASELINE,
+    parent_metrics: dict[str, float] | None = None,
     **over: object,
 ) -> PreregContext:
-    # parent_metric stands in for what the ledger recorded for the parent. It is
-    # deliberately a separate argument from prereg.baseline_value so a test can
-    # make them disagree — that disagreement is rule 8's whole subject.
+    # What the LEDGER recorded for the parent, keyed by metric name. Deliberately
+    # separate from prereg.baseline_value so a test can make the two disagree —
+    # that disagreement is rule 8's whole subject. Replace rather than merge, so
+    # each test states exactly which metrics the parent had.
     return PreregContext(
         prereg=prereg,
         cited_hash=prereg.hash,
-        parent_metric=parent_metric,
+        parent_metrics={"val_metric": BASELINE} if parent_metrics is None else parent_metrics,
         filed_hashes=frozenset({prereg.hash}) if filed else frozenset(),
         **over,  # type: ignore[arg-type]
     )
@@ -166,7 +167,9 @@ def test_guardrail_regression_blocks_a_genuine_primary_gain():
     """Primary genuinely improved; latency blew its declared bound. Still rejected."""
     p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     exp = _exp([0.80, 0.81, 0.79], extra={"latency_ms": 35.0})
-    result = gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0}))
+    result = gate_preregistration(
+        exp, prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "latency_ms": 20.0})
+    )
     assert not result.passed
     assert "GUARDRAIL REGRESSION" in result.detail
 
@@ -174,13 +177,16 @@ def test_guardrail_regression_blocks_a_genuine_primary_gain():
 def test_guardrail_within_bound_allows_promotion():
     p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     exp = _exp([0.80, 0.81, 0.79], extra={"latency_ms": 15.0})
-    assert gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0})).passed
+    assert gate_preregistration(
+        exp, prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "latency_ms": 20.0})
+    ).passed
 
 
 def test_undeclared_guardrail_metric_blocks():
     p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     result = gate_preregistration(
-        _exp([0.80, 0.81, 0.79]), prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0})
+        _exp([0.80, 0.81, 0.79]),
+        prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "latency_ms": 20.0}),
     )
     assert not result.passed
     assert "not reported" in result.detail
@@ -226,7 +232,7 @@ def test_minimize_direction_treats_a_lower_number_as_the_gain():
         primary_metric="loss", direction="minimize", baseline_value=1.00, minimum_effect=0.10
     )
     exp = _exp([0.0, 0.0, 0.0], extra={"loss": 0.85})
-    assert gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metric=1.00)).passed
+    assert gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metrics={"loss": 1.00})).passed
 
 
 def test_minimize_direction_rejects_an_increase():
@@ -234,7 +240,7 @@ def test_minimize_direction_rejects_an_increase():
         primary_metric="loss", direction="minimize", baseline_value=1.00, minimum_effect=0.10
     )
     exp = _exp([0.0, 0.0, 0.0], extra={"loss": 1.20})
-    assert not gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metric=1.00)).passed
+    assert not gate_preregistration(exp, prereg_ctx=_ctx(p, parent_metrics={"loss": 1.00})).passed
 
 
 # ---- the hash is the mechanism ---------------------------------------------
@@ -282,9 +288,9 @@ def test_confirmatory_run_without_a_parent_is_blocked():
 
 def test_unrecorded_parent_is_blocked():
     p = _prereg()
-    result = gate_preregistration(_exp([0.75, 0.75, 0.75]), prereg_ctx=_ctx(p, parent_metric=None))
+    result = gate_preregistration(_exp([0.75, 0.75, 0.75]), prereg_ctx=_ctx(p, parent_metrics={}))
     assert not result.passed
-    assert "no recorded result" in result.detail
+    assert "recorded no" in result.detail
 
 
 # ---- #9: guardrails are regression checks, with a direction ----------------
@@ -301,11 +307,13 @@ def test_a_maximize_guardrail_blocks_a_drop_not_an_improvement():
     p = _prereg(guardrails=(Guardrail("recall", "maximize"),))
     improved = _exp([0.75, 0.75, 0.75], extra={"recall": 0.80})
     assert gate_preregistration(
-        improved, prereg_ctx=_ctx(p, parent_metrics={"recall": 0.70})
+        improved, prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "recall": 0.70})
     ).passed
 
     dropped = _exp([0.75, 0.75, 0.75], extra={"recall": 0.60})
-    result = gate_preregistration(dropped, prereg_ctx=_ctx(p, parent_metrics={"recall": 0.70}))
+    result = gate_preregistration(
+        dropped, prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "recall": 0.70})
+    )
     assert not result.passed
     assert "GUARDRAIL" in result.detail
 
@@ -313,7 +321,9 @@ def test_a_maximize_guardrail_blocks_a_drop_not_an_improvement():
 def test_a_minimize_guardrail_blocks_a_rise():
     p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     worse = _exp([0.75, 0.75, 0.75], extra={"latency_ms": 30.0})
-    result = gate_preregistration(worse, prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 20.0}))
+    result = gate_preregistration(
+        worse, prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "latency_ms": 20.0})
+    )
     assert not result.passed
     assert "GUARDRAIL" in result.detail
 
@@ -325,7 +335,7 @@ def test_the_guardrail_bound_comes_from_the_parent_not_the_prereg():
     # parent was genuinely fast; this run is far slower and must not pass
     result = gate_preregistration(
         _exp([0.75, 0.75, 0.75], extra={"latency_ms": 900.0}),
-        prereg_ctx=_ctx(p, parent_metrics={"latency_ms": 10.0}),
+        prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "latency_ms": 10.0}),
     )
     assert not result.passed
 
@@ -333,7 +343,7 @@ def test_the_guardrail_bound_comes_from_the_parent_not_the_prereg():
 def test_a_guardrail_tolerance_permits_declared_slack():
     """Some regression is often acceptable and should be stated in advance."""
     p = _prereg(guardrails=(Guardrail("latency_ms", "minimize", tolerance=5.0),))
-    ctx = _ctx(p, parent_metrics={"latency_ms": 20.0})
+    ctx = _ctx(p, parent_metrics={"val_metric": 0.70, "latency_ms": 20.0})
     assert gate_preregistration(_exp([0.75] * 3, extra={"latency_ms": 24.0}), prereg_ctx=ctx).passed
     assert not gate_preregistration(
         _exp([0.75] * 3, extra={"latency_ms": 26.0}), prereg_ctx=ctx
@@ -344,7 +354,8 @@ def test_an_unrecorded_guardrail_on_the_parent_blocks():
     """No parent value means no regression can be computed. Fail closed."""
     p = _prereg(guardrails=(Guardrail("latency_ms", "minimize"),))
     result = gate_preregistration(
-        _exp([0.75] * 3, extra={"latency_ms": 5.0}), prereg_ctx=_ctx(p, parent_metrics={})
+        _exp([0.75] * 3, extra={"latency_ms": 5.0}),
+        prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70}),
     )
     assert not result.passed
 
@@ -352,3 +363,26 @@ def test_an_unrecorded_guardrail_on_the_parent_blocks():
 def test_guardrail_direction_must_be_valid():
     with pytest.raises(ValueError):
         Guardrail("latency_ms", "sideways")  # type: ignore[arg-type]
+
+
+def test_a_non_default_primary_metric_cannot_forge_its_baseline():
+    """The hole the first fix left open.
+
+    Rule 8 used to validate baseline_value against the parent's mean val_metric,
+    while rule 4 measured the effect on prereg.primary_metric. So any prereg
+    naming an `extra` key as primary had its baseline checked against a
+    *different metric* — and the forgery it was meant to close reopened for
+    every non-default primary.
+    """
+    p = _prereg(
+        primary_metric="loss", direction="minimize", baseline_value=0.70, minimum_effect=0.02
+    )
+    # Parent's val_metric really is 0.70, but its loss was 5.00. Declaring 0.70
+    # must not pass just because it matches some other metric the parent had.
+    result = gate_preregistration(
+        _exp([0.70, 0.70, 0.70], extra={"loss": 0.60}),
+        prereg_ctx=_ctx(p, parent_metrics={"val_metric": 0.70, "loss": 5.00}),
+    )
+    assert not result.passed
+    assert "FORGED BASELINE" in result.detail
+    assert "loss" in result.detail

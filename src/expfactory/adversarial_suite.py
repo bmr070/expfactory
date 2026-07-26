@@ -186,7 +186,7 @@ class PreregSuiteSetup:
     """Everything needed to stand up the G-07/G-08 suite against a real ledger."""
 
     preregs: list[Preregistration]
-    parents: list[tuple[str, float]]
+    parents: list[tuple[str, dict[str, float]]]
     suite: Suite
 
 
@@ -366,6 +366,11 @@ def build_prereg_suite() -> PreregSuiteSetup:
         preregs=[p_ok, p_guard, *p_churn],
         # exp_id -> the metric it actually scored. Rule 8 reads baselines from
         # here, never from the preregistration.
-        parents=[(parent_ok, 0.70), (churn_lineage, 0.70)],
+        # Metrics, not one number: a guardrail fixture needs its guardrail metric
+        # recorded on the parent or it fails closed and a PROMOTE case rejects.
+        parents=[
+            (parent_ok, {"val_metric": 0.70, "latency_ms": 12.0}),
+            (churn_lineage, {"val_metric": 0.70}),
+        ],
         suite=Suite(visible, heldout),
     )
