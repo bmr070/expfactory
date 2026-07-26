@@ -73,7 +73,46 @@ Linear emits webhooks, so a poller may be unnecessary. This changes the shape of
 "find work" becomes "receive work". Worth deciding deliberately rather than
 inheriting the poll loop because that is what got built first.
 
-## The thing that should be resolved first
+## Sub-question RESOLVED — Open SWE does not subsume the Runner
+
+Read against the source (`agent/webhooks/linear.py`, `agent/dispatch.py`) rather
+than the feature list. Possibility 2 below is the correct one.
+
+**Open SWE's Linear path is invocation-driven, not a queue poll.** The handler is
+`process_linear_issue(issue_data, repo_config)`, called from a webhook and built
+entirely around `triggering_comment_id` / `comment_author`. It reacts 👀 to the
+comment that summoned it, assembles a prompt from title + description + comments,
+and dispatches a LangGraph run. There is no polling of an allowlisted queue, and
+**no eligibility check of any kind** — it acts on whoever commented.
+
+So the Runner stands. What it provides that Open SWE does not is precisely the
+trust boundary: *who* made this dispatch-eligible.
+
+## A conflict this turned up, which M2-07 did not catch
+
+Open SWE resolves the Linear user's email to a GitHub login and, in its own
+words, opens PRs **"as the triggering user"**.
+
+M2-07 approved Open SWE partly because "its credential pattern matches the
+standing rule: GitHub operations run with a dummy token inside the sandbox,
+backed by a proxy, so the agent never holds a real credential." That reading was
+right about invariant 6 and wrong about what follows from it. The agent indeed
+never holds the credential — but the proxy then **attributes the work to the
+human who triggered it**.
+
+Which defeats the thing the identity work exists for. If agent PRs are authored
+as `@bmr070`, CODEOWNERS cannot distinguish them from the owner's own, and the
+red lane is decorative no matter which identity we provision. Open SWE is
+*designed* to impersonate, because for its intended use — a developer asking a
+bot for help — attribution to the asker is the desirable behaviour.
+
+**This does not un-adopt Open SWE**, but it means adopting it as the agent
+runtime requires either overriding that mapping, or accepting that PR authorship
+cannot carry the trust separation and moving that separation somewhere else
+(a required status check keyed on the branch, rather than CODEOWNERS on the
+author). Raised as its own question rather than settled here.
+
+## Original framing, retained
 
 **Does Open SWE already do this?**
 

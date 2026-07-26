@@ -1,9 +1,15 @@
 """
 github_tracker — the GitHub Issues implementation of `runner.Tracker`.
 
-GitHub Issues is the machine control plane (W-07). Linear is the human board, and
-the sync is one-way Linear → Issues, so this adapter only ever reads what a human
-already put on the machine side.
+**Not the primary work queue.** The W-07 amendment made Linear the queue and
+removed the sync entirely, so nothing routine flows through here. This adapter
+survives for two reasons: it is the deterministic lane's tracker, where the work
+already lives beside the PRs and CI that verify it; and it is the second
+implementation that proves `Tracker` is a real seam rather than a shape traced
+around one caller.
+
+Read `docs/decisions/W-07-AMENDMENT-linear-as-machine-plane.md` before wiring
+this into an empirical-lane runner — that is not what it is for.
 
 ## A design tension this surfaced, and how it is resolved
 
