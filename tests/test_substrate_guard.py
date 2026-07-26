@@ -137,3 +137,17 @@ def test_diff_evidence_carries_paths_only(tmp_path: Path, monkeypatch):
     ev = diff_evidence("main")
     assert ev.touched_paths == ["docs/notes.md"]
     assert ev.added_lines == [] and ev.removed_lines == []
+
+
+def test_the_blocking_message_is_ascii_only(tmp_path: Path, monkeypatch, capsys):
+    """A blocking message that renders as mojibake reads like a broken tool
+    rather than a considered refusal, and this runs on Windows consoles where
+    cp1252 mangles anything above U+007F."""
+    repo = _repo(tmp_path)
+    _branch_touching(repo, "src/expfactory/verifier.py")
+    monkeypatch.chdir(repo)
+    main(["--base", "main"])
+
+    out = capsys.readouterr().out
+    offenders = sorted({f"U+{ord(c):04X}" for c in out if ord(c) > 127})
+    assert not offenders, f"non-ASCII in blocking output: {offenders}"

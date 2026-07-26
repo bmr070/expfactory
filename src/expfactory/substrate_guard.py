@@ -79,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"BLOCKED: {result.detail}\n")
     print(
-        "This pull request edits the verification substrate — the code that decides\n"
+        "This pull request edits the verification substrate: the code that decides\n"
         "whether a result is real. That is never an automatic merge.\n\n"
         "If the change is wrong, drop it. If it is right, a human merges it with an\n"
         "explicit admin override, which is recorded in the PR timeline. There is no\n"
