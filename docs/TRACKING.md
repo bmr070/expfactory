@@ -4,7 +4,7 @@ Per decision [W-07](decisions/W-07-provision-the-issue-tracker.md).
 
 | Layer | System | Role |
 |---|---|---|
-| Human board | **Linear** — [expfactory project](https://linear.app/biosun/project/expfactory-empirical-software-factory-91e5c6bd1b5f) | Objectives, decisions, judgement calls |
+| Human board | **Linear** (private workspace) | Objectives, decisions, judgement calls |
 | Machine control plane | **GitHub Issues** — [bmr070/expfactory](https://github.com/bmr070/expfactory/issues) | What runners read. **GitHub only.** |
 | Code, PRs, CI | **GitHub** | `main` protected; CI green required |
 
