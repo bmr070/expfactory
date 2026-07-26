@@ -25,6 +25,34 @@ its own ticket. There is a repo workflow that strips such labels, but it races
 with polling — a label applied and removed seconds later can still be seen by a
 poll in between. Asking *who applied it* does not race.
 
+## The agent returns evidence, not a verdict
+
+`AgentSession.run` returns a `Candidate` — runs, metrics, id hashes, the diff,
+the preregistration it cites — and **the runner adjudicates it**. That ordering
+is the point.
+
+It used to return a `VerdictBundle`. GH#4 then added a check that the bundle
+carried the preregistration gates, which closed the misconfiguration case and
+not the dishonest one: nothing stopped a sandboxed agent constructing a bundle
+with `promoted=True`, `blocked_by=()` and exactly the gate names the runner was
+known to want. Every check was on data the agent authored.
+
+> You cannot verify a result by asking the thing that produced it what the
+> result was.
+
+Moving adjudication here also makes three controls real that were previously
+requests. `require_prereg=True`, the `PreregStore`, and G-09's `DatasetGrouping`
+are all constructor arguments to a verifier **the agent cannot reach**.
+
+### What this does not fix
+
+The agent still authors the *evidence*. It could report a `val_metric` that no
+run produced. That is a smaller and different problem — fabricated evidence has
+to stay internally consistent across seeds, id hashes, overlap counts and the
+diff, and any of those can be checked — but it is not solved here. Solving it
+means the numbers coming from a compute substrate the agent does not control,
+which is what W-06's split and the `JobRegistry` exist for. See GH#33.
+
 ## What it must never do
 
 Approve its own work. The runner moves a finished ticket to review; a human or a
@@ -37,7 +65,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from expfactory.verifier import VerdictBundle
+from expfactory.verifier import Candidate, VerdictBundle, Verifier
 
 LABEL_AGENT_READY = "agent-ready"
 LABEL_NEEDS_HUMAN = "needs-human"
@@ -95,13 +123,19 @@ class AgentFailed(RuntimeError):
 
 @runtime_checkable
 class AgentSession(Protocol):
-    """Runs one ticket to a verdict inside a sandbox.
+    """Runs one ticket inside a sandbox and returns the **evidence** it produced.
 
-    Returns a VerdictBundle because promotion is decided by the gates, never by
-    the agent and never by the runner. An agent that cannot finish raises.
+    A `Candidate`, deliberately, not a `VerdictBundle`. The agent reports what it
+    did — the runs, the metrics, the id hashes, the diff, which preregistration
+    it cited — and the runner decides what that amounts to. An agent that cannot
+    finish raises.
+
+    This used to return a verdict, and that was wrong for a reason no amount of
+    checking the verdict could fix: **you cannot verify a result by asking the
+    thing that produced it what the result was.** See the module docstring.
     """
 
-    def run(self, ticket: Ticket) -> VerdictBundle: ...
+    def run(self, ticket: Ticket) -> Candidate: ...
 
 
 @dataclass
@@ -120,6 +154,7 @@ class Runner:
         self,
         tracker: Tracker,
         agent: AgentSession,
+        verifier: Verifier,
         *,
         human_allowlist: frozenset[str],
         max_concurrent: int = 1,
@@ -127,13 +162,23 @@ class Runner:
         required_gates: frozenset[str] | None = None,
     ) -> None:
         """
-        `required_gates` names gates a returned verdict must have been judged by.
-        Defaults to `REQUIRED_EMPIRICAL_GATES` on the empirical lane and to
-        nothing elsewhere — the deterministic lane has no preregistration.
+        `verifier` is positional and required. It is the whole point of this
+        class: the runner adjudicates, so that the untrusted party never decides
+        whether its own work passed.
 
-        Pass an explicit `frozenset()` to disable the check. That is deliberately
-        awkward to write and easy to spot in review: it is the difference between
-        a deliberate exemption and a default nobody chose.
+        Build it the way the hill-climb needs — `require_prereg=True`, a
+        `PreregStore`, and a `DatasetGrouping` when the task's data is segmented
+        from longer captures. All three are now genuinely enforceable, because
+        the agent no longer supplies the verifier.
+
+        `required_gates` names gates a verdict must have been judged by, as a
+        check on *this* configuration. Defaults to `REQUIRED_EMPIRICAL_GATES` on
+        the empirical lane and to nothing elsewhere — the deterministic lane has
+        no preregistration.
+
+        Pass an explicit `frozenset()` to disable that check. Deliberately
+        awkward to write and easy to spot in review: the difference between a
+        chosen exemption and a default nobody chose.
         """
         if not human_allowlist:
             # Fail closed. An empty allowlist would make every label acceptable,
@@ -141,6 +186,7 @@ class Runner:
             raise ValueError("human_allowlist must name at least one human")
         self._tracker = tracker
         self._agent = agent
+        self._verifier = verifier
         self._humans = human_allowlist
         self._max_concurrent = max_concurrent
         self._lane = lane
@@ -198,14 +244,14 @@ class Runner:
     def _dispatch(self, ticket: Ticket, result: TickResult) -> None:
         self._tracker.set_state(ticket.id, STATE_IN_PROGRESS)
         try:
-            bundle = self._agent.run(ticket)
+            candidate = self._agent.run(ticket)
         except Exception as exc:  # noqa: BLE001 — any agent failure is the same to us
             # Never silently drop it. A ticket stuck in progress with nobody
             # working on it is the failure mode the whole registry exists to
             # prevent, and the same rule applies here.
             self._tracker.comment(
                 ticket.id,
-                f"Agent session failed and produced no verdict: {exc}\n\n"
+                f"Agent session failed and produced no candidate: {exc}\n\n"
                 "Moved to needs-human rather than retried — a failure whose cause "
                 "is unknown may repeat at cost.",
             )
@@ -213,17 +259,34 @@ class Runner:
             result.failed.append(ticket.id)
             return
 
+        # THE trust boundary. Adjudication happens here, on the runner's verifier,
+        # never inside the agent session. See the module docstring.
+        try:
+            bundle = self._verifier.run(candidate)
+        except Exception as exc:  # noqa: BLE001 — a candidate we cannot judge is not a result
+            self._tracker.comment(
+                ticket.id,
+                f"Candidate could not be adjudicated: {exc}\n\n"
+                "The evidence the agent returned did not survive verification. "
+                "This is not a rejected experiment — it is a candidate the gates "
+                "could not judge at all. Moved to needs-human.",
+            )
+            self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
+            result.failed.append(ticket.id)
+            return
+
         missing = self._required_gates - set(bundle.gate_names)
         if missing:
-            # Refused before a human is asked to review it. A verdict that never
-            # faced G-07 cannot show it was not metric-shopped, and putting it in
-            # the review queue anyway launders that: the reviewer sees a
-            # proof-of-work block that looks like every other one.
+            # Now a check on the *runner's own* configuration, which is what GH#4
+            # asked for and could not previously get: a verifier built without
+            # require_prereg produces verdicts that never faced G-07, and a
+            # verdict that never faced G-07 cannot show it was not metric-shopped.
             #
-            # Not retried, and deliberately not "fixed" by re-running with the
-            # gate on. Whatever produced an unadjudicated verdict is a
-            # configuration problem in the agent session, and re-running it
-            # spends GPU to reach the same place.
+            # Kept as a per-verdict refusal rather than a constructor assertion
+            # because `Verifier` is a protocol — the runner cannot introspect an
+            # arbitrary implementation's configuration, only look at what it
+            # produced. Evidence over declaration, the same rule as everywhere
+            # else here.
             names = ", ".join(sorted(missing))
             self._tracker.comment(
                 ticket.id,
@@ -231,9 +294,9 @@ class Runner:
                 "On the empirical lane a verdict must show it was judged by the "
                 "preregistration gates. This one carries "
                 f"[{', '.join(bundle.gate_names)}].\n\n"
-                "The agent session builds its own verifier, so this is a "
-                "configuration fault there, not a result to review. Moved to "
-                "needs-human rather than retried.",
+                "The runner owns the verifier, so this is a misconfiguration of "
+                "the runner rather than anything the agent did. Every ticket will "
+                "hit it until the verifier is built with require_prereg=True.",
             )
             self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
             result.refused[ticket.id] = f"missing gates: {names}"

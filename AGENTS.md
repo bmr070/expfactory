@@ -46,7 +46,7 @@ the leaked 0.796.
 | `src/expfactory/selfcheck.py` | The boundary test. |
 | `src/expfactory/registry.py` | JobRegistry + ComputeSubstrate seam. Holds the GPU credential. |
 | `src/expfactory/local_substrate.py` | The local GPU behind that seam. Detached jobs, imputed cost. |
-| `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on. |
+| `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on, and who adjudicates it. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
 | `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
 | `examples/demo_drone.py` | Worked example. End-to-end check on the gate set; pinned by `tests/test_demo_drone.py`. |
@@ -61,7 +61,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 253 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 258 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -95,6 +95,11 @@ not by reasoning. Breaking one silently guts the verification layer.
 8. **Prose does not ratchet.** A recurring failure becomes a lint rule, hook, CI
    check, boundary test, or gate. Adding a line to this file is the last resort,
    not the first.
+9. **The untrusted party returns evidence, never a verdict.** `AgentSession.run`
+   yields a `Candidate`; the runner adjudicates it on a verifier the agent cannot
+   reach. Checking an agent-supplied verdict cannot work — it can be built with
+   `promoted=True` and whatever gate names the check wants. **You cannot verify a
+   result by asking the thing that produced it what the result was.**
 
 ## Gotchas
 
@@ -138,14 +143,19 @@ not by reasoning. Breaking one silently guts the verification layer.
   readable by whatever language the runner ends up in.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would.
-- **The runner checks the verdict, not the verifier's configuration.** G-07/G-08
-  only run when `GateVerifier` is built with `require_prereg=True`, and the runner
-  cannot force that because the *agent session* builds the verifier and the agent
-  is the untrusted party. So the runner refuses any empirical-lane verdict whose
-  `gate_names` lack `preregistration`/`prereg_churn` — needs-human, never review.
-  Same move as the substrate guard: ask what the evidence says, never who
-  produced it. **A verdict the agent fabricates wholesale is still out of scope**
-  — see GH#33.
+- **The agent returns a `Candidate`, never a `VerdictBundle`.** The runner
+  adjudicates, on a verifier the agent cannot reach. It briefly worked the other
+  way, with the runner *checking* an agent-supplied verdict — which cannot work,
+  because a sandboxed agent can build a bundle with `promoted=True` and exactly
+  the gate names the check wants. You cannot verify a result by asking the thing
+  that produced it what the result was. The agent still authors the *evidence*;
+  closing that needs the numbers to come from the compute substrate, not the
+  agent (W-06, and GH#33's remaining half).
+- **`require_prereg=True`, the `PreregStore` and G-09's `DatasetGrouping` are the
+  runner's to set.** They became enforceable only once the runner owned the
+  verifier. A runner built without them still refuses its own verdicts — the
+  `required_gates` check now catches a misconfigured *runner* rather than a
+  misconfigured agent.
 - **Neither a baseline nor a guardrail threshold is agent-declared.** Both are
   read from the parent's recorded verdict. A threshold the agent names is
   decorative.
