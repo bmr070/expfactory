@@ -27,6 +27,7 @@
 /src/expfactory/pipeline.py            @bmr070
 /src/expfactory/runner.py              @bmr070
 /src/expfactory/github_tracker.py      @bmr070
+/src/expfactory/linear_tracker.py      @bmr070
 /src/expfactory/substrate_guard.py     @bmr070
 /src/expfactory/literature.py          @bmr070
 /src/expfactory/local_substrate.py     @bmr070

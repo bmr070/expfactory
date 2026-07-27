@@ -48,6 +48,7 @@ the leaked 0.796.
 | `src/expfactory/local_substrate.py` | The local GPU behind that seam. Detached jobs, imputed cost. |
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on, and who adjudicates it. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
+| `src/expfactory/linear_tracker.py` | Linear adapter — **the queue the runner reads** (W-07 amendment). |
 | `CONTEXT.md` | The glossary. Terms only — start here if a word seems to mean two things. |
 | `src/expfactory/scorer.py` | Holds the labels and computes the metric. The agent submits predictions. |
 | `src/expfactory/egress.py` | Outbound allowlist + artifact pinning. Widening it is a reviewed diff, by design. |
@@ -64,7 +65,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 344 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 364 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
