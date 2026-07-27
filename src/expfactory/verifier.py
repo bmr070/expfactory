@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 # reuse the prototype's gate functions and run record unchanged
-from expfactory.gates_v1 import DatasetGrouping
+from expfactory.gates_v1 import AttestationSource, DatasetGrouping
 from expfactory.harness import (
     DEFAULT_GATES,
     Experiment,
@@ -97,6 +97,10 @@ class Candidate:
     # never be promoted; a confirmatory run must cite a prereg filed beforehand.
     prereg_hash: str | None = None
     exploratory: bool = False
+    # What the compute substrate vouched for (GH#33, G-10). `RunAttestation |
+    # None`, typed loosely for the same reason as `diff`: the deterministic lane
+    # and the fixtures have no job behind them.
+    attestation: Any = None
 
     def __post_init__(self) -> None:
         # frozen dataclass: normalise through object.__setattr__, exactly once
@@ -315,6 +319,7 @@ class GateVerifier:
         require_prereg: bool = False,
         prereg_store: PreregStore | None = None,
         grouping: DatasetGrouping | None = None,
+        attestations: AttestationSource | None = None,
     ) -> None:
         """
         `require_prereg` turns G-07 on. It is off by default because this same
@@ -325,6 +330,11 @@ class GateVerifier:
         **The hill-climb runner must construct this with require_prereg=True.**
         That is the production configuration; see docs/SPEC.md §6. This is a
         workflow switch, not a security toggle that may be left off.
+
+        `attestations` turns G-10 from a warning into a wall: a candidate must
+        then cite a job handle the registry actually issued. Supply the registry
+        on the hill-climb lane. Without it the numbers are taken on the agent's
+        word, and the gate says so rather than reporting a clean check.
 
         `grouping` turns G-09 from a warning into a wall. Supply it whenever the
         task's data is segmented from longer captures — recordings, sessions,
@@ -339,6 +349,7 @@ class GateVerifier:
         self._require_prereg = require_prereg
         self._prereg_store = prereg_store
         self._grouping = grouping
+        self._attestations = attestations
 
     def _prereg_ctx(self, candidate: Candidate, exp_id: str) -> PreregContext:
         store = self._prereg_store
@@ -386,6 +397,24 @@ class GateVerifier:
         from expfactory.gates_v1 import gate_no_group_leakage
 
         exp.gates.append(gate_no_group_leakage(exp, grouping=self._grouping))
+        # G-10: did this run happen? Checked against the registry's append-only
+        # log, which the agent does not write. Like `grouping`, the source is a
+        # constructor argument so a candidate cannot opt out of being checked.
+        from expfactory.gates_v1 import gate_attested_run
+
+        # `ticket` is deliberately not passed here: the verifier adjudicates a
+        # candidate and does not know which ticket it came from. The gate
+        # supports the check so that the runner — which does know — can bind a
+        # handle to its ticket once it submits jobs itself. Until then a real
+        # handle borrowed from another ticket would pass, which is recorded in
+        # GH#33 rather than papered over.
+        exp.gates.append(
+            gate_attested_run(
+                exp,
+                attestation=candidate.attestation,
+                attestations=self._attestations,
+            )
+        )
         # Diff-level gates run only when the candidate carries diff evidence.
         # The runner always supplies one; a candidate without a diff simply skips
         # them rather than crashing (backward compatible).

@@ -82,6 +82,40 @@ class JobSpec:
 
 
 @dataclass(frozen=True)
+class RunAttestation:
+    """What the compute substrate can vouch for, which the agent cannot write.
+
+    The second half of GH#33. Moving adjudication to the runner stopped the agent
+    *declaring a verdict*; it did not stop the agent inventing the evidence the
+    verdict is computed from. A `Candidate` assembled in an agent session is still
+    just numbers the agent typed, and a run that never happened produces evidence
+    indistinguishable from a run that did.
+
+    This is the part a job's execution produces and a session cannot fake:
+
+    - `job_handle` is issued by the substrate at submission and recorded in the
+      registry's append-only log before the job starts. An agent quoting a handle
+      the registry never issued is caught by lookup.
+    - `exit_code`, `wall_seconds` and `command` come from the completion record
+      the substrate wrote, not from anything the payload printed.
+    - `artifact_sha256` binds these numbers to the exact bytes the run left
+      behind, so an artifact edited after the fact no longer matches.
+
+    **What it deliberately does not establish**: that the metric inside the
+    artifact is *correct*. The agent still writes the training code, so it can
+    still compute a wrong number honestly-looking. Closing that needs the
+    evaluation to run in trusted code against data the agent never sees, which
+    is a separate build (GH#39) and not something an attestation can reach.
+    """
+
+    job_handle: str
+    command: tuple[str, ...]
+    exit_code: int
+    wall_seconds: float
+    artifact_sha256: str
+
+
+@dataclass(frozen=True)
 class JobRecord:
     handle: str
     ticket: str
@@ -207,6 +241,28 @@ class JobRegistry:
                     artifact_ref=e.get("artifact_ref"),
                 )
         return out
+
+    def attested_job(self, handle: str) -> dict[str, Any] | None:
+        """What the log says about this handle, or None if it never issued one.
+
+        Satisfies `AttestationSource` for G-10. Reads the append-only log, which
+        is written at submission and resolution by the registry — never by an
+        agent session. A candidate quoting a handle that is not here describes a
+        run that this factory has no record of starting.
+
+        Returns a plain mapping rather than a `JobRecord` so the gate can stay
+        free of a registry import and be driven by a fixture.
+        """
+        record = self.records().get(handle)
+        if record is None:
+            return None
+        return {
+            "handle": record.handle,
+            "ticket": record.ticket,
+            "state": str(record.state),
+            "submitted_at": record.submitted_at,
+            "artifact_ref": record.artifact_ref,
+        }
 
     def outstanding(self) -> list[JobRecord]:
         return [r for r in self.records().values() if r.is_open]
