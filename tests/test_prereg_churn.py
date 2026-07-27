@@ -44,20 +44,22 @@ def _exp() -> Experiment:
 def _prereg(n: int, parent: str | None = LINEAGE) -> Preregistration:
     """Distinct preregistrations sharing one lineage.
 
-    Real metric-shopping would vary `primary_metric`; these vary `decision_rule`
-    so each is a distinct filing that is still *satisfiable* by the fixture runs.
-    That matters: the end-to-end tests below have to reach G-08, and a prereg
-    naming a metric the runs never reported is rejected by G-07 first — which is
-    correct behaviour, but tests the wrong gate.
+    Real metric-shopping would vary `primary_metric`; these vary the declared
+    `minimum_effect` by a hair, so each is a distinct filing that is still
+    *satisfiable* by the fixture runs. That matters: the end-to-end tests below
+    have to reach G-08, and a prereg naming a metric the runs never reported is
+    rejected by G-07 first — correct behaviour, but the wrong gate under test.
+
+    These used to vary `decision_rule`, treating it as a scratch identifier.
+    GH#36 made that field mean something, and the abuse surfaced immediately.
     """
     return Preregistration(
         primary_metric="val_metric",
         direction="maximize",
         baseline_value=0.70,
-        minimum_effect=0.02,
+        minimum_effect=0.02 + n * 0.0001,
         seeds=(0, 1, 2),
         parent_id=parent,
-        decision_rule=f"attempt_{n}",
     )
 
 
@@ -209,8 +211,8 @@ def test_prereg_hash_is_stable_across_a_fresh_interpreter():
         "from expfactory.prereg import Preregistration;"
         "print(Preregistration("
         "primary_metric='val_metric', direction='maximize', baseline_value=0.70,"
-        "minimum_effect=0.02, seeds=(0, 1, 2), parent_id='exp-parent-1',"
-        "decision_rule='attempt_0').hash)"
+        "minimum_effect=0.02, seeds=(0, 1, 2), parent_id='exp-parent-1'"
+        ").hash)"
     )
     env = {**os.environ, "PYTHONHASHSEED": "random", "PYTHONPATH": "src"}
     out = subprocess.run(

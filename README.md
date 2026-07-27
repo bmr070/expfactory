@@ -25,7 +25,7 @@ of recorded evidence and never something a caller can assert.
 ```bash
 pip install -e ".[dev]"
 
-pytest                            # 341 tests
+pytest                            # 344 tests
 mypy                              # strict across the verification core
 ruff check src tests
 python -m expfactory.selfcheck    # boundary test: known-answer fixtures
