@@ -74,6 +74,10 @@ _HARNESS_PATHS = (
     # Holds the outbound allowlist. The whole control is that widening it takes a
     # reviewed diff, so a change here IS the thing a human must look at.
     "egress.py",
+    # Holds the labels and computes the metric. An agent that can edit this can
+    # read the ground truth it is being scored against, or return a number of its
+    # choosing -- which is the whole of what T-01 moved away from it.
+    "scorer.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
