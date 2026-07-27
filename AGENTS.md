@@ -48,6 +48,8 @@ the leaked 0.796.
 | `src/expfactory/local_substrate.py` | The local GPU behind that seam. Detached jobs, imputed cost. |
 | `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on, and who adjudicates it. |
 | `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
+| `CONTEXT.md` | The glossary. Terms only — start here if a word seems to mean two things. |
+| `src/expfactory/scorer.py` | Holds the labels and computes the metric. The agent submits predictions. |
 | `src/expfactory/egress.py` | Outbound allowlist + artifact pinning. Widening it is a reviewed diff, by design. |
 | `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
 | `examples/demo_drone.py` | Worked example. End-to-end check on the gate set; pinned by `tests/test_demo_drone.py`. |
@@ -62,7 +64,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 308 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 341 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -144,6 +146,8 @@ not by reasoning. Breaking one silently guts the verification layer.
   readable by whatever language the runner ends up in.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would.
+- **The agent never computes its own metric.** It submits *predictions*; `scorer.py` holds the labels and scores them (T-01). A model artifact was rejected: loading one executes agent code inside the process holding the labels. Feedback goes through a **Ladder** — a score is reported only when it clearly beats the incumbent, because the holdout leak is driven by feedback, not by query count.
+- **"Holdout" names two different things here.** The experiment holdout (a model's lockbox) and the held-out fixture partition (invariant 5). Both have budgets and they protect different parties — see `CONTEXT.md`.
 - **G-10: a candidate must cite a job the registry issued.** The agent returning
   evidence instead of a verdict left it one move — describe runs that never
   happened. Fabricated evidence is the same *shape* as real evidence, so no gate
