@@ -33,6 +33,13 @@ recording into both train and test. Enforcing recording-session-grouped
 cross-validation drops a random-forest baseline's detection probability at 1%
 false-alarm rate from **0.796 to 0.745**.
 
+> **Corrected 2026-07-27.** That pair is from the abstract, where it is offered
+> as an example. Table 2 reports the RF baseline at 72.3% ± 4.7% and a CNN at
+> 93.8%. The two do not reconcile and the discrepancy is recorded, unresolved, in
+> the corpus. The finding that motivated G-09 is unaffected — the *existence* of
+> session-level inflation is what mattered, not its exact size — but the number
+> should not be quoted without saying which one it is.
+
 Checked against our own gate set, this was not a workload problem. It was a hole.
 
 `gate_no_leakage` intersects train and eval **sample ids**. In session-level
@@ -95,7 +102,7 @@ amended rather than deleted:
 
 The safeguard that makes this survivable is in
 [the target document](../research/acoustic-drone-detection.md): the bar chosen is
-**0.745, the session-grouped number — not 0.796**. Competing against the leaked
+the *session-grouped* number, not the clip-level one. Competing against the leaked
 figure would be trivially winnable and worth nothing. The first act of setting an
 external target was to reject the flattering version of it.
 

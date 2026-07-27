@@ -1,123 +1,125 @@
 ---
 target: acoustic-drone-detection
 status: PLANNED — nothing here has been run
-bar: Pd@1%FAR = 0.745 (EchoHawk, session-grouped)
-updated: 2026-07-26
+dataset: DroneAudioDataset (+ ESC-50, Speech Commands as negatives)
+bar: 93.8% Pd@1%FAR (EchoHawk CNN, session-grouped) — see the correction below
+updated: 2026-07-27
 ---
 
-# Target: acoustic drone detection against harmonic confusers
+# Target: acoustic drone detection under session-grouped evaluation
 
 ## Nothing below is a result
 
-This document specifies a hill-climb. No experiment in it has been executed, no
-number in the "predicted" column has been measured, and the ledger contains no
-entry for any of it. It is written to be turned into preregistrations, which is
-the only way these hypotheses are allowed to reach a run.
+No experiment here has been executed, no number in the "predicted" column has
+been measured, and the ledger contains no entry for any of it.
 
-## Why this task and not the vision one
+## Correction — the bar was wrong in the first version of this document
 
-The obvious candidate was [CST Anti-UAV](https://arxiv.org/abs/2507.23473)
-(ICCV 2025 Workshops): thermal IR, tiny UAVs, and state of the art at **35.92%
-state accuracy** against 67.69% on Anti-UAV410 — enormous headroom, which is
-attractive. It was rejected as the *first* target on availability: the paper
-says the benchmark "is about to be publicly released" and gives no download.
-A hill-climb that cannot start is not a hill-climb.
+The first version set the target at **0.745 Pd@1%FAR** and repeated it into
+`AGENTS.md`, a decision record, the corpus, three commit messages and two Linear
+tickets.
 
-The acoustic task wins on one property no other candidate has:
-[EchoHawk](https://arxiv.org/abs/2606.29589) releases code, figures and a
-synthetic data generator, and states that every result runs **without any
-download**. The factory can therefore execute this target on a laptop, and the
-first real run is not gated on dataset acquisition, a GPU, or an NDA.
+That number came from [EchoHawk's](https://arxiv.org/abs/2606.29589) **abstract**,
+where it appears as an illustration — *"reduces, for example, a random-forest
+baseline's detection probability at a 1% false-alarm rate from 0.796 to 0.745"*.
 
-## The bar is the honest number, not the published-looking one
+Reading the full text gives a different figure. Table 2 reports the random-forest
+baseline at **72.3% ± 4.7%** under proper grouping, and a CNN at **93.8%**.
 
-EchoHawk reports the same baseline twice:
+**I do not currently know how to reconcile 0.745 with 0.723.** They are plausibly
+different experiments — the paper evaluates both a synthetic benchmark and real
+recorded audio, and the abstract does not say which its example is drawn from.
+Recorded as an open discrepancy rather than resolved by picking whichever is
+convenient.
 
-| protocol | Pd @ 1% FAR |
-| -- | -- |
-| naive clip-level split | 0.796 |
-| **recording-session-grouped CV** | **0.745** |
+The failure was reading a headline number and not checking it against the
+results tables. That is the exact thing this repository exists to catch, done by
+the person building it, which is worth leaving written down.
 
-The difference is not an improvement or a regression. It is the same model
-measured two ways, and the higher number is an artifact of adjacent slices of one
-continuous recording landing on both sides of the split.
+**Consequence: the bar is higher than stated and the shape of the work changes.**
+Beating a 72.3% random forest is a weekend. Clearing a 93.8% CNN is the actual
+target, and it is what makes modern methods necessary rather than optional.
 
-**The target is 0.745.** Competing against 0.796 would be competing against a
-leak: trivially winnable, and the win would be worth nothing. This is the whole
-thesis of the repository applied to its own goalposts — and it is the reason
-[G-09](../decisions/L-01-RESOLVED-literature-as-input.md) had to exist before
-this target could be set, because until last week the factory could not have
-detected the difference between the two rows above.
+## The dataset, now named
+
+**DroneAudioDataset.** 1,332 drone files drawn from only **257 continuous
+recording sessions**, with negatives from **ESC-50** and a **Speech Commands**
+corpus.
+
+That ratio is the whole story: ~5 clips per session means a clip-level split
+almost guarantees that every test clip has a sibling in training. It is also why
+the group metadata is recoverable — session identity is derivable from the file
+provenance rather than needing to be reconstructed.
+
+`DatasetGrouping(group_key="recording_session")` is armed from the first run.
+G-09 was built for this dataset before we knew its name.
+
+## No code was released, despite the claim
+
+The abstract and conclusion both state that all code, a synthetic data
+generator, unit tests and figures are released. **There is no repository URL
+anywhere in the paper.**
+
+So "runs without any download" — the property that made this the first target
+over [CST Anti-UAV](https://arxiv.org/abs/2507.23473) — does not hold in
+practice. Reproduction means reimplementing from the description, and the
+dataset has to be fetched after all.
 
 ## Protocol, fixed before any run
 
-- **Metric.** Probability of detection at 1% false-alarm rate. Single primary
-  metric, per M2-04: it may promote or block, never both.
+- **Metric.** Pd at 1% FAR. Single primary metric (M2-04): may promote or block,
+  never both.
 - **Split.** Recording-session-grouped cross-validation. Declared to the verifier
-  as `DatasetGrouping(group_key="recording_session")`, so G-09 blocks any run
-  that cannot show session disjointness rather than merely asserting it.
-- **Confusers.** Evaluation includes low-frequency harmonic confusers (ground
-  vehicles). A detector that separates drone from silence is not the thing being
-  measured.
-- **Seeds.** Five, with the seed perturbing the session fold assignment — so the
-  noise band measures what it claims to. (The demo's band was once identically
-  zero for exactly this reason; see `AGENTS.md#gotchas`.)
+  so G-09 blocks any run that cannot *show* session disjointness.
+- **Scoring.** Through `scorer.py`. The training code never sees labels and
+  cannot report a metric; feedback goes through the Ladder.
+- **Confusers.** Evaluation includes low-frequency harmonic confusers, not
+  silence. Separating drone from truck is the task; separating drone from quiet
+  is not.
+- **Seeds.** Five, with the seed perturbing session fold assignment.
 
-## Hypotheses, ranked by cost
-
-Each becomes one preregistration citing the mechanism and paper it came from.
-H1 must run first: rules 8 and 2 of G-07 read the baseline from a *recorded*
-parent, so nothing else is promotable until the baseline is in the ledger.
+## The climb
 
 | | hypothesis | mechanism | cost | predicted |
 | -- | -- | -- | -- | -- |
-| **H1** | Reproduce the session-grouped baseline | `session-grouped-cv` | free | Pd ≈ 0.745. **Replication, not a finding** |
-| **H2** | Rotor-harmonic + blade-passing-frequency features beat a generic spectrogram classifier at rejecting ground-vehicle confusers | `rotor-harmonic-bpf` | cheap | gain concentrated in the confuser slice, not overall |
-| **H3** | An explicit SNR curriculum beats single-operating-point training | `low-snr-curriculum` | cheap | gain at low SNR, flat or slightly worse at high SNR |
-| **H4** | A latent forecast head carries the track through masked segments | `latent-forecast-head` | expensive | gain only on sequences with dropout; no effect on isolated clips |
-| **H5** | Per-session test-time adaptation specialises the detector to deployment conditions | `grpo-test-time-adapt` | moderate | **see the hazard below** |
+| **H1** | Reproduce the session-grouped RF baseline | `session-grouped-cv` | CPU only | Pd near 72%. **Replication, not a finding** |
+| **H2** | Rotor-harmonic + BPF features beat a generic spectrogram at rejecting ground-vehicle confusers | `rotor-harmonic-bpf` | cheap | gain concentrated in the confuser slice |
+| **H3** | Fine-tuning a pretrained audio encoder (AST / BEATs / PANNs) clears the classical baseline | *new — see below* | GPU hours | this is the one aimed at 93.8% |
+| **H4** | An explicit SNR curriculum beats single-operating-point training | `low-snr-curriculum` | moderate | gain at low SNR, flat or worse at high |
+| **H5** | Per-session test-time adaptation | `grpo-test-time-adapt` | moderate | **hazard — see below** |
 
-Note the shape of every prediction: a *slice* where the gain should appear, and
-a slice where it should not. A hypothesis that predicts "goes up" is unfalsifiable
-in practice, because something always goes up somewhere.
+H1 must run first: G-07 rule 8 reads baselines from a *recorded* parent, so
+nothing else is promotable until it exists.
 
-## H5 is a trap, and the corpus is what caught it
+**H3 is new to this document** and is the answer to "what about fine-tuning and
+other models". A pretrained audio encoder is the standard modern move for this
+task and fits in 12 GB. It also needs a corpus entry — currently the mechanism
+pool has no pretrained-encoder mechanism, which is a gap in the reading rather
+than in the plan.
 
-Test-time adaptation is the fashionable 2026 mechanism
-([GRPO-TTA](https://arxiv.org/abs/2605.03403)) and it is the one hypothesis here
-that could produce a large, clean-looking, entirely fake gain.
+## H5 remains a trap
 
-Adapting to the evaluation session at test time is *session-level leakage
-performed at inference instead of at split time*. The model ends up specialised
-to the exact recording it is scored on. G-09 will not catch it: the training
-split stays disjoint, and the contamination happens after the split.
+Test-time adaptation ([GRPO-TTA](https://arxiv.org/abs/2605.03403)) adapts to the
+evaluation session at inference, which is session-level leakage performed *after*
+the split — where G-09 cannot reach it. Not a reason to drop it; a reason its
+protocol must be pinned before it runs. Adaptation may consume unlabelled
+deployment audio only, and the adapted model is scored on sessions it did not
+adapt on, or the result is reported as an oracle bound and not as detection
+performance.
 
-This is not a reason to drop H5 — per-session adaptation is a legitimate
-deployment technique, and the honest version is real. It is a reason that H5
-needs its protocol pinned before it runs:
+## What "beating SOTA" would mean here
 
-- adaptation may consume **unlabelled** deployment audio only;
-- the adapted model is scored on **held-out sessions it did not adapt on**, or
-  the result is reported as an oracle upper bound and explicitly not as detection
-  performance;
-- the preregistration states which of the two it is, before the run.
+If H3 lands, the honest claim is: *on DroneAudioDataset, under recording-session-
+grouped CV, a fine-tuned pretrained audio encoder exceeds EchoHawk's reported CNN
+at 1% FAR.* One dataset, one protocol, one paper's baseline.
 
-Two 2026 papers, three weeks apart, one warning that the field's numbers are
-inflated by session leakage and the other proposing a method that reintroduces it
-at inference. Neither cites the other. Finding that is the pipeline paying for
-itself, and it is recorded here so the next session does not have to rediscover
-it.
+Not "state of the art in drone detection". Written before any run, because it is
+much harder to overclaim in a PR body when the honest phrasing was fixed in
+advance.
 
-## What "beating SOTA" would and would not mean
+## Blocked on
 
-If H2 lands, the honest claim is: *on EchoHawk's synthetic benchmark, under
-session-grouped CV, a harmonic-structure feature set exceeds their random-forest
-baseline's 0.745 Pd@1%FAR.* That is a real result against a real published number
-and a narrow one — one benchmark, largely synthetic, one baseline that the
-paper's authors did not present as their strongest system.
-
-It would **not** be "state of the art in drone detection". The corpus contains
-several systems on other benchmarks with no comparable published number on this
-protocol, and no comparison across benchmarks is meaningful. Writing that
-sentence down now, before any run, is deliberate: it is much harder to overclaim
-in a PR body when the honest phrasing was fixed in advance.
+- **Dataset provenance.** Where DroneAudioDataset actually lives, and its
+  checksum. The egress allowlist cannot be widened on a guess — see the
+  bootstrap problem in the linked issue.
+- **torch + CUDA**, for H3 onward.

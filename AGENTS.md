@@ -26,8 +26,10 @@ promoted, stop and re-read this paragraph.
 target*, and beating it is a permitted **outcome** — never an acceptance
 criterion. `promoted` is still derived only from the gates. The live target is
 [`docs/research/acoustic-drone-detection.md`](docs/research/acoustic-drone-detection.md),
-and note which number it competes against: the honest session-grouped 0.745, not
-the leaked 0.796.
+and note which number it competes against: the *session-grouped* one, never the
+clip-level one. **The specific figure was corrected on 2026-07-27** — 0.745 came
+from the paper's abstract and its Table 2 reports 72.3% for the RF baseline and
+93.8% for a CNN. Read the target doc, not this line.
 
 ## Layout
 
@@ -122,8 +124,11 @@ not by reasoning. Breaking one silently guts the verification layer.
   it passes. That is what G-09 (`gate_no_group_leakage`) is for, and G-09 only
   bites when the task supplies a `DatasetGrouping` to the verifier. Declaring the
   grouping is therefore part of defining a task, not an optional extra. Found in
-  the literature, not by a bug: EchoHawk (arXiv:2606.29589) measures the inflation
-  at 0.796 -> 0.745 Pd@1%FAR.
+  the literature, not by a bug: EchoHawk (arXiv:2606.29589) documents it in
+  DroneAudioDataset, where 1,332 drone files come from only 257 continuous
+  recording sessions. **Do not quote a single inflation figure from memory** —
+  the abstract and Table 2 disagree, and that is recorded unresolved in the
+  corpus.
 - **Test-time adaptation reintroduces that leak after the split**, where G-09
   cannot reach it. See the H5 hazard in `docs/research/acoustic-drone-detection.md`
   before proposing any per-session adaptation.
