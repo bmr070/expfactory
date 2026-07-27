@@ -35,7 +35,7 @@ the leaked 0.796.
 |---|---|
 | `src/expfactory/verifier.py` | The plugin boundary. `Verifier.run(candidate) -> VerdictBundle`. |
 | `src/expfactory/harness.py` | The original six gates, behind the boundary. |
-| `src/expfactory/gates_v1.py` | Tamper gate, seed-dominance gate, and G-09 group leakage. |
+| `src/expfactory/gates_v1.py` | Tamper gate, seed-dominance gate, G-09 group leakage, G-10 attested run. |
 | `src/expfactory/literature.py` | Paper/mechanism/hypothesis provenance. Substrate; the corpus it reads is not. |
 | `docs/literature/corpus.json` | The reading list and the mechanisms extracted from it. Data, not substrate. |
 | `docs/research/` | Live hill-climb targets, their protocols and their published bars. |
@@ -62,7 +62,7 @@ the leaked 0.796.
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 295 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 308 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
@@ -144,6 +144,14 @@ not by reasoning. Breaking one silently guts the verification layer.
   readable by whatever language the runner ends up in.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would.
+- **G-10: a candidate must cite a job the registry issued.** The agent returning
+  evidence instead of a verdict left it one move — describe runs that never
+  happened. Fabricated evidence is the same *shape* as real evidence, so no gate
+  reading the numbers can separate them; only the append-only job log can, and
+  the agent does not write it. Like G-09, the source is a verifier constructor
+  argument, and without one the gate warns rather than blocks. **It cannot check
+  that the metric is right** — the agent still writes the code that computes it,
+  which needs a trusted evaluator (GH#39).
 - **The agent returns a `Candidate`, never a `VerdictBundle`.** The runner
   adjudicates, on a verifier the agent cannot reach. It briefly worked the other
   way, with the runner *checking* an agent-supplied verdict — which cannot work,

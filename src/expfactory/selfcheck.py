@@ -34,6 +34,7 @@ from pathlib import Path
 
 from expfactory.adversarial_suite import (
     SuiteResult,
+    build_attested_suite,
     build_group_suite,
     build_prereg_suite,
     build_suite,
@@ -93,6 +94,17 @@ def run_group(partition: str = "visible") -> SuiteResult:
     return setup.suite.evaluate(GateVerifier(grouping=setup.grouping), partition=partition)
 
 
+def run_attested(partition: str = "visible") -> SuiteResult:
+    """G-10's fixtures need a verifier pointed at a job log.
+
+    Built here rather than carried on the fixtures for the same reason as G-09's
+    grouping: a candidate that supplied its own attestation source could supply
+    one that says yes to everything.
+    """
+    setup = build_attested_suite()
+    return setup.suite.evaluate(GateVerifier(attestations=setup.jobs), partition=partition)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -111,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         ("core gates", run(partition)),
         ("G-07 preregistration", run_prereg(partition)),
         ("G-09 group leakage", run_group(partition)),
+        ("G-10 attested run", run_attested(partition)),
     ]
 
     print(f"partition : {partition}")

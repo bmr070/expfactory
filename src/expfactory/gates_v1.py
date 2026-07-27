@@ -21,8 +21,9 @@ Every gate here traces to a fixture in the ticket-04 suite (standing rule from W
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from expfactory.harness import Experiment, GateResult
 
@@ -303,3 +304,102 @@ def gate_no_group_leakage(
         "the recordings are the same"
     )
     return GateResult("no_group_leakage", ok, detail, blocking=True)
+
+
+# --------------------------------------------------------------------------- #
+# G-10 — the run actually happened
+#
+# GH#33, second half. G-09 and everything before it judge evidence. None of them
+# ask whether the evidence came from a real execution.
+#
+# Since the runner adjudicates rather than trusting a verdict, an agent's only
+# remaining move is to hand over a `Candidate` describing a run that never
+# occurred: five plausible seeds, a clean overlap count, a tidy metric. Nothing
+# in the gate set can tell that from a real one, because a fabricated record and
+# a genuine record are the same shape.
+#
+# So the check is against the registry's append-only log, which the agent does
+# not write. A candidate must cite a job handle the registry issued, for the
+# ticket it is claiming, and its numbers must match the substrate's completion
+# record rather than the agent's account of it.
+# --------------------------------------------------------------------------- #
+
+
+@runtime_checkable
+class AttestationSource(Protocol):
+    """The slice of the registry G-10 needs: was this handle really issued?
+
+    A protocol rather than the concrete `JobRegistry` so the gate stays a pure
+    function of recorded evidence and can be driven by a fixture.
+    """
+
+    def attested_job(self, handle: str) -> Mapping[str, Any] | None: ...
+
+
+def gate_attested_run(
+    exp: Experiment,
+    attestation: Any = None,
+    attestations: AttestationSource | None = None,
+    ticket: str | None = None,
+    **_: Any,
+) -> GateResult:
+    """The candidate's numbers came from a job the registry recorded.
+
+    Three states, matching G-09's shape:
+
+    - **No source configured** -> non-blocking warning naming what was not
+      checked. The deterministic lane and one-off fixtures have no job behind
+      them, and blocking there would make the gate something everyone bypasses.
+    - **Source configured, no attestation** -> blocks. The lane runs its work on
+      a substrate; a candidate that arrives without one did not come from it.
+    - **Attestation does not match the log** -> blocks, naming the mismatch.
+    """
+    if attestations is None:
+        return GateResult(
+            "attested_run",
+            True,
+            "no attestation source configured; the numbers are taken on the "
+            "agent's word and no check was made that this run happened",
+            blocking=False,
+        )
+
+    if attestation is None:
+        return GateResult(
+            "attested_run",
+            False,
+            "this lane runs experiments on a compute substrate, and this candidate "
+            "carries no attestation: there is no recorded job behind these numbers",
+            blocking=True,
+        )
+
+    record = attestations.attested_job(attestation.job_handle)
+    if record is None:
+        return GateResult(
+            "attested_run",
+            False,
+            f"job handle {attestation.job_handle!r} is not in the registry log. "
+            "Either the run never happened or it was never submitted through the "
+            "registry, and neither is a result.",
+            blocking=True,
+        )
+
+    problems: list[str] = []
+    if ticket is not None and record.get("ticket") not in (None, ticket):
+        # A real handle borrowed from a different ticket: the run happened, but
+        # not for the work being claimed.
+        problems.append(f"handle belongs to ticket {record.get('ticket')!r}, not {ticket!r}")
+    if record.get("artifact_sha256") not in (None, attestation.artifact_sha256):
+        problems.append("artifact digest does not match the one the substrate recorded")
+    if record.get("exit_code") not in (None, attestation.exit_code):
+        problems.append(
+            f"exit code {attestation.exit_code} does not match the recorded "
+            f"{record.get('exit_code')}"
+        )
+
+    ok = not problems
+    detail = (
+        f"run attested by job {attestation.job_handle}"
+        if ok
+        else "UNATTESTED: " + "; ".join(problems)
+    )
+    return GateResult("attested_run", ok, detail, blocking=True)
