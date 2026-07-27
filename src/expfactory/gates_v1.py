@@ -169,38 +169,73 @@ def _floor(lines: list[str]) -> int | None:
 # --------------------------------------------------------------------------- #
 
 
-def gate_no_single_seed_dominance(exp: Experiment, dominance: float = 0.5, **_: Any) -> GateResult:
+def gate_no_single_seed_dominance(exp: Experiment, dominance: float = 1.0, **_: Any) -> GateResult:
     """Reject a candidate whose apparent performance rests on one lucky seed.
 
-    The prototype's seed_variance gate needs a baseline; with none, a single-seed
-    spike promoted. This gate needs no baseline: if removing the single best seed
-    collapses the mean by more than `dominance` of the gap between best and rest,
-    the result is a seed lottery, not a finding.
+    Needs no baseline, which is the point: the prototype's seed_variance gate
+    cannot judge a candidate with no parent, and a single-seed spike promoted.
 
-    Calibrated against the ticket-04 fixtures rather than a hand-picked delta.
+    ## The arithmetic this had wrong, found by the first real dataset
+
+    The original compared the *lift over rest-mean* to the *top seed's
+    contribution to that lift*, and those are the same quantity:
+
+        lift = full_mean - rest_mean = (best - rest_mean) / n
+        contribution                 = (best - rest_mean) / n
+
+    So the ratio was identically 1.0 whenever `best > rest_mean` -- which is
+    always -- and this **blocking** gate rejected every experiment whose seeds
+    were not bit-identical. Twenty tightly-clustered seeds failed exactly as hard
+    as a genuine lottery.
+
+    The suite never caught it because its fixtures generate identical metrics per
+    seed, so `lift` was 0 and the gate passed vacuously. Five of five correct,
+    against a gate that could not work. It took one run on real data.
+
+    ## What it measures now
+
+    Whether the top seed stands apart from the others *by more than the others
+    vary among themselves*:
+
+        gap    = best - second_best
+        spread = max(rest) - min(rest)
+        lottery if gap > dominance * spread
+
+    A lottery is one seed detached from a tight cluster, which this catches. Five
+    seeds that differ by ordinary noise have a gap no larger than their own
+    spread, and pass.
+
+    When the rest are identical, `spread` is zero and any real gap dominates --
+    correct, and the reason for an absolute floor so float noise does not trip it.
     """
     vals = sorted((r.val_metric for r in exp.runs), reverse=True)
     if len(vals) < 3:
         return GateResult(
             "no_single_seed_dominance", False, "need >=3 seeds to judge dominance", blocking=True
         )
-    n = len(vals)
-    best, rest = vals[0], vals[1:]
-    rest_mean = sum(rest) / len(rest)
-    full_mean = sum(vals) / n
-    lift = full_mean - rest_mean  # how much the full mean sits above the rest
-    # the single best seed contributes exactly (best - rest_mean)/n to the full mean
-    single_seed_contrib = (best - rest_mean) / n
-    frac = (single_seed_contrib / lift) if lift > 1e-12 else 0.0
-    dominated = lift > 1e-9 and frac > dominance
-    ok = not dominated
+
+    best, second, rest = vals[0], vals[1], vals[1:]
+    gap = best - second
+    spread = max(rest) - min(rest)
+
+    # Below this, differences are float noise rather than a seed lottery.
+    floor = 1e-9
+    if gap <= floor:
+        return GateResult(
+            "no_single_seed_dominance",
+            True,
+            f"balanced across seeds (top gap {gap:.4g} within noise)",
+            blocking=True,
+        )
+
+    dominated = gap > dominance * max(spread, floor)
     detail = (
-        "balanced across seeds"
-        if ok
-        else f"SEED LOTTERY: one seed ({best:.3f}) accounts for {frac:.0%} of the "
-        f"lift over rest-mean {rest_mean:.3f}"
+        f"balanced across seeds (top gap {gap:.4f} vs rest spread {spread:.4f})"
+        if not dominated
+        else f"SEED LOTTERY: top seed {best:.4f} stands {gap:.4f} above the next, "
+        f"while the other {len(rest)} seeds span only {spread:.4f}"
     )
-    return GateResult("no_single_seed_dominance", ok, detail, blocking=True)
+    return GateResult("no_single_seed_dominance", not dominated, detail, blocking=True)
 
 
 # --------------------------------------------------------------------------- #

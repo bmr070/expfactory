@@ -86,10 +86,31 @@ class SuiteResult:
         return not self.mismatches
 
 
-def _runs(metric: float, seeds: int = 5, overlap: int = 0, jitter: float = 0.0) -> list[RunResult]:
+def _runs(
+    metric: float,
+    seeds: int = 5,
+    overlap: int = 0,
+    jitter: float = 0.0,
+    spread: float = 0.0,
+) -> list[RunResult]:
+    """Runs for a fixture.
+
+    `jitter` lifts one seed -- a lottery. `spread` fans all seeds out evenly
+    around the metric, which is what ordinary seed noise looks like.
+
+    `spread` was added after the first real dataset run. Every fixture here
+    produced *bit-identical* metrics across seeds, and
+    `gate_no_single_seed_dominance` happened to pass vacuously on that input
+    while being algebraically incapable of passing anything else. Five of five
+    correct, against a gate that could not work. Fixtures that never vary cannot
+    catch a gate that mishandles variation.
+    """
     out: list[RunResult] = []
     for s in range(seeds):
         m = metric + (jitter if s == 0 else 0.0)  # jitter only on one lucky seed
+        if spread and seeds > 1:
+            # evenly fanned, deterministic: ordinary noise, no single outlier
+            m += spread * (s / (seeds - 1) - 0.5)
         out.append(
             RunResult(
                 seed=s,
@@ -157,6 +178,15 @@ def build_suite() -> Suite:
         # genuine: clean, tight, reproducible -> promote
         Fixture("v-genuine-1", Kind.GENUINE, Expect.PROMOTE, cand("genuine strong", _runs(0.85))),
         Fixture("v-genuine-2", Kind.GENUINE, Expect.PROMOTE, cand("genuine modest", _runs(0.78))),
+        # Ordinary seed noise must PROMOTE. Absent until the first real dataset
+        # run, which is why gate_no_single_seed_dominance shipped rejecting every
+        # experiment whose seeds were not bit-identical.
+        Fixture(
+            "v-genuine-spread-1",
+            Kind.GENUINE,
+            Expect.PROMOTE,
+            cand("genuine with realistic seed noise", _runs(0.85, spread=0.02)),
+        ),
         # leakage: train/eval overlap -> reject regardless of metric
         Fixture(
             "v-leak-1",
@@ -188,6 +218,12 @@ def build_suite() -> Suite:
 
     heldout = [
         Fixture("h-genuine-1", Kind.GENUINE, Expect.PROMOTE, cand("held genuine", _runs(0.82))),
+        Fixture(
+            "h-genuine-spread-1",
+            Kind.GENUINE,
+            Expect.PROMOTE,
+            cand("held genuine, realistic noise", _runs(0.80, spread=0.03)),
+        ),
         Fixture(
             "h-leak-1", Kind.LEAKAGE, Expect.REJECT, cand("held leaky", _runs(0.97, overlap=8))
         ),
