@@ -169,6 +169,14 @@ not by reasoning. Breaking one silently guts the verification layer.
   verifier. A runner built without them still refuses its own verdicts — the
   `required_gates` check now catches a misconfigured *runner* rather than a
   misconfigured agent.
+- **The runner runs where the compute does.** A cloud-hosted runner cannot reach
+  a GPU under the desk without exposing it, so while compute is local the runner
+  is a local daemon (M2-08). An explicit coupling, not a preference: moving to
+  rented compute reopens the hosted options.
+- **PR authorship is not load-bearing.** `substrate_guard` asks what changed,
+  never who, so an agent runtime that opens PRs as the triggering human degrades
+  CODEOWNERS without touching the wall. The identity that *is* load-bearing is
+  the Linear one, because `label_actor` reads it — and that one is free.
 - **The egress allowlist is code, and exact-match only.** No env var, no config
   file, no runtime API — inside a sandbox the agent can set env vars and write
   config, but it cannot merge a PR, and that is the whole control. Matching is
