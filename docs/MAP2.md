@@ -48,6 +48,18 @@ way to a promotion. Done when nothing is left to decide before someone builds it
 
 <!-- one line per closed ticket -->
 
+- [M2-08 — Where does the runner live, and is it polled or pushed?](decisions/M2-08-RESOLVED-runner-location.md) —
+  **a daemon on the owner's machine, polling, for as long as compute is local.** The option table was
+  answering the wrong question: `LocalGpuSubstrate` did not exist when this was raised, and a
+  cloud-hosted runner cannot reach a GPU under the desk without exposing it. So runner location is
+  *downstream of compute location*, recorded as an explicit coupling so that moving to Modal reopens
+  the hosted options rather than leaving a daemon in place from habit. Webhooks deferred for the same
+  reason a hosted runner was: a receiver on a home network needs an inbound path, a poll needs only
+  outbound. **BRE-21 turns out to be already mitigated** — `substrate_guard` asks what changed, never
+  who, so Open SWE authoring PRs as the triggering human degrades CODEOWNERS and does not touch the
+  wall. That inverts BRE-18: the *free* Linear identity is the load-bearing one (it is what
+  `label_actor` reads), and the GitHub App is a later nicety rather than a blocker.
+
 - [M2-07 — Does Open SWE subsume the orchestrator, the runtime, or both?](decisions/M2-07-RESOLVED-open-swe.md) —
   **adopt at L3 + the dispatch half of L5.** Current release is 17 Mar 2026, Python, on Deep Agents +
   LangGraph (the Aug-2025 TS version is superseded). It does *not* supply an experiment queue, a
@@ -90,11 +102,6 @@ way to a promotion. Done when nothing is left to decide before someone builds it
      different layers and the ledger alone promotes. M2-06 no longer has to pick a winner. -->
 
 ## Frontier — takeable now
-
-- **M2-08** — [where does the runner live, and is it polled or pushed?](decisions/M2-08-where-does-the-runner-live.md)
-  Raised because agent identity was being chosen before hosting, which is backwards — a scheduled
-  Action supplies an identity free, a daemon does not. Also asks whether Open SWE's dispatch (adopted
-  in M2-07) already subsumes the `Runner` that was built, which may delete code.
 
 - **N-08** — build the `JobRegistry` + `ComputeSubstrate` protocol (unblocked by M2-03). Now the
   load-bearing *build*.
