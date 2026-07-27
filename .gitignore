@@ -15,3 +15,8 @@ build/
 ledger/
 runs/
 .env
+
+# Provisioned datasets. Never committed: hundreds of MB, third-party licence
+# terms, and the factory reads them from disk rather than fetching them (which
+# is why github.com is not on the egress allowlist).
+data/
