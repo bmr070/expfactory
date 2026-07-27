@@ -77,6 +77,12 @@ Runner = Callable[[Sequence[str]], str]
 # Not cosmetic. A test run put hundreds of console windows on the owner's screen,
 # and a tool that disrupts the machine it runs on stops being used.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Same treatment for the detach flags. `getattr` rather than a direct reference
+# because mypy runs on Linux in CI, where these attributes do not exist, and it
+# only narrows `sys.platform` inside an `if` — not inside the ternary this used
+# to be written as. Caught by the CI matrix; local mypy on Windows was happy.
+_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+_DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0)
 
 
 def _run(cmd: Sequence[str]) -> str:
@@ -338,11 +344,7 @@ class LocalGpuSubstrate:
             # kwargs dict so that the AST check in tests/test_no_console_windows
             # can actually see it. A guard that cannot read the call it guards is
             # not a guard.
-            detached = (
-                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | _NO_WINDOW
-                if sys.platform == "win32"
-                else 0
-            )
+            detached = _NEW_PROCESS_GROUP | _DETACHED | _NO_WINDOW if sys.platform == "win32" else 0
             popen_kwargs: dict[str, Any] = {
                 "cwd": str(d),
                 "env": env,
@@ -505,6 +507,12 @@ def _alive_windows(pid: int) -> bool:
     is indistinguishable from a running one. That ambiguity is why `done.json`
     decides whether a job finished and this only ever hints.
     """
+    # The early return is what lets mypy narrow `sys.platform`. Without it the
+    # Windows-only names below are errors when mypy runs on Linux in CI, and a
+    # `type: ignore` would then be flagged as unused when it runs on Windows.
+    if sys.platform != "win32":
+        return False
+
     import ctypes
     from ctypes import wintypes
 
