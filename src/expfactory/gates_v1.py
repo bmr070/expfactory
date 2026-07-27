@@ -74,6 +74,10 @@ _HARNESS_PATHS = (
     # Holds the outbound allowlist. The whole control is that widening it takes a
     # reviewed diff, so a change here IS the thing a human must look at.
     "egress.py",
+    # Maps a clip filename to the recording it came from, which is the grouping
+    # G-09 is handed. An agent that could edit this could report every clip as its
+    # own session and pass the gate while leaking wholesale.
+    "drone_audio.py",
     # Answers "which human made this dispatch-eligible" for the queue the runner
     # actually reads. Make label_actor always return a human and eligibility is
     # bypassed wholesale -- the same reason github_tracker.py is here.
