@@ -70,9 +70,30 @@ _SMI_QUERY = "index,name,memory.total,memory.used,power.limit"
 
 Runner = Callable[[Sequence[str]], str]
 
+# Windows opens a console window for every child of a windowless parent, and this
+# module spawns them in loops. `CREATE_NO_WINDOW` suppresses that; it is 0 on
+# every other platform so the flag can be passed unconditionally.
+#
+# Not cosmetic. A test run put hundreds of console windows on the owner's screen,
+# and a tool that disrupts the machine it runs on stops being used.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+# Same treatment for the detach flags. `getattr` rather than a direct reference
+# because mypy runs on Linux in CI, where these attributes do not exist, and it
+# only narrows `sys.platform` inside an `if` — not inside the ternary this used
+# to be written as. Caught by the CI matrix; local mypy on Windows was happy.
+_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+_DETACHED = getattr(subprocess, "DETACHED_PROCESS", 0)
+
 
 def _run(cmd: Sequence[str]) -> str:
-    out = subprocess.run(list(cmd), capture_output=True, text=True, check=True, timeout=30)
+    out = subprocess.run(
+        list(cmd),
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+        creationflags=_NO_WINDOW,
+    )
     return out.stdout
 
 
@@ -315,6 +336,15 @@ class LocalGpuSubstrate:
         stdout = (d / "stdout.log").open("wb")
         stderr = (d / "stderr.log").open("wb")
         try:
+            # Detach so closing the agent's shell does not signal the job, and on
+            # Windows give it no console of its own — a job that runs for hours
+            # must not put a window on the owner's desktop.
+            #
+            # `creationflags` is passed explicitly rather than folded into the
+            # kwargs dict so that the AST check in tests/test_no_console_windows
+            # can actually see it. A guard that cannot read the call it guards is
+            # not a guard.
+            detached = _NEW_PROCESS_GROUP | _DETACHED | _NO_WINDOW if sys.platform == "win32" else 0
             popen_kwargs: dict[str, Any] = {
                 "cwd": str(d),
                 "env": env,
@@ -322,17 +352,13 @@ class LocalGpuSubstrate:
                 "stderr": stderr,
                 "stdin": subprocess.DEVNULL,
             }
-            if sys.platform == "win32":
-                # Detach from this console so closing the agent's shell does not
-                # signal the job.
-                popen_kwargs["creationflags"] = (
-                    subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-                )
-            else:
+            if sys.platform != "win32":
                 popen_kwargs["start_new_session"] = True
 
             proc = subprocess.Popen(
-                [sys.executable, str(wrapper), json.dumps(list(spec.command))], **popen_kwargs
+                [sys.executable, str(wrapper), json.dumps(list(spec.command))],
+                creationflags=detached,
+                **popen_kwargs,
             )
         finally:
             stdout.close()
@@ -438,10 +464,7 @@ def _alive(pid: int) -> bool:
     if pid <= 0:
         return False
     if sys.platform == "win32":
-        out = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
-        )
-        return str(pid) in out.stdout
+        return _alive_windows(pid)
 
     try:
         reaped, _status = os.waitpid(pid, os.WNOHANG)
@@ -463,6 +486,54 @@ def _alive(pid: int) -> bool:
     return not _is_zombie(pid)
 
 
+def _alive_windows(pid: int) -> bool:
+    """Liveness via the Win32 API rather than by shelling out to `tasklist`.
+
+    Two reasons, and the first is not about correctness.
+
+    **It opened a console window.** Every `subprocess.run` from a windowless
+    parent flashes one, `poll()` calls this, and the polling loops call `poll()`
+    every 50 ms — so a test run put hundreds of console windows on the owner's
+    screen. A tool that disrupts the machine it runs on does not get used.
+
+    **It was slow enough to be wrong.** `tasklist` costs roughly 250 ms, long
+    enough for a short job to finish *inside* the probe, which is what made a
+    finished job read as LOST (see `_state_of`). `OpenProcess` answers in
+    microseconds, so the window in which the answer goes stale effectively
+    closes. The completion record stays authoritative regardless; this just
+    stops the probe from being wrong so often.
+
+    Exit code 259 is `STILL_ACTIVE`, and a process that genuinely exits with 259
+    is indistinguishable from a running one. That ambiguity is why `done.json`
+    decides whether a job finished and this only ever hints.
+    """
+    # The early return is what lets mypy narrow `sys.platform`. Without it the
+    # Windows-only names below are errors when mypy runs on Linux in CI, and a
+    # `type: ignore` would then be flagged as unused when it runs on Windows.
+    if sys.platform != "win32":
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # No such process, or it is gone. Access-denied would also land here; a
+        # pid we cannot open is not one this substrate started.
+        return False
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return bool(code.value == STILL_ACTIVE)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _is_zombie(pid: int) -> bool:
     """Whether a pid is an unreaped corpse rather than a running process."""
     try:
@@ -474,7 +545,11 @@ def _is_zombie(pid: int) -> bool:
         pass
     try:
         out = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5
+            ["ps", "-o", "stat=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -493,7 +568,9 @@ started = time.time()
 command = json.loads(sys.argv[1])
 exit_code, error = 1, None
 try:
-    exit_code = subprocess.call(command)
+    exit_code = subprocess.call(
+        command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
 except Exception as exc:  # noqa: BLE001 - recorded, not handled
     error = f"{type(exc).__name__}: {exc}"
 finally:

@@ -445,7 +445,13 @@ class ExitCodeVerifier:
         self._id_factory = id_factory
 
     def run(self, candidate: Candidate) -> VerdictBundle:
-        proc = subprocess.run(self._command, capture_output=True, text=True)
+        proc = subprocess.run(
+            self._command,
+            capture_output=True,
+            text=True,
+            # 0 off Windows; stops a CI shell-out flashing a console window.
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         return VerdictBundle.from_exit_code(
             exp_id=self._id_factory(),
             candidate=candidate,
