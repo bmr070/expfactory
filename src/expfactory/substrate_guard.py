@@ -49,6 +49,8 @@ def changed_paths(base: str, head: str = "HEAD") -> list[str]:
         capture_output=True,
         text=True,
         check=True,
+        # 0 off Windows; suppresses a console flash on it.
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return [line.strip() for line in out.stdout.splitlines() if line.strip()]
 

@@ -1,0 +1,41 @@
+{
+  "name": "expfactory",
+  "build": { "dockerfile": "Dockerfile" },
+
+  // GPU passthrough. Needs Docker Desktop with the WSL2 backend and the NVIDIA
+  // container toolkit; without them this line is what fails, loudly, rather than
+  // the container silently running on CPU for six hours.
+  "runArgs": ["--gpus", "all"],
+
+  "remoteUser": "vscode",
+  "workspaceFolder": "/workspaces/expfactory",
+
+  "postCreateCommand": "pip install --no-cache-dir -e '.[dev,demo]'",
+
+  // Verify the two things that are actually different in here, rather than
+  // assuming: that the package imports and that the GPU is visible.
+  "postAttachCommand": "python -m expfactory.local_substrate || true",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff", "ms-python.mypy-type-checker"],
+      "settings": {
+        "python.testing.pytestEnabled": true,
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  },
+
+  "mounts": [
+    // Job directories and the ledger live on the host so a rebuilt container
+    // does not lose the append-only log. Losing history to a `docker build` is
+    // exactly the failure the ledger design refuses.
+    "source=${localWorkspaceFolder}/runs,target=/workspaces/expfactory/runs,type=bind,consistency=cached"
+  ],
+
+  "containerEnv": {
+    // CI sets this too. A demo test that can silently skip is how the demo came
+    // to be wrong about three of its four scenarios.
+    "EXPFACTORY_REQUIRE_DEMO": "1"
+  }
+}
