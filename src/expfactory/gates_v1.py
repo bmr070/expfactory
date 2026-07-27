@@ -215,7 +215,8 @@ def gate_no_single_seed_dominance(exp: Experiment, dominance: float = 0.5, **_: 
 #
 # The size of the effect, from the paper: enforcing recording-session-grouped
 # cross-validation drops a random-forest baseline's detection probability at 1%
-# false-alarm rate from 0.796 to 0.745. Five points of Pd, invisible to every
+# false-alarm rate by several points -- the abstract and Table 2 report
+# different figures, see the corpus. Invisible either way to every
 # gate the factory had.
 #
 # This is the ratchet (W-11) applied to a finding from the literature rather than

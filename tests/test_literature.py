@@ -81,9 +81,16 @@ def test_the_leakage_finding_that_motivated_g09_is_recorded(corpus: Corpus):
     """G-09 exists because of this paper. If the citation ever disappears, the
     gate becomes a rule with no recorded reason, which is how rules rot."""
     echohawk = corpus.papers["echohawk-2026"]
-    assert "session-grouped" in " ".join(echohawk.claims).lower()
-    assert any("0.796" in c and "0.745" in c for c in echohawk.claims)
+    claims = " ".join(echohawk.claims)
+    assert "session-grouped" in claims.lower()
     assert "session-grouped-cv" in corpus.mechanisms
+
+    # Both reported figures, and the fact that they disagree. The first version
+    # of this test asserted only the abstract's pair, which is how 0.745 came to
+    # be repeated as "the bar" across five files without anyone checking it
+    # against Table 2.
+    assert "0.745" in claims and "72.3" in claims
+    assert "DISCREPANCY" in claims, "the unresolved gap between the two must stay recorded"
 
 
 # --------------------------------------------------------------------------- #
@@ -259,7 +266,7 @@ def test_replication_is_labelled_replication(corpus: Corpus):
         mechanism_keys=("session-grouped-cv",),
         paper_keys=("echohawk-2026",),
         target_task="acoustic-drone-detection",
-        predicted_effect="Pd@1%FAR near 0.745",
+        predicted_effect="Pd@1%FAR near the reported session-grouped baseline",
         is_replication=True,
     )
     assert novelty_of(h, corpus) == "replication"

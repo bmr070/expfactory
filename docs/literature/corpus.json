@@ -22,13 +22,19 @@
       "tier": "preprint",
       "published": "2026-06-28",
       "url": "https://arxiv.org/abs/2606.29589",
-      "domains": ["audio", "counter-uas", "methodology", "edge"],
+      "domains": [
+        "audio",
+        "counter-uas",
+        "methodology",
+        "edge"
+      ],
       "claims": [
-        "Session-level leakage: a widely used public drone-audio dataset is pre-segmented into short clips, so a naive clip-level split puts adjacent slices of one continuous recording into both train and test.",
-        "Enforcing recording-session-grouped cross-validation drops a random-forest baseline's detection probability at 1% false-alarm rate from 0.796 to 0.745.",
+        "Session-level leakage: DroneAudioDataset ships 1,332 drone files drawn from only 257 continuous recording sessions, so a naive clip-level split puts adjacent slices of one recording into both train and test. Negatives come from ESC-50 and a Speech Commands corpus.",
+        "ABSTRACT figure: enforcing recording-session-grouped cross-validation reduces 'for example' a random-forest baseline's Pd at 1% FAR from 0.796 to 0.745.",
+        "TABLE 2 figure: under proper grouping the random-forest baseline reaches 72.3% +/- 4.7% Pd@1%FAR and a CNN reaches 93.8%.",
+        "DISCREPANCY, unresolved: 0.745 (abstract) and 0.723 (Table 2) are not the same number. The paper evaluates both a synthetic benchmark and real recorded audio and the abstract does not say which its example is drawn from. Do not quote either as 'the' baseline without saying which.",
         "Pipeline detects rotor harmonics, estimates blade-passing frequency, localises via delay-and-sum, MVDR, MUSIC, GCC-PHAT, SRP-PHAT, then temporal tracking.",
-        "Evaluated against low-frequency harmonic confusers such as ground vehicles.",
-        "All code, figures and a synthetic data generator released; every result runs without any download."
+        "Claims all code, a synthetic data generator, unit tests and figures are released. NO REPOSITORY URL APPEARS ANYWHERE IN THE PAPER, so 'runs without any download' is not actionable."
       ]
     },
     {
@@ -38,7 +44,11 @@
       "tier": "workshop",
       "published": "2025-07-31",
       "url": "https://arxiv.org/abs/2507.23473",
-      "domains": ["vision-ir", "counter-uas", "benchmark"],
+      "domains": [
+        "vision-ir",
+        "counter-uas",
+        "benchmark"
+      ],
       "claims": [
         "220 video sequences, over 240k bounding box annotations, frame-level attribute annotations, emphasis on tiny UAV targets.",
         "State of the art reaches only 35.92% state accuracy on CST Anti-UAV, against 67.69% on Anti-UAV410.",
@@ -53,7 +63,11 @@
       "tier": "workshop",
       "published": "2025-04-01",
       "url": "https://arxiv.org/abs/2504.11967",
-      "domains": ["counter-uas", "survey", "benchmark"],
+      "domains": [
+        "counter-uas",
+        "survey",
+        "benchmark"
+      ],
       "claims": [
         "Survey of anti-UAV methods and benchmarks; used here as the map of which datasets and metrics the field treats as standard.",
         "date-derived from arXiv id 2504"
@@ -66,7 +80,12 @@
       "tier": "preprint",
       "published": "2025-12-03",
       "url": "https://arxiv.org/abs/2512.02668",
-      "domains": ["vision-ir", "multimodal-fusion", "vlm", "counter-uas"],
+      "domains": [
+        "vision-ir",
+        "multimodal-fusion",
+        "vlm",
+        "counter-uas"
+      ],
       "claims": [
         "Single-stream, single-stage, end-to-end unified tracker across RGB, TIR and RGB-T.",
         "Introduces a text prior prompt strategy that directs the model to attend to UAVs across scenarios.",
@@ -81,7 +100,11 @@
       "tier": "preprint",
       "published": "2025-10-01",
       "url": "https://arxiv.org/abs/2510.15383",
-      "domains": ["audio", "robotics", "benchmark"],
+      "domains": [
+        "audio",
+        "robotics",
+        "benchmark"
+      ],
       "claims": [
         "23.5 hours of recording; SNR range -57.2 dB to -2.5 dB; described as the largest drone audition dataset known to the authors.",
         "Targets human presence detection under drone ego-noise.",
@@ -95,7 +118,11 @@
       "tier": "preprint",
       "published": "2025-11-20",
       "url": "https://arxiv.org/abs/2511.15312",
-      "domains": ["multimodal-fusion", "audio", "counter-uas"],
+      "domains": [
+        "multimodal-fusion",
+        "audio",
+        "counter-uas"
+      ],
       "claims": [
         "Transformer fusion over radar, audio and video for UAV detection.",
         "Results tables did not extract from the PDF; no numbers recorded here rather than guessed."
@@ -108,7 +135,11 @@
       "tier": "preprint",
       "published": "2025-04-01",
       "url": "https://arxiv.org/abs/2504.07954",
-      "domains": ["rl", "vision", "vlm"],
+      "domains": [
+        "rl",
+        "vision",
+        "vlm"
+      ],
       "claims": [
         "GRPO applied during MLLM post-training for perception tasks.",
         "Reports 31.9% AP on COCO2017 val for object detection as an RL-post-trained perception policy baseline.",
@@ -122,7 +153,11 @@
       "tier": "preprint",
       "published": "2026-05-01",
       "url": "https://arxiv.org/abs/2605.03403",
-      "domains": ["rl", "vlm", "test-time-adaptation"],
+      "domains": [
+        "rl",
+        "vlm",
+        "test-time-adaptation"
+      ],
       "claims": [
         "Applies GRPO at test time to adapt a vision-language model without labels.",
         "date-derived from arXiv id 2605"
@@ -135,7 +170,11 @@
       "tier": "preprint",
       "published": "2026-06-01",
       "url": "https://arxiv.org/abs/2606.02486",
-      "domains": ["world-model", "robotics", "vlm"],
+      "domains": [
+        "world-model",
+        "robotics",
+        "vlm"
+      ],
       "claims": [
         "AHEAD augments a frozen vision-language-action model with a motion-aware latent world model.",
         "A small world model trained on manipulation video forecasts future patch tokens in the VLA's own feature space, rather than in pixels.",
@@ -149,7 +188,10 @@
       "tier": "preprint",
       "published": "2026-06-01",
       "url": "https://arxiv.org/abs/2606.07687",
-      "domains": ["world-model", "representation"],
+      "domains": [
+        "world-model",
+        "representation"
+      ],
       "claims": [
         "Argues pixel- or token-perfect prediction wastes capacity on detail no agent needs when the downstream task is perception or control rather than generation.",
         "Prediction in an abstract embedding space is proposed in place of reconstruction.",
@@ -163,7 +205,9 @@
       "tier": "preprint",
       "published": "2024-07-01",
       "url": "https://arxiv.org/abs/2407.12220",
-      "domains": ["methodology"],
+      "domains": [
+        "methodology"
+      ],
       "claims": [
         "Catalogue of questionable research practices in ML. Carried as a source of candidate gates rather than as a method.",
         "date-derived from arXiv id 2407"
@@ -174,63 +218,97 @@
     {
       "key": "session-grouped-cv",
       "summary": "Split train and eval by recording session, not by clip. Adjacent slices of one continuous recording are near-duplicates; putting them on both sides of the split measures memorisation of the session, not detection of the target.",
-      "source_keys": ["echohawk-2026"],
+      "source_keys": [
+        "echohawk-2026"
+      ],
       "preconditions": [
         "the dataset is segmented from longer continuous captures",
         "a session, recording, site or device identifier exists per sample"
       ],
-      "cost": "free — it is an evaluation protocol change, not a model change"
+      "cost": "free \u2014 it is an evaluation protocol change, not a model change"
     },
     {
       "key": "rotor-harmonic-bpf",
       "summary": "Detect from rotor harmonic structure and estimate blade-passing frequency, rather than from a generic spectrogram classifier. Gives a physically interpretable feature that a ground-vehicle confuser does not reproduce.",
-      "source_keys": ["echohawk-2026"],
-      "preconditions": ["audio modality present", "sample rate resolves the harmonic series"],
-      "cost": "cheap — feature extraction"
+      "source_keys": [
+        "echohawk-2026"
+      ],
+      "preconditions": [
+        "audio modality present",
+        "sample rate resolves the harmonic series"
+      ],
+      "cost": "cheap \u2014 feature extraction"
     },
     {
       "key": "harmonic-confuser-eval",
       "summary": "Evaluate against deliberate low-frequency harmonic confusers such as ground vehicles, not against silence. A detector that separates drone from quiet is not the same as one that separates drone from truck.",
-      "source_keys": ["echohawk-2026"],
-      "preconditions": ["a confuser class can be sourced or synthesised"],
+      "source_keys": [
+        "echohawk-2026"
+      ],
+      "preconditions": [
+        "a confuser class can be sourced or synthesised"
+      ],
       "cost": "cheap"
     },
     {
       "key": "text-prior-prompt",
       "summary": "Condition a tracker on a text prior so attention is steered to the target class across heterogeneous scenes, unifying RGB, TIR and fused streams in one model instead of one model per modality.",
-      "source_keys": ["uautrack-2025"],
-      "preconditions": ["a vision-language backbone is available", "target is nameable in text"],
-      "cost": "moderate — needs a VLM backbone"
+      "source_keys": [
+        "uautrack-2025"
+      ],
+      "preconditions": [
+        "a vision-language backbone is available",
+        "target is nameable in text"
+      ],
+      "cost": "moderate \u2014 needs a VLM backbone"
     },
     {
       "key": "latent-forecast-head",
       "summary": "Forecast the target's next state in the model's own feature space rather than in pixels, using a small world model over a frozen backbone. Aimed at carrying a track through occlusion and through frames where the target is too small to detect.",
-      "source_keys": ["ahead-world-model-2026", "latents-action-relevant-2026"],
+      "source_keys": [
+        "ahead-world-model-2026",
+        "latents-action-relevant-2026"
+      ],
       "preconditions": [
         "sequential data, not independent frames",
         "a frozen backbone whose feature space is stable"
       ],
-      "cost": "expensive — trains a second model"
+      "cost": "expensive \u2014 trains a second model"
     },
     {
       "key": "grpo-perception-posttrain",
       "summary": "Post-train a perception model with GRPO against a task reward, sampling a group of outputs per input and normalising advantage within the group. No critic, so cheaper than PPO.",
-      "source_keys": ["perception-r1-2025"],
-      "preconditions": ["a scalar task reward exists", "sampling multiple outputs per input is affordable"],
-      "cost": "expensive — GPU hours"
+      "source_keys": [
+        "perception-r1-2025"
+      ],
+      "preconditions": [
+        "a scalar task reward exists",
+        "sampling multiple outputs per input is affordable"
+      ],
+      "cost": "expensive \u2014 GPU hours"
     },
     {
       "key": "grpo-test-time-adapt",
       "summary": "Adapt at test time with GRPO and no labels, so a detector can specialise to the deployment session it is currently in.",
-      "source_keys": ["grpo-tta-2026", "perception-r1-2025"],
-      "preconditions": ["unlabelled deployment stream", "an unsupervised reward proxy"],
+      "source_keys": [
+        "grpo-tta-2026",
+        "perception-r1-2025"
+      ],
+      "preconditions": [
+        "unlabelled deployment stream",
+        "an unsupervised reward proxy"
+      ],
       "cost": "moderate at inference, and note it interacts badly with session-grouped evaluation"
     },
     {
       "key": "low-snr-curriculum",
       "summary": "Train across an explicit SNR ladder rather than at a single operating point, using a dataset whose SNR range is documented and wide.",
-      "source_keys": ["droneaudioset-2025"],
-      "preconditions": ["SNR is known or controllable per sample"],
+      "source_keys": [
+        "droneaudioset-2025"
+      ],
+      "preconditions": [
+        "SNR is known or controllable per sample"
+      ],
       "cost": "cheap"
     }
   ]

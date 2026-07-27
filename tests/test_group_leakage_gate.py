@@ -9,7 +9,9 @@ is distinct, the id gate passes, and the model scores the session it memorised.
 EchoHawk (arXiv:2606.29589, June 2026) documents this in a widely used public
 drone-audio dataset and measures it: enforcing recording-session-grouped
 cross-validation drops a random-forest baseline's detection probability at 1%
-false-alarm rate from 0.796 to 0.745.
+false-alarm rate by several points. (The paper's abstract and Table 2 give
+different figures for this; the discrepancy is recorded in the corpus and does
+not affect the finding that motivated the gate.)
 
 The first test is the load-bearing one. It runs both gates over the same evidence
 and asserts they disagree — if they ever agreed, G-09 would be decoration.
