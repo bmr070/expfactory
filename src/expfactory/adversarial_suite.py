@@ -263,10 +263,12 @@ def build_prereg_suite() -> PreregSuiteSetup:
             primary_metric="val_metric",
             direction="maximize",
             baseline_value=0.70,
-            minimum_effect=0.02,
+            # varies per filing so each is distinct, and stays satisfiable by the
+            # fixture runs. Used to vary `decision_rule`, which GH#36 turned from
+            # a free string into a validated one.
+            minimum_effect=0.02 + n * 0.0001,
             seeds=(0, 1, 2),
             parent_id=churn_lineage,
-            decision_rule=f"attempt_{n}",
         )
         for n in range(4)
     ]
@@ -274,10 +276,9 @@ def build_prereg_suite() -> PreregSuiteSetup:
         primary_metric="val_metric",
         direction="maximize",
         baseline_value=0.70,
-        minimum_effect=0.02,
+        minimum_effect=0.0307,
         seeds=(0, 1, 2),
         parent_id=parent_ok,
-        decision_rule="never_filed",
     )
 
     def runs(

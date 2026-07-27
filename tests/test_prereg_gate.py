@@ -386,3 +386,54 @@ def test_a_non_default_primary_metric_cannot_forge_its_baseline():
     assert not result.passed
     assert "FORGED BASELINE" in result.detail
     assert "loss" in result.detail
+
+
+# ---- GH#36: a declared rule must be one the gate can actually apply ---------
+
+
+def test_an_unimplemented_decision_rule_is_refused_at_construction():
+    """`decision_rule` was a free string that was content-hashed into the prereg
+    and written to the ledger, while `gate_preregistration` applied
+    mean-effect-meets-minimum regardless.
+
+    So an agent could declare "bayesian_stopping", be adjudicated by something
+    else, and leave a ledger row recording a rule nobody ran. A smaller version
+    of exactly what G-07 exists to prevent: a declaration that looks binding and
+    binds nothing.
+    """
+    from expfactory.prereg import IMPLEMENTED_DECISION_RULES, Preregistration
+
+    with pytest.raises(ValueError, match="not implemented"):
+        Preregistration(
+            primary_metric="val_metric",
+            direction="maximize",
+            baseline_value=0.70,
+            minimum_effect=0.02,
+            seeds=(0, 1, 2),
+            decision_rule="bayesian_stopping",
+        )
+
+    assert "bayesian_stopping" not in IMPLEMENTED_DECISION_RULES
+
+
+def test_the_implemented_set_names_only_rules_the_gate_performs():
+    """The set must not drift ahead of the code. One entry today, because
+    `gate_preregistration` performs exactly one rule; adding a name here without
+    the code that applies it would recreate the bug in a new place."""
+    from expfactory.prereg import IMPLEMENTED_DECISION_RULES, MEAN_EFFECT_MEETS_MINIMUM
+
+    assert frozenset({MEAN_EFFECT_MEETS_MINIMUM}) == IMPLEMENTED_DECISION_RULES
+
+
+def test_the_default_rule_is_the_one_that_is_implemented():
+    """A default naming an unimplemented rule would make every prereg invalid."""
+    from expfactory.prereg import IMPLEMENTED_DECISION_RULES, Preregistration
+
+    prereg = Preregistration(
+        primary_metric="val_metric",
+        direction="maximize",
+        baseline_value=0.70,
+        minimum_effect=0.02,
+        seeds=(0, 1, 2),
+    )
+    assert prereg.decision_rule in IMPLEMENTED_DECISION_RULES

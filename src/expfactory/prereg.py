@@ -57,6 +57,18 @@ PRIMARY_FIELD = "val_metric"
 BASELINE_TOLERANCE = 1e-9
 
 
+# The only decision rule `gate_preregistration` implements: promote when the mean
+# effect over the declared seeds meets the declared minimum, in the declared
+# direction, and no guardrail regressed.
+MEAN_EFFECT_MEETS_MINIMUM = "mean_effect_meets_minimum"
+
+# Every rule the gate can actually apply. A preregistration naming anything else
+# is refused at construction (GH#36). Add to this set only alongside the code
+# that performs the rule -- the point is that the set cannot drift ahead of the
+# implementation.
+IMPLEMENTED_DECISION_RULES: frozenset[str] = frozenset({MEAN_EFFECT_MEETS_MINIMUM})
+
+
 @dataclass(frozen=True)
 class Guardrail:
     """A metric that may only ever BLOCK a promotion, never earn one.
@@ -113,9 +125,28 @@ class Preregistration:
     guardrails: tuple[Guardrail, ...] = ()
     parent_id: str | None = None
     supersedes: str | None = None
-    decision_rule: str = "mean_effect_meets_minimum"
+    # Which rule the gate will apply. Validated against the rules actually
+    # implemented (GH#36): it used to be a free string that was hashed into the
+    # prereg and written to the ledger, while `gate_preregistration` applied
+    # mean-effect-meets-minimum regardless. An agent could declare
+    # "bayesian_stopping" and be adjudicated by something else entirely, and the
+    # ledger row would record the rule nobody ran.
+    #
+    # A smaller version of exactly what G-07 exists to prevent: a declaration
+    # that looks binding and binds nothing. Cheapest sufficient fix is to refuse
+    # anything the gate cannot actually perform, rather than to invent rules
+    # nobody needs yet.
+    decision_rule: str = MEAN_EFFECT_MEETS_MINIMUM
 
     def __post_init__(self) -> None:
+        if self.decision_rule not in IMPLEMENTED_DECISION_RULES:
+            raise ValueError(
+                f"decision_rule {self.decision_rule!r} is not implemented. "
+                f"Known rules: {sorted(IMPLEMENTED_DECISION_RULES)}. "
+                "A rule the gate cannot apply would be hashed into this "
+                "preregistration and recorded in the ledger as though it had been "
+                "honoured, which is the failure G-07 exists to prevent."
+            )
         if self.direction not in ("maximize", "minimize"):
             raise ValueError(f"direction must be maximize|minimize, got {self.direction!r}")
         if self.minimum_effect < 0:
