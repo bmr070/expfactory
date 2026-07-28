@@ -20,12 +20,15 @@ import pytest
 from expfactory.drone_audio import (
     GROUPING,
     Sample,
+    WrongDataset,
     clip_level_folds,
     load_index,
+    provisioned_commit,
     session_grouped_folds,
     session_of,
     sessions,
     unparsed_names,
+    verify_provisioned,
 )
 from expfactory.gates_v1 import gate_no_group_leakage
 from expfactory.harness import Experiment, RunResult
@@ -223,3 +226,104 @@ def test_most_clips_have_siblings_which_is_why_this_matters():
 
     assert sized.count(5) == 255
     assert max(sized) == 56, "the extra_membo_D2 take is one continuous recording"
+
+
+# --------------------------------------------------------------------------- #
+# Provenance — GH#46
+# --------------------------------------------------------------------------- #
+
+
+def test_the_dataset_is_pinned_to_a_commit_not_just_a_name():
+    """EchoHawk names the dataset and links nothing, which is what #46 was
+    blocked on. The origin is Sara Al-Emadi's GitHub repo, and the commit SHA
+    does a pinned digest's job better than a digest could: git is
+    content-addressed, so one SHA fixes the whole tree, and it is the
+    publisher's own identifier rather than one recorded off our first download.
+    """
+    from expfactory.drone_audio import DATASET_COMMIT, DATASET_REPO
+
+    assert DATASET_REPO == "https://github.com/saraalemadi/DroneAudioDataset"
+    assert len(DATASET_COMMIT) == 40 and all(c in "0123456789abcdef" for c in DATASET_COMMIT)
+
+
+def test_github_is_still_not_on_the_egress_allowlist():
+    """The dataset lives on github.com and that is *not* a reason to allowlist
+    it. Adding github.com would not open a dataset mirror, it would open the
+    entire internet's code. A 1.1 GB one-time fetch is the case
+    hand-provisioning exists for.
+
+    Asserted here rather than only in egress's own tests, because this is the
+    module with the motive to widen it.
+    """
+    from expfactory.egress import ALLOWED_HOSTS
+
+    assert not any("github" in h for h in ALLOWED_HOSTS)
+
+
+def test_a_tree_with_no_git_metadata_is_refused(tmp_path: Path):
+    """Refuses rather than warns. A comparison against the wrong data still
+    produces a plausible number, which is worse than producing none."""
+    with pytest.raises(WrongDataset, match="not a git clone"):
+        verify_provisioned(tmp_path)
+
+
+def test_a_tree_at_the_wrong_commit_is_refused(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("a" * 40, encoding="utf-8")
+
+    with pytest.raises(WrongDataset, match="expected"):
+        verify_provisioned(tmp_path)
+
+
+def test_the_refusal_says_to_change_the_pin_and_the_numbers_together(tmp_path: Path):
+    """The dangerous repair is bumping DATASET_COMMIT so the check passes while
+    the recorded figures still describe the old bytes."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("b" * 40, encoding="utf-8")
+
+    with pytest.raises(WrongDataset) as exc:
+        verify_provisioned(tmp_path)
+    assert "never one without the other" in str(exc.value)
+
+
+@pytest.mark.parametrize("layout", ["detached", "loose-ref", "packed-refs"])
+def test_the_commit_is_found_however_the_clone_stores_it(tmp_path: Path, layout: str):
+    """A fresh clone may keep refs loose or packed, and a checkout by SHA leaves
+    HEAD detached. Reading only one of the three would make the check pass or
+    fail on how the clone happened to be made."""
+    sha = "c" * 40
+    git = tmp_path / ".git"
+    (git / "refs" / "heads").mkdir(parents=True)
+
+    if layout == "detached":
+        (git / "HEAD").write_text(sha + "\n", encoding="utf-8")
+    else:
+        (git / "HEAD").write_text("ref: refs/heads/master\n", encoding="utf-8")
+        if layout == "loose-ref":
+            (git / "refs" / "heads" / "master").write_text(sha + "\n", encoding="utf-8")
+        else:
+            (git / "packed-refs").write_text(
+                f"# pack-refs with: peeled\n{sha} refs/heads/master\n", encoding="utf-8"
+            )
+
+    assert provisioned_commit(tmp_path) == sha
+
+
+def test_the_commit_is_found_from_a_subdirectory(tmp_path: Path):
+    """The dataset root is a subdirectory of the clone, so the walk upward is
+    what makes this work in practice rather than only in a fixture."""
+    git = tmp_path / ".git"
+    git.mkdir()
+    (git / "HEAD").write_text("d" * 40, encoding="utf-8")
+    deep = tmp_path / "Binary_Drone_Audio" / "yes_drone"
+    deep.mkdir(parents=True)
+
+    assert provisioned_commit(deep) == "d" * 40
+
+
+@needs_data
+def test_the_shipped_clone_is_the_commit_the_numbers_came_from():
+    """The gap this closes: H1 reported Pd@1%FAR 0.8762 against whatever `data/`
+    happened to contain, and nothing checked which bytes those were. A dataset
+    updated upstream would have moved the number silently."""
+    verify_provisioned(DATA)
