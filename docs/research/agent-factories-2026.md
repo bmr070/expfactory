@@ -5,6 +5,11 @@ contact with what these systems actually do?** Not "what are they" — that was
 surveyed in W-05/W-08/M2-07 — but "does anyone upstream already answer the
 questions we still have open, and do their answers change ours."
 
+> **Addendum 2026-07-28 at the end of this file** answers the two questions this
+> pass left open, and **corrects two conclusions** — GH#15 (Open SWE solves agent
+> identity, and the safe mode is its default) and BRE-21. Read it before acting on
+> anything here about identity.
+
 Sources read as code and normative text, not as blog posts:
 
 | System | What was read | Status |
@@ -61,7 +66,13 @@ read it.
 
 ## Ticket-by-ticket
 
-### GH#15 / BRE-18 — agent identity · **CONFIRMED OPEN, no upstream answer**
+### GH#15 / BRE-18 — agent identity · **SUPERSEDED — read the addendum**
+
+> **This section's conclusion is wrong and kept for the record.** It was reached
+> by reading specs and docs. Searching the *code* found that Open SWE solves this
+> and that the safe mode is its default. See the 2026-07-28 addendum at the end
+> of this file. The material below about §15.1 and §15.3 still stands; the
+> heading's "no upstream answer" does not.
 
 Symphony §15.1 is the whole finding:
 
@@ -252,3 +263,132 @@ substrate's admission control, not in the prober.
 - [kumanday/OpenSymphony](https://github.com/kumanday/OpenSymphony)
 - [Factory — Droid Exec (Headless)](https://github.com/Factory-AI/factory/blob/main/docs/cli/droid-exec/overview.mdx)
 - [InfoQ — OpenAI Open-Sources Symphony](https://www.infoq.com/news/2026/05/openai-symphony-agents/)
+
+---
+
+# Addendum, 2026-07-28: the two open questions, answered from source
+
+The first pass left two questions the docs could not settle. Both are now
+answered by reading the repositories, and one **corrects a conclusion this repo
+had already recorded**.
+
+## 1. Does anyone enforce a cost cap, or only report spend?
+
+**Still nobody, at the orchestrator layer. The best available move is
+delegation.**
+
+`openai/symphony` has no budget, cap or spend token anywhere in `SPEC.md`
+(searched; zero hits). §13.5 accounts and reports.
+
+`kumanday/OpenSymphony` has two things that look like caps and are not:
+
+- **`max_turns`** on the run schema, commented *"Configured turn budget. A value
+  of 0 means the budget is unknown."* It appears in `gateway-schema`,
+  `gateway/lib.rs` and `openhands/session.rs` — all **plumbing**. It is recorded
+  and passed through; nothing was found that refuses a turn on it. A turn count
+  is a proxy for cost anyway, and a poor one, since turn cost varies by an order
+  of magnitude.
+- **`max_budget_usd: 5`**, which appears **exactly once** in the whole repo, in a
+  workflow template inside `opensymphony-workflow/src/lib.rs`:
+
+  ```yaml
+  openhands:
+    conversation:
+      confirmation_policy:
+        max_budget_usd: 5
+  ```
+
+  This is YAML front matter **passed through to OpenHands**. OpenSymphony does
+  not parse or enforce it; the agent runtime's own `confirmation_policy` does.
+
+**That delegation is the finding, and it agrees with W-12.** The cap is placed at
+the runtime that holds the model credential, because that is the only component
+that sees every request. W-12 concluded the same thing from the other direction:
+a cap fed by self-reported usage is a cap the spender computes, so it belongs at
+the credential holder. Independent arrival at the same design.
+
+**Consequence for W-12:** the inference cap is not blocked on building a metering
+proxy from scratch. If the agent runtime has a budget setting, set it there and
+record that the enforcement is delegated. Still blocked on GH#15 for *which*
+runtime and *whose* credential, but the shape is now confirmed rather than
+inferred.
+
+## 2. Does anyone separate the agent identity from the operator's?
+
+**Yes. Open SWE does, it is the default, and BRE-21 recorded the opposite.**
+
+`docs/INSTALLATION.md` §4b, verbatim:
+
+> Without it, all agent operations use the GitHub App's installation token
+> (a shared bot identity).
+>
+> - **With per-user OAuth**: PRs and commits show the triggering user's identity
+> - **Without it (bot-token-only mode)**: all PRs and commits appear as the
+>   GitHub App bot
+
+And the environment block says it in one line:
+
+```bash
+# === Agent-runtime GitHub OAuth via LangSmith (optional) ===
+# Without these, all agent operations use the GitHub App's bot token.
+# With these, each agent run authenticates as the triggering user.
+GITHUB_OAUTH_PROVIDER_ID=""
+```
+
+### The correction
+
+**BRE-21** recorded that Open SWE "opens PRs as the triggering human", read from
+`agent/webhooks/linear.py`, and treated it as an inherent property that
+degrades CODEOWNERS. That behaviour is real but **configuration-dependent, and it
+is the opt-in path**. Leave `GITHUB_OAUTH_PROVIDER_ID` unset and every PR and
+commit carries the GitHub App bot identity, which is exactly the separation GH#15
+needs.
+
+M2-08 concluded that adopting Open SWE was survivable *because* `substrate_guard`
+keys on what changed rather than who. That reasoning still holds and is still
+worth keeping. But it was load-bearing on a premise that turns out to be a
+setting.
+
+### What the reference implementation actually does
+
+Worth copying rather than reinventing:
+
+| Mechanism | Where |
+|---|---|
+| Short-lived installation tokens, **scoped per repo and per permission** | `get_github_app_installation_token_with_expiry(repositories=[...], permissions=...)` |
+| Sandbox never stores a real token; a proxy injects Basic/Bearer auth so commands run `GH_TOKEN=dummy gh ...` | `agent/utils/github_proxy.py`, `_configure_github_proxy` |
+| Token refresh on expiry, with a recorded expiry per proxy | `record_proxy_token_expiry` |
+| At-rest encryption with **documented key rotation** — an ordered key list, most-recent-first; new writes use the first, reads try all | `TOKEN_ENCRYPTION_KEY` |
+| Repo/org allowlist that **fails closed on any API error** | `ALLOWED_GITHUB_ORGS`, `ALLOWED_GITHUB_REPOS` |
+
+The dummy-token proxy was already adopted in principle (M2-07). What is new is
+that the scoping, refresh, rotation and fail-closed allowlist are all there too,
+in Python, MIT-licensed, and readable.
+
+### Consequence for GH#15
+
+The **design** half is answered: a GitHub App installation token, kept off the
+agent by a proxy, is the mechanism, and there is a working reference. What
+remains is genuinely an account action — creating the App and installing it —
+which is what the ticket always said.
+
+One thing to carry across: Open SWE's org membership check "fails closed on any
+API error", and its docs warn that granting `ALLOWED_GITHUB_ORGS` without the
+`Organization → Members: Read-only` permission rejects **every** login. That is
+the same failure shape as an unreadable ledger meaning unknown spend rather than
+zero, and it is the right direction to fail in.
+
+## 3. Unlooked-for: Open SWE has a circuit breaker
+
+`agent/middleware/sandbox_circuit_breaker.py`. W-08 recorded that Symphony has
+none and that thirty tickets failing on one upstream break produce thirty
+independent retry storms. That gap is Symphony's, not the whole field's. Ours
+falls out of the review bound (#51); theirs is explicit middleware and comments
+on both GitHub and Linear when it trips.
+
+## Method note
+
+All of the above came from GitHub code search against the repositories, not from
+documentation or write-ups. The first pass read `SPEC.md` and the droid docs and
+concluded "nobody solves identity" — which was true of what those documents say,
+and false of what the code does. Search the repo, not the README.
