@@ -1,0 +1,13 @@
+{
+  "name": "expfactory-agent",
+  "url": "https://github.com/bmr070/expfactory",
+  "description": "The machine identity for expfactory. Opens PRs the owner reviews. Deliberately cannot approve them, cannot label issues, and cannot touch branch protection.",
+  "public": false,
+  "default_events": [],
+  "default_permissions": {
+    "contents": "write",
+    "pull_requests": "write",
+    "issues": "read",
+    "metadata": "read"
+  }
+}

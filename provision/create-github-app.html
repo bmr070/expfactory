@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Create the expfactory-agent GitHub App</title>
+<style>
+  body { font: 15px/1.6 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; }
+  code { background: #f4f4f4; padding: .1rem .3rem; border-radius: 3px; }
+  button { font: inherit; padding: .6rem 1.2rem; cursor: pointer; }
+  .warn { border-left: 3px solid #c00; padding-left: 1rem; }
+  ol { padding-left: 1.2rem; }
+</style>
+
+<h1>Create the <code>expfactory-agent</code> GitHub App</h1>
+
+<p>Open this file in a browser and press the button. GitHub's creation page opens
+with every permission already set from
+<code>provision/github-app-manifest.json</code>. Review it, then click
+<strong>Create GitHub App</strong>.</p>
+
+<p>Nothing here handles a credential. The button only pre-fills a form.</p>
+
+<h2>What it grants</h2>
+<ul>
+  <li><code>contents: write</code> — push branches</li>
+  <li><code>pull_requests: write</code> — open PRs</li>
+  <li><code>issues: read</code> — read tickets, never label them</li>
+  <li><code>metadata: read</code> — mandatory</li>
+</ul>
+
+<h2 class="warn">What it deliberately withholds</h2>
+<p class="warn"><strong><code>administration</code> is absent.</strong> An agent that can
+edit branch protection can unlock its own cage, and every other control in the
+repo becomes decorative. If you find yourself adding it later, that is the moment
+to stop.</p>
+
+<p class="warn"><strong><code>issues</code> is read-only, not write.</strong> The agent must
+never be able to apply <code>agent-ready</code> — including to a ticket it filed
+itself. That label is the whole dispatch boundary (invariant 7).</p>
+
+<p><strong>No webhook.</strong> The runner polls. Leave webhooks off.</p>
+
+<h2>After GitHub creates it</h2>
+<ol>
+  <li>Copy the <strong>App ID</strong> from the top of the settings page.</li>
+  <li><strong>Generate a private key</strong>, save the <code>.pem</code> somewhere
+      outside this repo.</li>
+  <li>Click <strong>Install App</strong> → select <strong>only</strong>
+      <code>bmr070/expfactory</code>.</li>
+  <li>After installing, read the <strong>Installation ID</strong> off the URL:
+      <code>github.com/settings/installations/<b>12345678</b></code></li>
+  <li>Add <code>@expfactory-agent</code> as a collaborator with <em>write</em>,
+      so its PRs are reviewable. Do <strong>not</strong> add it to
+      <code>.github/CODEOWNERS</code> — it must never be able to approve the red
+      lane.</li>
+</ol>
+
+<form action="https://github.com/settings/apps/new" method="post" id="f">
+  <input type="hidden" name="manifest" id="manifest">
+  <button type="submit">Open GitHub's pre-filled creation page</button>
+</form>
+
+<script>
+  // Loaded from file:// so fetch() of the sibling JSON is blocked by CORS in
+  // most browsers. Inlined instead, and a test asserts the two stay identical.
+  document.getElementById("manifest").value = JSON.stringify({
+    name: "expfactory-agent",
+    url: "https://github.com/bmr070/expfactory",
+    description: "The machine identity for expfactory. Opens PRs the owner reviews. Deliberately cannot approve them, cannot label issues, and cannot touch branch protection.",
+    public: false,
+    default_events: [],
+    default_permissions: {
+      contents: "write",
+      pull_requests: "write",
+      issues: "read",
+      metadata: "read"
+    }
+  });
+</script>
