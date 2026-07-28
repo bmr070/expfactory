@@ -207,6 +207,103 @@ def test_only_up_to_the_limit_are_dispatched():
     assert result.skipped["BRE-3"] == "concurrency limit reached"
 
 
+# ---- review bandwidth --------------------------------------------------------
+#
+# MAP.md, day one: "throughput ceiling is human review bandwidth. Any design that
+# raises agent concurrency without raising review capacity is rejected by
+# default." That was prose until `max_awaiting_human`. Symphony's SPEC.md §8.3 is
+# the nearest published mechanism, but it caps agents by the *source* state; the
+# constraint here is on the destination, so this is an adaptation and not a port.
+
+
+def test_dispatch_stalls_when_the_human_queue_is_full():
+    """The founding constraint, as a number rather than a paragraph."""
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2", state=STATE_IN_REVIEW)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=5, max_awaiting_human=1).tick()
+
+    assert result.dispatched == []
+    assert "review queue full" in result.skipped["BRE-1"]
+
+
+def test_needs_human_counts_against_review_capacity_too():
+    """Both states are the factory putting work in front of a person. Counting
+    only in-review would let a pile of tripped breakers look like idle capacity."""
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2", state=STATE_NEEDS_HUMAN)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=5, max_awaiting_human=1).tick()
+
+    assert result.dispatched == []
+    assert "review queue full" in result.skipped["BRE-1"]
+
+
+def test_correlated_failures_stall_dispatch_without_a_separate_breaker():
+    """W-08 noted Symphony has no circuit breaker: thirty tickets failing on one
+    upstream break produce thirty independent retry storms.
+
+    A review bound is a crude breaker for free. Every failure lands in
+    needs-human, so the third failure exhausts the queue and the rest are never
+    dispatched — the run stops instead of burning the whole backlog on the same
+    fault.
+    """
+
+    class AlwaysFails:
+        def run(self, ticket):
+            raise RuntimeError("upstream is down")
+
+    tickets = [_ticket(f"BRE-{i}") for i in range(1, 8)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, AlwaysFails(), max_concurrent=99, max_awaiting_human=3).tick()
+
+    assert len(result.failed) == 3, "stopped after the queue filled, not after all seven"
+    assert len(result.skipped) == 4
+    assert all("review queue full" in r for r in result.skipped.values())
+
+
+def test_the_bound_is_unset_by_default():
+    """A default here would be a guess about one person's capacity. Unbounded
+    until someone chooses, and the choice is visible in the constructor call."""
+    tickets = [_ticket(f"BRE-{i}") for i in range(1, 5)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=99).tick()
+
+    assert len(result.dispatched) == 4
+
+
+def test_a_zero_bound_is_refused_rather_than_silently_never_dispatching():
+    with pytest.raises(ValueError, match="at least 1"):
+        Runner(
+            FakeTracker([]),
+            FakeAgent(),
+            FakeVerifier(),
+            human_allowlist=HUMANS,
+            max_awaiting_human=0,
+        )
+
+
+def test_the_tracker_is_polled_once_per_tick():
+    """It used to be polled twice — once to count in-flight work and again to
+    iterate — so a ticket that changed state between the calls was counted
+    against one budget and dispatched against another."""
+    tickets = [_ticket("BRE-1")]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+    calls = {"n": 0}
+    original = tracker.open_tickets
+
+    def counted():
+        calls["n"] += 1
+        return original()
+
+    tracker.open_tickets = counted  # type: ignore[method-assign]
+    _runner(tracker, FakeAgent()).tick()
+
+    assert calls["n"] == 1
+
+
 # ---- the happy path, and what it must not do -------------------------------
 
 
