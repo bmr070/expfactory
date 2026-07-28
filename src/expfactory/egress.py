@@ -27,6 +27,24 @@ Host matching without a checksum is a promise about the envelope, not the
 contents. A checksum without host matching leaks the request itself. Neither
 alone is the control.
 
+## What a pin is actually worth (GH#46)
+
+A checksum can only be as good as where it came from, and there are two cases:
+
+- **publisher** — the upstream published the digest. The pin certifies *the
+  bytes the author intended*.
+- **first-fetch** — we downloaded once and recorded what arrived. The first
+  fetch was unverified by construction, so the pin certifies *the same bytes as
+  last time*. It detects later tampering and says nothing about the original.
+
+`verify_artifact` cannot tell these apart — the check is identical. So
+`digest_source` is a **required** field with no default, and a `first-fetch` pin
+additionally requires a note. The weaker claim is the one that costs more to
+make, which is the only way the incentive points the right direction.
+
+Use `python -m expfactory.egress pin <file> --url ... --source ...` to turn bytes
+already on disk into a literal to commit. It does not fetch; see `main`.
+
 ## What this module is not
 
 Not a network layer. It makes no requests. It answers "is this URL permitted"
@@ -38,6 +56,7 @@ gates follow.
 from __future__ import annotations
 
 import hashlib
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -75,6 +94,22 @@ class EgressRefused(PermissionError):
     though it were a transient network fault."""
 
 
+# Where a pin's digest came from. GH#46: `verify_artifact` cannot tell these
+# apart, and they are worth very different amounts.
+#
+#   publisher    the upstream published this checksum. The pin certifies "the
+#                bytes the author intended".
+#   first-fetch  we downloaded once and recorded what arrived. The first fetch
+#                was unverified by construction, so the pin certifies only "the
+#                same bytes as last time" — detects later tampering, says
+#                nothing about the original.
+#
+# Recorded because a reader who sees a checksum reasonably assumes the stronger
+# claim. Same shape as `decision_rule` in #36 and the `±` in a proof-of-work
+# block: a record that looks stronger than it is.
+DIGEST_SOURCES: frozenset[str] = frozenset({"publisher", "first-fetch"})
+
+
 @dataclass(frozen=True)
 class PinnedArtifact:
     """A specific set of bytes at a specific place.
@@ -82,10 +117,17 @@ class PinnedArtifact:
     `sha256` is what makes this a pin rather than a bookmark. `size_bytes` is
     recorded so an unexpected multi-gigabyte body can be refused before it is
     read, rather than after it has filled the disk.
+
+    `digest_source` is **required and has no default**. A default would pick a
+    side of the question this field exists to ask, and whichever side it picked
+    would be wrong silently: defaulting to `publisher` overstates every
+    trust-on-first-use pin, and defaulting to `first-fetch` understates real
+    publisher checksums until someone notices. Say which it is.
     """
 
     url: str
     sha256: str
+    digest_source: str
     size_bytes: int | None = None
     note: str = ""
 
@@ -94,6 +136,31 @@ class PinnedArtifact:
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise ValueError(f"sha256 must be 64 hex characters, got {self.sha256!r}")
         object.__setattr__(self, "sha256", digest)
+
+        if self.digest_source not in DIGEST_SOURCES:
+            raise ValueError(
+                f"digest_source must be one of {sorted(DIGEST_SOURCES)}, got {self.digest_source!r}"
+            )
+
+        if self.digest_source == "first-fetch" and not self.note.strip():
+            # The weaker pin is the one that costs more to create. A TOFU digest
+            # is only auditable if it records when it was taken and from where,
+            # and an unexplained one is indistinguishable from a guess.
+            raise ValueError(
+                "a first-fetch pin requires a note saying when the digest was taken "
+                "and from where. The pin certifies 'the same bytes as last time', "
+                "and without provenance a reader cannot tell which time that was."
+            )
+
+    @property
+    def certifies_origin(self) -> bool:
+        """True when the digest came from the publisher.
+
+        Deliberately not consulted by `verify_artifact` — verification is
+        identical either way. This is for callers deciding whether a pin is
+        strong enough for what they are about to do with the bytes.
+        """
+        return self.digest_source == "publisher"
 
 
 def host_of(url: str) -> str:
@@ -191,14 +258,104 @@ def fetch_plan(pins: list[PinnedArtifact]) -> list[PinnedArtifact]:
     return list(pins)
 
 
+# --------------------------------------------------------------------------- #
+# The pin ceremony (GH#46)
+# --------------------------------------------------------------------------- #
+
+
+def pin_literal(path: str | Path, url: str, digest_source: str, note: str = "") -> str:
+    """The source literal to paste into a fetch plan and commit.
+
+    Returns text rather than writing anything: the commit is the ceremony. A
+    command that edited a pin file in place would make the unverified moment
+    something that happens inside a run, which is what #46 objected to.
+    """
+    pin = PinnedArtifact(
+        url=url,
+        sha256=sha256_of(path),
+        digest_source=digest_source,
+        size_bytes=Path(path).stat().st_size,
+        note=note,
+    )
+    lines = [
+        "PinnedArtifact(",
+        f"    url={pin.url!r},",
+        f"    sha256={pin.sha256!r},",
+        f"    digest_source={pin.digest_source!r},",
+        f"    size_bytes={pin.size_bytes},",
+    ]
+    if pin.note:
+        lines.append(f"    note={pin.note!r},")
+    lines.append(")")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`python -m expfactory.egress pin <path> --url ... --source ...`
+
+    Takes a file **already on disk**, not a URL. #46 proposed a command that
+    fetches, prints the digest and requires it be committed; the fetching half is
+    declined deliberately. This module states that it makes no network requests,
+    and adding an HTTP client to the protected substrate to solve a bookkeeping
+    problem would widen the attack surface of the thing guarding the attack
+    surface.
+
+    The human fetches by hand — which they are doing anyway, since github.com is
+    not on the allowlist — and this turns the bytes into a reviewable literal.
+    """
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="python -m expfactory.egress", description=main.__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("pin", help="print a PinnedArtifact literal for a local file")
+    p.add_argument("path", help="file already downloaded, by hand")
+    p.add_argument("--url", required=True, help="where it came from")
+    p.add_argument("--source", required=True, choices=sorted(DIGEST_SOURCES))
+    p.add_argument(
+        "--note",
+        default="",
+        help="required for --source first-fetch: when the digest was taken, and from where",
+    )
+    args = ap.parse_args(argv)
+
+    target = Path(args.path)
+    if not target.is_file():
+        print(f"error: {target} is not a file", file=sys.stderr)
+        return 2
+
+    try:
+        print(pin_literal(target, args.url, args.source, args.note))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    if args.source == "first-fetch":
+        print(
+            "\n# NOTE: first-fetch. This pin certifies 'the same bytes as last time',\n"
+            "# not 'the bytes the publisher intended'. The first fetch was unverified\n"
+            "# by construction. Commit it so the unverified moment has a diff and a\n"
+            "# reviewer attached.",
+            file=sys.stderr,
+        )
+    return 0
+
+
 __all__ = [
     "ALLOWED_HOSTS",
     "ALLOWED_SCHEMES",
+    "DIGEST_SOURCES",
     "EgressRefused",
     "PinnedArtifact",
     "check_url",
     "fetch_plan",
     "host_of",
+    "main",
+    "pin_literal",
     "sha256_of",
     "verify_artifact",
 ]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

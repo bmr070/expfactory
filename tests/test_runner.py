@@ -20,6 +20,8 @@ from expfactory.runner import (
     STATE_IN_REVIEW,
     STATE_NEEDS_HUMAN,
     AgentSession,
+    JobLedger,
+    LostJob,
     Runner,
     Ticket,
     Tracker,
@@ -205,6 +207,103 @@ def test_only_up_to_the_limit_are_dispatched():
     result = _runner(tracker, FakeAgent(), max_concurrent=2).tick()
     assert len(result.dispatched) == 2
     assert result.skipped["BRE-3"] == "concurrency limit reached"
+
+
+# ---- review bandwidth --------------------------------------------------------
+#
+# MAP.md, day one: "throughput ceiling is human review bandwidth. Any design that
+# raises agent concurrency without raising review capacity is rejected by
+# default." That was prose until `max_awaiting_human`. Symphony's SPEC.md §8.3 is
+# the nearest published mechanism, but it caps agents by the *source* state; the
+# constraint here is on the destination, so this is an adaptation and not a port.
+
+
+def test_dispatch_stalls_when_the_human_queue_is_full():
+    """The founding constraint, as a number rather than a paragraph."""
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2", state=STATE_IN_REVIEW)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=5, max_awaiting_human=1).tick()
+
+    assert result.dispatched == []
+    assert "review queue full" in result.skipped["BRE-1"]
+
+
+def test_needs_human_counts_against_review_capacity_too():
+    """Both states are the factory putting work in front of a person. Counting
+    only in-review would let a pile of tripped breakers look like idle capacity."""
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2", state=STATE_NEEDS_HUMAN)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=5, max_awaiting_human=1).tick()
+
+    assert result.dispatched == []
+    assert "review queue full" in result.skipped["BRE-1"]
+
+
+def test_correlated_failures_stall_dispatch_without_a_separate_breaker():
+    """W-08 noted Symphony has no circuit breaker: thirty tickets failing on one
+    upstream break produce thirty independent retry storms.
+
+    A review bound is a crude breaker for free. Every failure lands in
+    needs-human, so the third failure exhausts the queue and the rest are never
+    dispatched — the run stops instead of burning the whole backlog on the same
+    fault.
+    """
+
+    class AlwaysFails:
+        def run(self, ticket):
+            raise RuntimeError("upstream is down")
+
+    tickets = [_ticket(f"BRE-{i}") for i in range(1, 8)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, AlwaysFails(), max_concurrent=99, max_awaiting_human=3).tick()
+
+    assert len(result.failed) == 3, "stopped after the queue filled, not after all seven"
+    assert len(result.skipped) == 4
+    assert all("review queue full" in r for r in result.skipped.values())
+
+
+def test_the_bound_is_unset_by_default():
+    """A default here would be a guess about one person's capacity. Unbounded
+    until someone chooses, and the choice is visible in the constructor call."""
+    tickets = [_ticket(f"BRE-{i}") for i in range(1, 5)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=99).tick()
+
+    assert len(result.dispatched) == 4
+
+
+def test_a_zero_bound_is_refused_rather_than_silently_never_dispatching():
+    with pytest.raises(ValueError, match="at least 1"):
+        Runner(
+            FakeTracker([]),
+            FakeAgent(),
+            FakeVerifier(),
+            human_allowlist=HUMANS,
+            max_awaiting_human=0,
+        )
+
+
+def test_the_tracker_is_polled_once_per_tick():
+    """It used to be polled twice — once to count in-flight work and again to
+    iterate — so a ticket that changed state between the calls was counted
+    against one budget and dispatched against another."""
+    tickets = [_ticket("BRE-1")]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+    calls = {"n": 0}
+    original = tracker.open_tickets
+
+    def counted():
+        calls["n"] += 1
+        return original()
+
+    tracker.open_tickets = counted  # type: ignore[method-assign]
+    _runner(tracker, FakeAgent()).tick()
+
+    assert calls["n"] == 1
 
 
 # ---- the happy path, and what it must not do -------------------------------
@@ -451,3 +550,171 @@ def test_an_agent_that_raises_is_still_handled():
 
     assert result.failed == ["BRE-1"]
     assert [s for tid, s in tracker.states if tid == "BRE-1"][-1] == STATE_NEEDS_HUMAN
+
+
+# ---- reconciliation: the lost job, and the breaker ---------------------------
+#
+# NEXT.md recorded this gap plainly: "Nothing calls `sweep()`, so the ticket-side
+# half of 'lost job -> needs-human' is absent." `sweep` is the only thing in the
+# system that can notice a lost job, so until the runner called it, a job that
+# died left its ticket in progress forever — the exact failure the registry
+# docstring says it exists to prevent.
+
+
+class FakeJobs:
+    """Stands in for JobRegistry. `test_the_real_registry_satisfies_the_protocol`
+    is what keeps this fake honest."""
+
+    def __init__(self, lost=(), breaker: str | None = None) -> None:
+        self._lost = list(lost)
+        self._breaker = breaker
+        self.sweeps = 0
+
+    def sweep(self):
+        self.sweeps += 1
+        out, self._lost = self._lost, []  # a loss is reported once, like the real one
+        return out
+
+    def breaker_reason(self):
+        return self._breaker
+
+
+class _Lost:
+    def __init__(self, handle: str, ticket: str) -> None:
+        self.handle = handle
+        self.ticket = ticket
+
+
+def test_a_lost_job_grounds_its_ticket_and_says_why():
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    jobs = FakeJobs(lost=[_Lost("job-7", "BRE-1")])
+
+    result = _runner(tracker, FakeAgent(), jobs=jobs).tick()
+
+    assert result.lost == {"BRE-1": "job-7"}
+    assert ("BRE-1", STATE_NEEDS_HUMAN) in tracker.states
+    body = tracker.comments[0][1]
+    assert "job-7" in body and "not retried" in body.lower()
+
+
+def test_a_lost_job_is_never_auto_retried():
+    """The registry is explicit: a job whose state is unknown may still be
+    running and still burning budget, so resubmitting can double-spend."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent()
+
+    _runner(tracker, agent, jobs=FakeJobs(lost=[_Lost("job-7", "BRE-1")])).tick()
+
+    assert agent.seen == [], "the agent was re-dispatched against a lost job"
+
+
+def test_a_ticket_grounded_this_tick_is_not_also_dispatched():
+    """The tracker is polled once per tick, so a ticket grounded by the sweep
+    still looks dispatchable in the list read before it. Without this the same
+    tick would move a ticket to needs-human and then hand it to an agent."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent()
+
+    result = _runner(tracker, agent, jobs=FakeJobs(lost=[_Lost("j", "BRE-1")])).tick()
+
+    assert result.dispatched == []
+    assert agent.seen == []
+    assert "grounded this tick" in result.skipped["BRE-1"]
+
+
+def test_an_open_breaker_halts_dispatch():
+    """The registry already refuses job *submission* while the breaker is open.
+    That alone costs one full agent session per ticket to discover the halt, and
+    costs nothing at all on a lane that submits no jobs.
+
+    A breaker only the spender consults is not a breaker.
+    """
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2")]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+    agent = FakeAgent()
+
+    result = _runner(
+        tracker, agent, max_concurrent=9, jobs=FakeJobs(breaker="job-3 vanished")
+    ).tick()
+
+    assert result.dispatched == []
+    assert agent.seen == []
+    assert all("compute breaker open" in r for r in result.skipped.values())
+    assert "job-3 vanished" in result.skipped["BRE-1"]
+
+
+def test_an_ineligible_ticket_reports_its_own_reason_not_the_breaker():
+    """A ticket that was never dispatchable should say why. Attributing it to a
+    breaker it never reached would send a reader to the wrong problem."""
+    tracker = FakeTracker([_ticket("BRE-1", labels=(LANE_EMPIRICAL,))], actors={"BRE-1": "bmr070"})
+
+    result = _runner(tracker, FakeAgent(), jobs=FakeJobs(breaker="unrelated")).tick()
+
+    assert result.skipped["BRE-1"] == "not agent-ready"
+
+
+def test_without_a_registry_nothing_sweeps_and_dispatch_still_works():
+    """The deterministic lane submits no GPU work. Optional, but the docstring
+    says plainly what its absence costs on the empirical lane."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    result = _runner(tracker, FakeAgent()).tick()
+
+    assert result.dispatched == ["BRE-1"]
+    assert result.lost == {}
+
+
+def test_the_sweep_runs_even_when_every_ticket_is_ineligible():
+    """Reconciliation is not a step inside dispatch. A board where nothing is
+    dispatchable is exactly when a lost job would otherwise sit unnoticed."""
+    tracker = FakeTracker([_ticket("BRE-9", labels=())], actors={})
+    jobs = FakeJobs(lost=[_Lost("job-1", "BRE-9")])
+
+    result = _runner(tracker, FakeAgent(), jobs=jobs).tick()
+
+    assert jobs.sweeps == 1
+    assert result.lost == {"BRE-9": "job-1"}
+
+
+def test_the_real_registry_satisfies_the_protocol():
+    """The load-bearing test for the seam. `JobLedger` is a structural protocol,
+    so nothing checks it against the real class unless something asks — and a
+    protocol the real registry does not satisfy is worse than no protocol, since
+    every test above would keep passing against the fake.
+    """
+    from expfactory.registry import JobRecord, JobRegistry, JobState
+
+    # `JobLedger` is all methods, so the class check works directly.
+    assert issubclass(JobRegistry, JobLedger)
+
+    # `LostJob` has property members, which `issubclass` cannot see — only
+    # `isinstance` can. Checking an instance is the stronger check anyway: it is
+    # what `_reconcile_lost` actually receives.
+    record = JobRecord(
+        handle="h",
+        ticket="BRE-1",
+        submitted_at=0.0,
+        deadline_at=1.0,
+        cost_estimate_usd=0.01,
+        state=JobState.SUBMITTED,
+    )
+    assert isinstance(record, LostJob)
+    assert (record.handle, record.ticket) == ("h", "BRE-1")
+
+
+def test_a_job_lost_this_tick_counts_against_review_capacity():
+    """The two controls interact, and the tracker is read once per tick.
+
+    A ticket the sweep just moved to needs-human still looks idle in the list
+    read before it. Counting review capacity from that stale list would let the
+    runner hand a human one more ticket than the bound allows, every tick that
+    also lost a job.
+    """
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2")]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+    jobs = FakeJobs(lost=[_Lost("job-1", "BRE-2")])
+
+    result = _runner(tracker, FakeAgent(), max_concurrent=9, max_awaiting_human=1, jobs=jobs).tick()
+
+    assert result.lost == {"BRE-2": "job-1"}
+    assert result.dispatched == [], "BRE-1 filled the human's queue on top of the lost job"
+    assert "review queue full" in result.skipped["BRE-1"]

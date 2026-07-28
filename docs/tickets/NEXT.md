@@ -29,11 +29,19 @@ unmet and were being hidden by the summary:
 - *"Tracker credentials live in the runner's secret store"* — no secret store
   exists; the token rides on a caller-supplied transport.
 
-Also unconnected: the runner and the `JobRegistry` do not talk to each other.
-`AgentSession.run` returns a finished verdict synchronously, so the runner blocks
-for the whole GPU run — which is the detach model M2-03 exists to serve. Nothing
-calls `sweep()`, so the ticket-side half of "lost job → needs-human" is absent,
-and `running-unattended` is specified but not implemented.
+**Reconcile is now done.** The runner takes an optional `jobs: JobLedger`, calls
+`sweep()` at the top of every tick, and grounds each lost job's ticket to
+needs-human with a comment and no retry. It also reads `breaker_reason()` and
+halts *dispatch* while the breaker is open — previously only `submit` consulted
+it, so a tripped breaker cost one full agent session per ticket to discover, and
+cost nothing at all to discover on a lane that submits no jobs.
+
+**Still unconnected: the detach model.** `AgentSession.run` returns a finished
+`Candidate` synchronously, so the runner blocks for the whole GPU run — which is
+what M2-03's split exists to avoid. `running-unattended` is specified and not
+implemented. That is the remaining half of the runner↔registry seam: the sweep
+can now *notice* a job the runner never waited on, but nothing yet submits one
+that way.
 
 **N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
 constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`
