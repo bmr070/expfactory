@@ -138,11 +138,38 @@ class AgentSession(Protocol):
     def run(self, ticket: Ticket) -> Candidate: ...
 
 
+@runtime_checkable
+class JobLedger(Protocol):
+    """The compute-side registry, as much of it as the runner needs.
+
+    A protocol rather than a `JobRegistry` import so the runner does not depend
+    on the substrate half, and so a test can drive reconciliation without a
+    registry, a log file and a fake substrate.
+    """
+
+    def sweep(self) -> Sequence[LostJob]: ...
+    def breaker_reason(self) -> str | None: ...
+
+
+@runtime_checkable
+class LostJob(Protocol):
+    """What `sweep` hands back. `JobRecord` satisfies this structurally."""
+
+    @property
+    def handle(self) -> str: ...
+    @property
+    def ticket(self) -> str: ...
+
+
 @dataclass
 class TickResult:
     dispatched: list[str] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
+    # Tickets grounded this tick because the compute job behind them vanished.
+    # Separate from `failed` because nothing failed — a job stopped answering,
+    # which is worse, since it may still be running and still spending.
+    lost: dict[str, str] = field(default_factory=dict)
     # Kept apart from `failed` because they mean different things to whoever
     # reads the tick summary: `failed` is "the agent broke", `refused` is "the
     # agent returned something we will not accept as adjudicated".
@@ -159,6 +186,7 @@ class Runner:
         human_allowlist: frozenset[str],
         max_concurrent: int = 1,
         max_awaiting_human: int | None = None,
+        jobs: JobLedger | None = None,
         lane: str = LANE_EMPIRICAL,
         required_gates: frozenset[str] | None = None,
     ) -> None:
@@ -190,6 +218,10 @@ class Runner:
         Left `None` by default, which means unbounded, because a value picked
         here would be a guess about one particular human's capacity. Set it
         deliberately per deployment.
+        `jobs` is the compute registry. Optional, because the deterministic lane
+        submits no GPU work — but on the empirical lane its absence means **no
+        component in the system can notice a lost job**, since `sweep` is the
+        only thing that can and nothing else calls it. Wire it.
         """
         if not human_allowlist:
             # Fail closed. An empty allowlist would make every label acceptable,
@@ -206,6 +238,7 @@ class Runner:
         self._humans = human_allowlist
         self._max_concurrent = max_concurrent
         self._max_awaiting_human = max_awaiting_human
+        self._jobs = jobs
         self._lane = lane
         if required_gates is None:
             required_gates = REQUIRED_EMPIRICAL_GATES if lane == LANE_EMPIRICAL else frozenset()
@@ -248,14 +281,35 @@ class Runner:
         # budget and dispatched against another.
         tickets = self._tracker.open_tickets()
 
+        # Reconcile first. A lost job's ticket has to reach a human in the same
+        # tick that noticed it: the point of the sweep is that a ticket sitting
+        # in progress with nobody working on it is the failure the registry
+        # exists to prevent, and deferring it by one poll interval reintroduces
+        # exactly that window.
+        grounded = self._reconcile_lost(result)
+
+        breaker = self._breaker_reason()
         in_flight = sum(1 for t in tickets if t.state == STATE_IN_PROGRESS)
         budget = max(0, self._max_concurrent - in_flight)
-        review_budget = self._review_budget(tickets)
+        # `tickets` was read before the sweep, so a ticket the sweep just moved
+        # to needs-human still looks idle in it. It is in front of a human now,
+        # and has to count against review capacity this tick rather than next.
+        review_budget = self._review_budget(tickets, already_waiting=len(grounded))
 
         for ticket in tickets:
             reason = self.eligibility(ticket)
             if reason is not None:
+                # Specific reason first: a ticket that was never eligible should
+                # say so, rather than be attributed to a breaker it never reached.
                 result.skipped[ticket.id] = reason
+                continue
+            if ticket.id in grounded:
+                # `tickets` was read before the sweep, so this one still looks
+                # dispatchable in memory. It is not.
+                result.skipped[ticket.id] = "grounded this tick: its compute job was lost"
+                continue
+            if breaker is not None:
+                result.skipped[ticket.id] = f"compute breaker open: {breaker}"
                 continue
             if budget == 0:
                 result.skipped[ticket.id] = "concurrency limit reached"
@@ -276,7 +330,7 @@ class Runner:
             self._dispatch(ticket, result)
         return result
 
-    def _review_budget(self, tickets: Sequence[Ticket]) -> int | None:
+    def _review_budget(self, tickets: Sequence[Ticket], already_waiting: int = 0) -> int | None:
         """How many more tickets may be handed to a human this tick, or None when
         unbounded.
 
@@ -289,7 +343,49 @@ class Runner:
         if self._max_awaiting_human is None:
             return None
         waiting = sum(1 for t in tickets if t.state in (STATE_IN_REVIEW, STATE_NEEDS_HUMAN))
-        return max(0, self._max_awaiting_human - waiting)
+        return max(0, self._max_awaiting_human - waiting - already_waiting)
+
+    def _breaker_reason(self) -> str | None:
+        """Why dispatch is halted, or None.
+
+        The registry already refuses *job submission* while the breaker is open.
+        That is not sufficient on its own: without this check the runner keeps
+        starting agent sessions, each of which does its work and only discovers
+        the halt when it tries to submit — so a tripped breaker costs one full
+        inference session per ticket to observe, and costs nothing at all to
+        observe on a lane that submits no jobs.
+
+        A breaker that only the spender consults is not a breaker.
+        """
+        if self._jobs is None:
+            return None
+        return self._jobs.breaker_reason()
+
+    def _reconcile_lost(self, result: TickResult) -> set[str]:
+        """Ground the tickets whose compute jobs vanished. Returns their ids.
+
+        Never retries. The registry is explicit about why, and it is the same
+        reason the ticket goes to a human: a job whose state is unknown may still
+        be running and still burning budget, so resubmitting can double-spend.
+        """
+        if self._jobs is None:
+            return set()
+
+        grounded: set[str] = set()
+        for job in self._jobs.sweep():
+            self._tracker.comment(
+                job.ticket,
+                f"Compute job `{job.handle}` passed its deadline without resolving.\n\n"
+                "Moved to needs-human and **not retried**. The job may still be "
+                "running and still spending, so resubmitting could double-spend. "
+                "Check the substrate before restarting anything.\n\n"
+                "This also opened the compute breaker, which halts dispatch until "
+                "a human resets it by name.",
+            )
+            self._tracker.set_state(job.ticket, STATE_NEEDS_HUMAN)
+            result.lost[job.ticket] = job.handle
+            grounded.add(job.ticket)
+        return grounded
 
     def _dispatch(self, ticket: Ticket, result: TickResult) -> None:
         self._tracker.set_state(ticket.id, STATE_IN_PROGRESS)
