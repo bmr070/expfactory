@@ -25,6 +25,8 @@ from expfactory.egress import (
     check_url,
     fetch_plan,
     host_of,
+    main,
+    pin_literal,
     sha256_of,
     verify_artifact,
 )
@@ -190,7 +192,7 @@ def _write(tmp_path: Path, body: bytes) -> tuple[Path, str]:
 
 def test_matching_bytes_verify(tmp_path: Path):
     p, digest = _write(tmp_path, b"weights")
-    verify_artifact(p, PinnedArtifact(url=OK, sha256=digest))
+    verify_artifact(p, PinnedArtifact(url=OK, sha256=digest, digest_source="publisher"))
 
 
 def test_an_allowlisted_host_serving_different_bytes_is_caught(tmp_path: Path):
@@ -200,7 +202,7 @@ def test_an_allowlisted_host_serving_different_bytes_is_caught(tmp_path: Path):
     expected = hashlib.sha256(b"what was pinned").hexdigest()
 
     with pytest.raises(EgressRefused, match="checksum mismatch"):
-        verify_artifact(p, PinnedArtifact(url=OK, sha256=expected))
+        verify_artifact(p, PinnedArtifact(url=OK, sha256=expected, digest_source="publisher"))
 
 
 def test_a_wrong_size_is_refused_before_hashing(tmp_path: Path):
@@ -208,12 +210,18 @@ def test_a_wrong_size_is_refused_before_hashing(tmp_path: Path):
     being read end to end."""
     p, digest = _write(tmp_path, b"weights")
     with pytest.raises(EgressRefused, match="bytes, pinned at"):
-        verify_artifact(p, PinnedArtifact(url=OK, sha256=digest, size_bytes=999_999))
+        verify_artifact(
+            p,
+            PinnedArtifact(url=OK, sha256=digest, digest_source="publisher", size_bytes=999_999),
+        )
 
 
 def test_a_missing_file_is_refused_not_silently_ok(tmp_path: Path):
     with pytest.raises(EgressRefused, match="does not exist"):
-        verify_artifact(tmp_path / "nope.bin", PinnedArtifact(url=OK, sha256="ab" * 32))
+        verify_artifact(
+            tmp_path / "nope.bin",
+            PinnedArtifact(url=OK, sha256="ab" * 32, digest_source="publisher"),
+        )
 
 
 def test_a_malformed_digest_is_rejected_at_construction():
@@ -221,11 +229,11 @@ def test_a_malformed_digest_is_rejected_at_construction():
     network problem rather than a bad pin."""
     for bad in ("", "abc", "z" * 64, "AB" * 31):
         with pytest.raises(ValueError, match="64 hex"):
-            PinnedArtifact(url=OK, sha256=bad)
+            PinnedArtifact(url=OK, sha256=bad, digest_source="publisher")
 
 
 def test_a_digest_is_normalised_to_lowercase():
-    pin = PinnedArtifact(url=OK, sha256="AB" * 32)
+    pin = PinnedArtifact(url=OK, sha256="AB" * 32, digest_source="publisher")
     assert pin.sha256 == "ab" * 32
 
 
@@ -246,13 +254,152 @@ def test_a_plan_is_refused_whole_if_any_url_is(tmp_path: Path):
     going to be permitted has spent time and bandwidth to learn something the
     cheap check knew up front."""
     pins = [
-        PinnedArtifact(url=OK, sha256="ab" * 32),
-        PinnedArtifact(url="https://example.com/x", sha256="cd" * 32),
+        PinnedArtifact(url=OK, sha256="ab" * 32, digest_source="publisher"),
+        PinnedArtifact(url="https://example.com/x", sha256="cd" * 32, digest_source="publisher"),
     ]
     with pytest.raises(EgressRefused):
         fetch_plan(pins)
 
 
 def test_a_clean_plan_passes_through():
-    pins = [PinnedArtifact(url=OK, sha256="ab" * 32)]
+    pins = [PinnedArtifact(url=OK, sha256="ab" * 32, digest_source="publisher")]
     assert fetch_plan(pins) == pins
+
+
+# --------------------------------------------------------------------------- #
+# What a pin is worth — GH#46
+# --------------------------------------------------------------------------- #
+
+
+def test_a_pin_must_say_where_its_digest_came_from():
+    """The bootstrap problem, made visible. `verify_artifact` cannot tell a
+    publisher checksum from one we recorded off our own first download, and the
+    two are worth different amounts — so the record has to say."""
+    with pytest.raises(TypeError):
+        PinnedArtifact(url=OK, sha256="ab" * 32)  # type: ignore[call-arg]
+
+
+def test_an_unknown_digest_source_is_refused():
+    with pytest.raises(ValueError, match="digest_source must be one of"):
+        PinnedArtifact(url=OK, sha256="ab" * 32, digest_source="vibes")
+
+
+def test_a_first_fetch_pin_must_explain_itself():
+    """The weaker claim is the one that costs more to make. A trust-on-first-use
+    digest with no provenance is indistinguishable from a guess, and the
+    incentive has to point away from the cheap-looking option."""
+    with pytest.raises(ValueError, match="requires a note"):
+        PinnedArtifact(url=OK, sha256="ab" * 32, digest_source="first-fetch")
+
+    ok = PinnedArtifact(
+        url=OK,
+        sha256="ab" * 32,
+        digest_source="first-fetch",
+        note="fetched by hand 2026-07-27 from the upstream release page",
+    )
+    assert not ok.certifies_origin
+
+
+def test_a_publisher_pin_needs_no_note_and_claims_origin():
+    pin = PinnedArtifact(url=OK, sha256="ab" * 32, digest_source="publisher")
+    assert pin.certifies_origin
+
+
+def test_verification_does_not_care_where_the_digest_came_from(tmp_path: Path):
+    """Provenance is a fact about the *record*, not about the bytes. Making
+    verification weaker for a first-fetch pin would be the wrong lesson: the
+    check is exact either way, it is the claim that differs."""
+    p = tmp_path / "a.bin"
+    p.write_bytes(b"payload")
+    digest = hashlib.sha256(b"payload").hexdigest()
+
+    verify_artifact(p, PinnedArtifact(url=OK, sha256=digest, digest_source="publisher"))
+    verify_artifact(
+        p,
+        PinnedArtifact(url=OK, sha256=digest, digest_source="first-fetch", note="taken 2026-07-27"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The pin ceremony
+# --------------------------------------------------------------------------- #
+
+
+def test_the_ceremony_emits_a_literal_that_round_trips(tmp_path: Path):
+    """What it prints has to be what you can commit. A ceremony that produced
+    something needing hand-editing would get hand-edited."""
+    p = tmp_path / "d.bin"
+    p.write_bytes(b"some bytes")
+
+    literal = pin_literal(p, OK, "publisher")
+    rebuilt = eval(literal, {"PinnedArtifact": PinnedArtifact})  # noqa: S307
+
+    assert rebuilt.sha256 == sha256_of(p)
+    assert rebuilt.size_bytes == len(b"some bytes")
+    assert rebuilt.digest_source == "publisher"
+
+
+def test_the_ceremony_refuses_a_first_fetch_pin_with_no_note(tmp_path: Path, capsys):
+    p = tmp_path / "d.bin"
+    p.write_bytes(b"x")
+
+    code = main(["pin", str(p), "--url", OK, "--source", "first-fetch"])
+
+    assert code == 2
+    assert "requires a note" in capsys.readouterr().err
+
+
+def test_the_ceremony_says_out_loud_what_a_first_fetch_pin_is_not(tmp_path: Path, capsys):
+    p = tmp_path / "d.bin"
+    p.write_bytes(b"x")
+
+    code = main(
+        ["pin", str(p), "--url", OK, "--source", "first-fetch", "--note", "by hand 2026-07-27"]
+    )
+    out = capsys.readouterr()
+
+    assert code == 0
+    assert "PinnedArtifact(" in out.out
+    assert "not 'the bytes the publisher intended'" in out.err
+
+
+def test_the_ceremony_does_not_fetch():
+    """#46 proposed a command that downloads. Declined: this module states it
+    makes no network requests, and an HTTP client inside the protected substrate
+    would widen the attack surface of the thing guarding the attack surface.
+
+    Asserted against the parsed source rather than by grepping text, because an
+    earlier test in this file matched its own docstring.
+    """
+    import ast
+    import inspect
+
+    from expfactory import egress
+
+    tree = ast.parse(inspect.getsource(egress))
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+
+    assert not imported & {"urllib3", "requests", "httpx", "socket", "http"}
+
+    # `urllib` IS imported — for `urlsplit`, which parses rather than fetches.
+    # So name the fetching half and assert it is absent, rather than banning the
+    # package wholesale and having to except the one legitimate use.
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    } | {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert not called & {"urlopen", "urlretrieve", "request", "get", "post"}
