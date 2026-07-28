@@ -17,7 +17,7 @@ still need infrastructure that does not exist yet.
 | N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | **DONE** |
 | N-05 | Resolve M2-03 — the experiment queue | — | grilling session | **DONE** |
 | N-08 | JobRegistry + ComputeSubstrate protocol | M2-03 | — | **DONE** |
-| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | see below | **PARTIAL** |
+| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | see below | **PARTIAL** (1 box: secret store wiring) |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
 
@@ -46,12 +46,21 @@ halts *dispatch* while the breaker is open — previously only `submit` consulte
 it, so a tripped breaker cost one full agent session per ticket to discover, and
 cost nothing at all to discover on a lane that submits no jobs.
 
-**Still unconnected: the detach model.** `AgentSession.run` returns a finished
-`Candidate` synchronously, so the runner blocks for the whole GPU run — which is
-what M2-03's split exists to avoid. `running-unattended` is specified and not
-implemented. That is the remaining half of the runner↔registry seam: the sweep
-can now *notice* a job the runner never waited on, but nothing yet submits one
-that way.
+**The detach model is now done.** `AgentSession.run` may return `Submitted`
+instead of a `Candidate`: the agent starts a compute job, its session ends, and
+the ticket parks in `Running Unattended` (W-06, M2-03). `JobRegistry.collect_finished`
+plus a `ResultCollector` turn the artifact back into a candidate, which reaches
+the *same* `_adjudicate` the synchronous path uses.
+
+Three things that had to be right:
+
+- **Collect before sweep.** `sweep` resolves a job that finished after its
+  deadline and returns it as not-lost, closing the record without naming the
+  waiting ticket — so that ticket would sit in `Running Unattended` forever.
+- **Unattended runs count against concurrency.** They hold a GPU, and their agent
+  session has ended, so nothing else marks them busy.
+- **Detaching with no collector is refused, not parked.** A state nothing can
+  leave looks like work in flight, which is worse than never starting.
 
 **N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
 constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`
