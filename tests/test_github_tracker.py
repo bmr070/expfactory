@@ -199,7 +199,7 @@ def test_the_adapter_drives_the_real_runner():
     class Agent:
         """Returns evidence only. Adjudication is the runner's job (GH#33)."""
 
-        def run(self, ticket):
+        def run(self, ticket, workspace=None):
             from expfactory.verifier import Candidate
 
             runs = [
@@ -234,7 +234,7 @@ def test_a_bot_applied_label_is_refused_end_to_end():
     )
 
     class NeverCalled:
-        def run(self, ticket):
+        def run(self, ticket, workspace=None):
             raise AssertionError("must not dispatch")
 
     result = Runner(

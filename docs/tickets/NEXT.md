@@ -21,13 +21,23 @@ still need infrastructure that does not exist yet.
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
 
-**Ticket 07 is PARTIAL, not core-done.** Two of its four acceptance boxes are
-unmet and were being hidden by the summary:
+**Ticket 07 is PARTIAL, not core-done.** Two of its four acceptance boxes were
+unmet and were being hidden by the summary. One is now closed and one is half:
 
-- *"prepares an isolated workspace"* — `Runner._dispatch` does no workspace
-  isolation at all. It hands the ticket to an `AgentSession` and trusts it.
-- *"Tracker credentials live in the runner's secret store"* — no secret store
-  exists; the token rides on a caller-supplied transport.
+- *"prepares an isolated workspace"* — **DONE.** `Runner(workspaces=...)` gives
+  each ticket a directory prepared by the runner and handed to the agent, and
+  `AgentSession.run` takes it as a second argument. Names are **refused rather
+  than sanitized**: every sanitizer is lossy, and a lossy mapping lets two
+  tickets share one directory. Filesystem isolation only — Symphony's caveat
+  applies verbatim, it is the minimal primitive and not a security boundary.
+- *"Tracker credentials live in the runner's secret store"* — **HALF.**
+  `SecretStore` exists and satisfies §15.3's normative MUST: it declares its
+  names so a launcher can scrub them from a child environment, and strips the
+  whole declared set rather than only the secrets a given run uses.
+  **It is not yet the source of tracker credentials**, because the runner does
+  not construct trackers — they arrive already built, with a transport the
+  caller wired. Closing that box means inverting who builds what, which is a
+  real change and not a wiring detail.
 
 **Reconcile is now done.** The runner takes an optional `jobs: JobLedger`, calls
 `sweep()` at the top of every tick, and grounds each lost job's ticket to
