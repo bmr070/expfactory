@@ -63,8 +63,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from expfactory.sandbox import WorkspaceRefused, WorkspaceRoot
 from expfactory.verifier import Candidate, VerdictBundle, Verifier
 
 LABEL_AGENT_READY = "agent-ready"
@@ -135,7 +137,7 @@ class AgentSession(Protocol):
     thing that produced it what the result was.** See the module docstring.
     """
 
-    def run(self, ticket: Ticket) -> Candidate: ...
+    def run(self, ticket: Ticket, workspace: Path | None = None) -> Candidate: ...
 
 
 @runtime_checkable
@@ -186,6 +188,7 @@ class Runner:
         human_allowlist: frozenset[str],
         max_concurrent: int = 1,
         max_awaiting_human: int | None = None,
+        workspaces: WorkspaceRoot | None = None,
         jobs: JobLedger | None = None,
         lane: str = LANE_EMPIRICAL,
         required_gates: frozenset[str] | None = None,
@@ -218,6 +221,11 @@ class Runner:
         Left `None` by default, which means unbounded, because a value picked
         here would be a guess about one particular human's capacity. Set it
         deliberately per deployment.
+        `workspaces` gives each ticket a private directory, prepared by the
+        runner and handed to the agent. Optional, and its absence is ticket 07's
+        unmet acceptance box rather than a design choice: without it two
+        concurrent tickets share whatever directory the agent picks.
+
         `jobs` is the compute registry. Optional, because the deterministic lane
         submits no GPU work — but on the empirical lane its absence means **no
         component in the system can notice a lost job**, since `sweep` is the
@@ -238,6 +246,7 @@ class Runner:
         self._humans = human_allowlist
         self._max_concurrent = max_concurrent
         self._max_awaiting_human = max_awaiting_human
+        self._workspaces = workspaces
         self._jobs = jobs
         self._lane = lane
         if required_gates is None:
@@ -389,8 +398,29 @@ class Runner:
 
     def _dispatch(self, ticket: Ticket, result: TickResult) -> None:
         self._tracker.set_state(ticket.id, STATE_IN_PROGRESS)
+
+        # Prepared by the runner, not requested by the agent. A workspace the
+        # agent chose would be a workspace the agent could point anywhere, which
+        # is the whole of what `WorkspaceRoot` refuses.
+        workspace: Path | None = None
+        if self._workspaces is not None:
+            try:
+                workspace = self._workspaces.prepare(ticket.id).path
+            except WorkspaceRefused as exc:
+                # Before the agent runs, so nothing has happened yet. A ticket id
+                # that cannot be a directory name is a tracker problem or an
+                # attack, and either way it is not the agent's to resolve.
+                self._tracker.comment(
+                    ticket.id,
+                    f"No workspace could be prepared for this ticket: {exc}\n\n"
+                    "Nothing was dispatched.",
+                )
+                self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
+                result.refused[ticket.id] = f"workspace refused: {exc}"
+                return
+
         try:
-            candidate = self._agent.run(ticket)
+            candidate = self._agent.run(ticket, workspace)
         except Exception as exc:  # noqa: BLE001 — any agent failure is the same to us
             # Never silently drop it. A ticket stuck in progress with nobody
             # working on it is the failure mode the whole registry exists to

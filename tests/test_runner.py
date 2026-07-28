@@ -108,9 +108,11 @@ class FakeAgent:
         self._candidate = candidate if candidate is not None else _candidate()
         self._raises = raises
         self.seen: list[Ticket] = []
+        self.workspaces: list = []
 
-    def run(self, ticket: Ticket):
+    def run(self, ticket: Ticket, workspace=None):
         self.seen.append(ticket)
+        self.workspaces.append(workspace)
         if self._raises is not None:
             raise self._raises
         return self._candidate
@@ -252,7 +254,7 @@ def test_correlated_failures_stall_dispatch_without_a_separate_breaker():
     """
 
     class AlwaysFails:
-        def run(self, ticket):
+        def run(self, ticket, workspace=None):
             raise RuntimeError("upstream is down")
 
     tickets = [_ticket(f"BRE-{i}") for i in range(1, 8)]
@@ -502,7 +504,7 @@ def test_an_agent_cannot_promote_itself_by_claiming_it_passed():
     class LyingAgent:
         """Returns evidence of a blatant leak while 'reporting' a great result."""
 
-        def run(self, ticket):
+        def run(self, ticket, workspace=None):
             return _candidate(metric=0.99, overlap=500)
 
     tracker = FakeTracker([_ticket()], actors={"BRE-1": "bmr070"})
@@ -718,3 +720,65 @@ def test_a_job_lost_this_tick_counts_against_review_capacity():
     assert result.lost == {"BRE-2": "job-1"}
     assert result.dispatched == [], "BRE-1 filled the human's queue on top of the lost job"
     assert "review queue full" in result.skipped["BRE-1"]
+
+
+# ---- workspace isolation -----------------------------------------------------
+#
+# Ticket 07's acceptance box: "prepares an isolated workspace". `_dispatch` did
+# none — it handed the ticket to an AgentSession and trusted it.
+
+
+def test_the_runner_prepares_the_workspace_and_the_agent_receives_it(tmp_path):
+    """Prepared by the runner, not requested by the agent. A workspace the agent
+    chose would be a workspace the agent could point anywhere."""
+    from expfactory.sandbox import WorkspaceRoot
+
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent()
+
+    result = _runner(tracker, agent, workspaces=WorkspaceRoot(tmp_path)).tick()
+
+    assert result.dispatched == ["BRE-1"]
+    handed = agent.workspaces[0]
+    assert handed is not None and handed.is_dir()
+    assert handed.parent == tmp_path.resolve()
+
+
+def test_a_ticket_id_that_cannot_be_a_directory_is_refused_before_the_agent_runs(tmp_path):
+    """A hostile ticket id is a tracker problem or an attack, and either way it
+    is not the agent's to resolve. Refused before anything has happened."""
+    from expfactory.sandbox import WorkspaceRoot
+
+    tracker = FakeTracker([_ticket("../escape")], actors={"../escape": "bmr070"})
+    agent = FakeAgent()
+
+    result = _runner(tracker, agent, workspaces=WorkspaceRoot(tmp_path)).tick()
+
+    assert agent.seen == [], "the agent ran despite an unusable workspace name"
+    assert result.dispatched == []
+    assert "workspace refused" in result.refused["../escape"]
+    assert ("../escape", STATE_NEEDS_HUMAN) in tracker.states
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_concurrent_tickets_get_different_directories(tmp_path):
+    from expfactory.sandbox import WorkspaceRoot
+
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2")]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+    agent = FakeAgent()
+
+    _runner(tracker, agent, max_concurrent=2, workspaces=WorkspaceRoot(tmp_path)).tick()
+
+    assert len(set(agent.workspaces)) == 2
+
+
+def test_without_a_workspace_root_the_agent_gets_none(tmp_path):
+    """Optional, and its absence is ticket 07's unmet box rather than a design
+    choice — so it stays visible instead of being papered over with a default."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    agent = FakeAgent()
+
+    _runner(tracker, agent).tick()
+
+    assert agent.workspaces == [None]

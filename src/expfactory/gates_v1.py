@@ -96,6 +96,10 @@ _HARNESS_PATHS = (
     # runs outside CI: it is the check that would catch a false accept, and a
     # check nobody can weaken is the only kind worth running.
     "llm_probe.py",
+    # Decides where an agent runs and which credentials are stripped from the
+    # environment it is launched into. An agent that could edit this could grant
+    # itself the workspace root, or keep a secret the runner meant to remove.
+    "sandbox.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
