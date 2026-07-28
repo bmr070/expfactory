@@ -137,6 +137,19 @@ def main(argv: list[str] | None = None) -> int:
     # A pass is "matched every assigned verdict" — NOT "promoted something".
     # Rejecting every candidate is a pass when every candidate was meant to be
     # rejected (W-03's load-bearing negative criterion).
+    # Properties of the gate set, not points on it. The suite can be fully
+    # correct while a gate is incapable of passing anything -- that happened on
+    # 2026-07-27 -- and only a property sweep notices.
+    from expfactory.gate_probe import sweep
+
+    probe = sweep()
+    print(
+        f"  {'gate properties':<22} {probe.checked} probes, {len(probe.findings)} disagreement(s)"
+    )
+    for finding in probe.findings:
+        print(f"    MISMATCH  {finding}")
+    ok = ok and probe.is_clean
+
     print("verdict   :", "PASS" if ok else "FAIL")
     return 0 if ok else 1
 
