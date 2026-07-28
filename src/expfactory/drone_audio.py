@@ -57,6 +57,31 @@ GROUPING = DatasetGrouping(
     source="EchoHawk, arXiv:2606.29589 (documents the leak in this dataset)",
 )
 
+# --------------------------------------------------------------------------- #
+# Provenance — GH#46
+# --------------------------------------------------------------------------- #
+#
+# EchoHawk names the dataset and links nothing, which is what #46 was blocked on.
+# It is Sara Al-Emadi's, published on GitHub alongside the 2019 IWCMC paper.
+#
+# **github.com stays off the egress allowlist.** Adding it would not open a
+# dataset mirror, it would open the entire internet's code, and this is a
+# 1.1 GB one-time fetch — the exact case hand-provisioning exists for.
+#
+# The commit SHA does the work a pinned digest would, and does it better. Git is
+# content-addressed: this commit fixes the whole tree, it is the publisher's own
+# identifier rather than one we recorded off our own first download, and it is
+# checkable offline with `git rev-parse`. In `egress.py` terms that is a
+# `publisher` digest, not a `first-fetch` one.
+#
+# HuggingFace mirrors of this data exist and are already allowlisted, which makes
+# them the tempting route. Declined: a third-party re-upload is a stranger's copy,
+# and pinning it would certify "the same bytes as that mirror" while reading like
+# provenance. The origin is reachable by hand; use the origin.
+DATASET_REPO = "https://github.com/saraalemadi/DroneAudioDataset"
+DATASET_COMMIT = "1f1ffb214c63215c95176dcb70dda246f8ad96c1"
+DATASET_TREE = "94301f74f18db840021b83d47a9c9601dc953511"
+
 DRONE_LABEL = 1
 UNKNOWN_LABEL = 0
 
@@ -67,6 +92,81 @@ _HYPHENATED = re.compile(r"^(?P<session>.+?)-[A-Za-z]+_\d+_$")
 _SEQUENTIAL = re.compile(r"^(?P<session>.+_[A-Za-z]\d+)_\d+$")
 # ESC-50 "1-100032-A-00" -> source clip "1-100032-A"
 _ESC50 = re.compile(r"^(?P<session>\d+-\d+-[A-Z])-\d+$")
+
+
+class WrongDataset(RuntimeError):
+    """The provisioned tree is not the commit the recorded numbers came from."""
+
+
+def provisioned_commit(root: str | Path) -> str | None:
+    """The commit a hand-provisioned clone sits at, or None if it is not a clone.
+
+    Reads `.git` directly rather than shelling out to `git`. Three reasons, all
+    learned here: a subprocess opens a console window on Windows unless every
+    call site remembers `CREATE_NO_WINDOW` (it did not, seven times), it assumes
+    git is on PATH inside whatever sandbox this runs in, and a plain file read is
+    testable without a repository.
+    """
+    git = Path(root).resolve()
+    # The dataset root is a subdirectory of the clone; walk up to find `.git`.
+    for candidate in (git, *git.parents):
+        if (candidate / ".git").exists():
+            git = candidate / ".git"
+            break
+    else:
+        return None
+
+    try:
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+
+    if not head.startswith("ref:"):
+        return head or None  # detached HEAD is the SHA itself
+
+    ref = head.removeprefix("ref:").strip()
+    loose = git / Path(ref)
+    if loose.is_file():
+        return loose.read_text(encoding="utf-8").strip() or None
+
+    # Freshly-cloned repos often have refs packed rather than loose.
+    try:
+        for line in (git / "packed-refs").read_text(encoding="utf-8").splitlines():
+            if line.startswith("#") or not line.strip():
+                continue
+            sha, _, name = line.partition(" ")
+            if name.strip() == ref:
+                return sha.strip()
+    except OSError:
+        pass
+    return None
+
+
+def verify_provisioned(root: str | Path, expected: str = DATASET_COMMIT) -> None:
+    """Refuse a tree that is not the commit our recorded numbers came from.
+
+    H1 reported Pd@1%FAR of 0.8762 on the session-grouped split. That number is
+    only reproducible against specific bytes, and until now nothing checked which
+    bytes were on disk — the tests read whatever `data/` happened to contain. A
+    dataset silently updated upstream, or a partial clone, would move the number
+    with no indication anything had changed.
+
+    Raises rather than warning: a comparison against the wrong data is worse than
+    no comparison, because it still produces a plausible figure.
+    """
+    actual = provisioned_commit(root)
+    if actual is None:
+        raise WrongDataset(
+            f"{root} is not a git clone, so its provenance cannot be established. "
+            f"Provision by hand: git clone {DATASET_REPO}"
+        )
+    if actual != expected:
+        raise WrongDataset(
+            f"provisioned tree is at {actual[:12]}, expected {expected[:12]}.\n"
+            "The recorded numbers came from the expected commit. Either check out "
+            "that commit, or re-measure and update DATASET_COMMIT in the same diff "
+            "as the new figures — never one without the other."
+        )
 
 
 def session_of(filename: str) -> str:
