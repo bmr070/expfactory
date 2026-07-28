@@ -89,6 +89,13 @@ _HARNESS_PATHS = (
     # read the ground truth it is being scored against, or return a number of its
     # choosing -- which is the whole of what T-01 moved away from it.
     "scorer.py",
+    # The fuzzer's oracle. Its whole claim is that *trusted code* confirms a flaw
+    # is present rather than the model asserting it -- and "trusted" is a word
+    # this list has to back. An agent that can edit `confirmed_flaws` can make
+    # every attack it invents report as a harmless dud. Protected even though it
+    # runs outside CI: it is the check that would catch a false accept, and a
+    # check nobody can weaken is the only kind worth running.
+    "llm_probe.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.
