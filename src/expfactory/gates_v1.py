@@ -82,6 +82,9 @@ _HARNESS_PATHS = (
     # actually reads. Make label_actor always return a human and eligibility is
     # bypassed wholesale -- the same reason github_tracker.py is here.
     "linear_tracker.py",
+    # Checks properties of the gate set itself. An agent that can edit the probe
+    # can make the check that catches a broken gate report clean.
+    "gate_probe.py",
     # Holds the labels and computes the metric. An agent that can edit this can
     # read the ground truth it is being scored against, or return a number of its
     # choosing -- which is the whole of what T-01 moved away from it.

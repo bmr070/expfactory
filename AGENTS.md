@@ -67,7 +67,7 @@ from the paper's abstract and its Table 2 reports 72.3% for the RF baseline and
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 364 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
+pytest                              # 402 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
 ruff check src tests
 ruff format --check src tests
 mypy                                # strict on the whole verification core
