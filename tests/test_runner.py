@@ -19,10 +19,13 @@ from expfactory.runner import (
     STATE_IN_PROGRESS,
     STATE_IN_REVIEW,
     STATE_NEEDS_HUMAN,
+    STATE_RUNNING_UNATTENDED,
     AgentSession,
+    FinishedJobRef,
     JobLedger,
     LostJob,
     Runner,
+    Submitted,
     Ticket,
     Tracker,
     proof_of_work,
@@ -782,3 +785,197 @@ def test_without_a_workspace_root_the_agent_gets_none(tmp_path):
     _runner(tracker, agent).tick()
 
     assert agent.workspaces == [None]
+
+
+# ---- the detach model --------------------------------------------------------
+#
+# W-06's split: an agent session lasts minutes, a training run lasts hours.
+# `AgentSession.run` may return `Submitted` instead of a `Candidate`, and the
+# ticket parks in `Running Unattended` until the registry says the job finished
+# or was lost.
+
+
+class _Finished:
+    def __init__(self, handle, ticket, artifact_ref="s3://a"):
+        self.handle = handle
+        self.ticket = ticket
+        self.artifact_ref = artifact_ref
+
+
+class DetachedAgent:
+    """Submits and walks away, as the empirical lane is meant to."""
+
+    def __init__(self, handle="job-1", note=""):
+        self._submitted = Submitted(handle=handle, note=note)
+        self.seen: list[Ticket] = []
+        self.workspaces: list = []
+
+    def run(self, ticket, workspace=None):
+        self.seen.append(ticket)
+        self.workspaces.append(workspace)
+        return self._submitted
+
+
+class Collector:
+    def __init__(self, candidate=None, raises=None):
+        self._candidate = candidate if candidate is not None else _candidate()
+        self._raises = raises
+        self.seen: list[tuple[str, str, str]] = []
+
+    def collect(self, ticket_id, handle, artifact_ref):
+        self.seen.append((ticket_id, handle, artifact_ref))
+        if self._raises is not None:
+            raise self._raises
+        return self._candidate
+
+
+class DetachJobs(FakeJobs):
+    def __init__(self, finished=(), **kw):
+        super().__init__(**kw)
+        self._finished = list(finished)
+        self.collects = 0
+
+    def collect_finished(self):
+        self.collects += 1
+        out, self._finished = self._finished, []
+        return out
+
+
+def test_a_submitted_job_parks_the_ticket_instead_of_blocking():
+    """The whole point. The runner does not sit and wait for a six-hour run."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+    agent = DetachedAgent("job-7")
+
+    result = _runner(tracker, agent, jobs=DetachJobs(), collector=Collector()).tick()
+
+    assert result.submitted == {"BRE-1": "job-7"}
+    assert result.dispatched == []
+    assert ("BRE-1", STATE_RUNNING_UNATTENDED) in tracker.states
+    assert "job-7" in tracker.comments[-1][1]
+
+
+def test_an_unattended_ticket_is_never_re_dispatched():
+    """Its agent session ended, so nothing else marks it busy. Re-dispatching
+    would start a second GPU job for work already paid for and still running."""
+    tickets = [_ticket("BRE-1", state=STATE_RUNNING_UNATTENDED)]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+    agent = DetachedAgent()
+
+    result = _runner(tracker, agent, jobs=DetachJobs(), collector=Collector()).tick()
+
+    assert agent.seen == []
+    assert "already Running Unattended" in result.skipped["BRE-1"]
+
+
+def test_an_unattended_run_counts_against_concurrency():
+    """It holds a GPU. Without this the runner starts one job per tick and queues
+    them all on one card."""
+    tickets = [_ticket("BRE-1"), _ticket("BRE-2", state=STATE_RUNNING_UNATTENDED)]
+    tracker = FakeTracker(tickets, actors={t.id: "bmr070" for t in tickets})
+
+    result = _runner(
+        tracker, DetachedAgent(), max_concurrent=1, jobs=DetachJobs(), collector=Collector()
+    ).tick()
+
+    assert result.submitted == {}
+    assert result.skipped["BRE-1"] == "concurrency limit reached"
+
+
+def test_a_finished_job_becomes_a_verdict():
+    """The collection half. This is the only thing that moves a ticket out of
+    Running Unattended."""
+    tickets = [_ticket("BRE-1", state=STATE_RUNNING_UNATTENDED)]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+    jobs = DetachJobs(finished=[_Finished("job-7", "BRE-1", "s3://artifact")])
+    collector = Collector()
+
+    result = _runner(tracker, DetachedAgent(), jobs=jobs, collector=collector).tick()
+
+    assert collector.seen == [("BRE-1", "job-7", "s3://artifact")]
+    assert "BRE-1" in result.collected
+    assert ("BRE-1", STATE_IN_REVIEW) in tracker.states
+
+
+def test_a_collected_verdict_goes_to_review_not_done():
+    """Same rule as the synchronous path. The runner never approves its own work,
+    and taking a different route back must not change that."""
+    tickets = [_ticket("BRE-1", state=STATE_RUNNING_UNATTENDED)]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+    jobs = DetachJobs(finished=[_Finished("job-7", "BRE-1")])
+
+    _runner(tracker, DetachedAgent(), jobs=jobs, collector=Collector()).tick()
+
+    assert "Done" not in [state for _, state in tracker.states]
+
+
+def test_collection_runs_before_the_sweep():
+    """`sweep` resolves a job that finished after its deadline and returns it as
+    not-lost, closing the record without naming the waiting ticket. Collecting
+    first means the sweep only sees jobs that genuinely never answered."""
+    tickets = [_ticket("BRE-1", state=STATE_RUNNING_UNATTENDED)]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+
+    order: list[str] = []
+
+    class Ordered(DetachJobs):
+        def collect_finished(self):
+            order.append("collect")
+            return super().collect_finished()
+
+        def sweep(self):
+            order.append("sweep")
+            return super().sweep()
+
+    _runner(tracker, DetachedAgent(), jobs=Ordered(), collector=Collector()).tick()
+
+    assert order == ["collect", "sweep"]
+
+
+def test_an_unreadable_artifact_goes_to_a_human_not_a_retry():
+    """The run happened and was paid for; what it produced is unusable. Retrying
+    spends again on a cause nobody has diagnosed."""
+    tickets = [_ticket("BRE-1", state=STATE_RUNNING_UNATTENDED)]
+    tracker = FakeTracker(tickets, actors={"BRE-1": "bmr070"})
+    jobs = DetachJobs(finished=[_Finished("job-7", "BRE-1")])
+    collector = Collector(raises=ValueError("truncated npz"))
+
+    result = _runner(tracker, DetachedAgent(), jobs=jobs, collector=collector).tick()
+
+    assert result.failed == ["BRE-1"]
+    assert ("BRE-1", STATE_NEEDS_HUMAN) in tracker.states
+    assert "truncated npz" in tracker.comments[-1][1]
+
+
+def test_detaching_without_a_collector_is_refused_not_parked():
+    """`Running Unattended` with no collector is a state nothing can leave. A
+    ticket that can never progress is worse than one that never started, because
+    it looks like work in flight."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+
+    result = _runner(tracker, DetachedAgent(), jobs=DetachJobs()).tick()
+
+    assert result.submitted == {}
+    assert "no collector" in result.refused["BRE-1"]
+    assert ("BRE-1", STATE_NEEDS_HUMAN) in tracker.states
+
+
+def test_the_synchronous_path_still_works():
+    """The deterministic lane submits no GPU work and must keep returning a
+    Candidate directly. Both routes reach the same adjudication."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+
+    result = _runner(tracker, FakeAgent()).tick()
+
+    assert result.dispatched == ["BRE-1"]
+    assert result.submitted == {}
+
+
+def test_the_real_registry_satisfies_the_collection_protocol():
+    """Same reason as the JobLedger check: a protocol the real class does not
+    satisfy is worse than none, because every test here passes against the fake."""
+    from expfactory.registry import FinishedJob, JobRegistry
+
+    assert issubclass(JobRegistry, JobLedger)
+    assert isinstance(
+        FinishedJob(handle="h", ticket="BRE-1", artifact_ref="s3://a"), FinishedJobRef
+    )

@@ -76,6 +76,10 @@ LANE_EMPIRICAL = "lane:empirical"
 STATE_IN_PROGRESS = "In Progress"
 STATE_IN_REVIEW = "In Review"
 STATE_NEEDS_HUMAN = "Needs Human"
+# The agent submitted a GPU job and detached. Nobody is watching; the ticket
+# waits here until the registry reports the job finished or lost. This is the
+# state W-06's split exists to make possible — see `Submitted`.
+STATE_RUNNING_UNATTENDED = "Running Unattended"
 
 # Gates a hill-climb verdict must have been adjudicated under before this runner
 # will pass it to a human as reviewable work.
@@ -123,6 +127,52 @@ class AgentFailed(RuntimeError):
     """The agent session did not produce a verdict."""
 
 
+@dataclass(frozen=True)
+class Submitted:
+    """The agent started a compute job and detached. **Not a result.**
+
+    The other thing `AgentSession.run` may return. It carries a job handle and
+    nothing else — deliberately no metrics, no summary, no partial verdict, since
+    at this point the job has not finished and anything the agent said about its
+    outcome would be a prediction dressed as evidence.
+
+    This is what W-06's two-substrate split is for. An agent session lasts
+    minutes; a training run lasts hours. Returning a `Candidate` synchronously
+    means holding an LLM-metered session open to do nothing but wait, which is the
+    wrong shape at any timeout value. So the agent submits, returns this, and the
+    session ends. The registry owns the run from there.
+    """
+
+    handle: str
+    note: str = ""
+
+
+@runtime_checkable
+class ResultCollector(Protocol):
+    """Turns a finished job's artifact into evidence the gates can judge.
+
+    Owned by the runner, never by the agent — the agent's session is over by the
+    time this runs. Whether the artifact itself is trustworthy is a separate
+    question and the remaining half of GH#33: the substrate produced it, but the
+    agent wrote the code that filled it. G-10 closes the "did this run at all"
+    half by requiring the handle be one the registry issued.
+    """
+
+    def collect(self, ticket_id: str, handle: str, artifact_ref: str) -> Candidate: ...
+
+
+@runtime_checkable
+class FinishedJobRef(Protocol):
+    """What `collect_finished` hands back. `FinishedJob` satisfies it."""
+
+    @property
+    def handle(self) -> str: ...
+    @property
+    def ticket(self) -> str: ...
+    @property
+    def artifact_ref(self) -> str: ...
+
+
 @runtime_checkable
 class AgentSession(Protocol):
     """Runs one ticket inside a sandbox and returns the **evidence** it produced.
@@ -137,7 +187,7 @@ class AgentSession(Protocol):
     thing that produced it what the result was.** See the module docstring.
     """
 
-    def run(self, ticket: Ticket, workspace: Path | None = None) -> Candidate: ...
+    def run(self, ticket: Ticket, workspace: Path | None = None) -> Candidate | Submitted: ...
 
 
 @runtime_checkable
@@ -149,6 +199,7 @@ class JobLedger(Protocol):
     registry, a log file and a fake substrate.
     """
 
+    def collect_finished(self) -> Sequence[FinishedJobRef]: ...
     def sweep(self) -> Sequence[LostJob]: ...
     def breaker_reason(self) -> str | None: ...
 
@@ -176,6 +227,11 @@ class TickResult:
     # reads the tick summary: `failed` is "the agent broke", `refused` is "the
     # agent returned something we will not accept as adjudicated".
     refused: dict[str, str] = field(default_factory=dict)
+    # Detached this tick: the agent submitted a job and its session ended. Not a
+    # result and not a failure -- the ticket now waits on the substrate.
+    submitted: dict[str, str] = field(default_factory=dict)
+    # Finished jobs turned back into verdicts this tick.
+    collected: dict[str, str] = field(default_factory=dict)
 
 
 class Runner:
@@ -189,6 +245,7 @@ class Runner:
         max_concurrent: int = 1,
         max_awaiting_human: int | None = None,
         workspaces: WorkspaceRoot | None = None,
+        collector: ResultCollector | None = None,
         jobs: JobLedger | None = None,
         lane: str = LANE_EMPIRICAL,
         required_gates: frozenset[str] | None = None,
@@ -226,6 +283,11 @@ class Runner:
         unmet acceptance box rather than a design choice: without it two
         concurrent tickets share whatever directory the agent picks.
 
+        `collector` turns a finished job's artifact into a `Candidate` the gates
+        can judge. Without it the runner can dispatch detached work but never
+        bring it back, so a `Submitted` return is refused rather than parked in a
+        state nothing can leave.
+
         `jobs` is the compute registry. Optional, because the deterministic lane
         submits no GPU work — but on the empirical lane its absence means **no
         component in the system can notice a lost job**, since `sweep` is the
@@ -247,6 +309,7 @@ class Runner:
         self._max_concurrent = max_concurrent
         self._max_awaiting_human = max_awaiting_human
         self._workspaces = workspaces
+        self._collector = collector
         self._jobs = jobs
         self._lane = lane
         if required_gates is None:
@@ -267,7 +330,10 @@ class Runner:
             return f"no {self._lane} label: the runner cannot verify this lane"
         if LABEL_NEEDS_HUMAN in ticket.labels:
             return "needs-human: a breaker tripped or this is a red-lane path"
-        if ticket.state in (STATE_IN_PROGRESS, STATE_IN_REVIEW):
+        if ticket.state in (STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_RUNNING_UNATTENDED):
+            # `Running Unattended` matters most here: its agent session ended, so
+            # nothing else marks it busy, and re-dispatching would start a second
+            # GPU job for work already paid for and still running.
             return f"already {ticket.state}"
 
         actor = self._tracker.label_actor(ticket.id, LABEL_AGENT_READY)
@@ -290,7 +356,14 @@ class Runner:
         # budget and dispatched against another.
         tickets = self._tracker.open_tickets()
 
-        # Reconcile first. A lost job's ticket has to reach a human in the same
+        # Collect BEFORE sweeping. `sweep` resolves a job that finished after its
+        # deadline and returns it as not-lost, which closes the record without
+        # naming the ticket that was waiting — so that ticket would sit in
+        # `Running Unattended` forever. Collecting first means the sweep only ever
+        # sees jobs that genuinely never answered.
+        collected = self._collect_finished(result)
+
+        # Then reconcile. A lost job's ticket has to reach a human in the same
         # tick that noticed it: the point of the sweep is that a ticket sitting
         # in progress with nobody working on it is the failure the registry
         # exists to prevent, and deferring it by one poll interval reintroduces
@@ -298,12 +371,17 @@ class Runner:
         grounded = self._reconcile_lost(result)
 
         breaker = self._breaker_reason()
-        in_flight = sum(1 for t in tickets if t.state == STATE_IN_PROGRESS)
+        # An unattended run holds a GPU and is unfinished work, so it counts
+        # against concurrency even though its agent session ended. Without this
+        # the runner would start a job per tick and queue them all on one card.
+        in_flight = sum(
+            1 for t in tickets if t.state in (STATE_IN_PROGRESS, STATE_RUNNING_UNATTENDED)
+        )
         budget = max(0, self._max_concurrent - in_flight)
         # `tickets` was read before the sweep, so a ticket the sweep just moved
         # to needs-human still looks idle in it. It is in front of a human now,
         # and has to count against review capacity this tick rather than next.
-        review_budget = self._review_budget(tickets, already_waiting=len(grounded))
+        review_budget = self._review_budget(tickets, already_waiting=len(grounded) + len(collected))
 
         for ticket in tickets:
             reason = self.eligibility(ticket)
@@ -370,6 +448,36 @@ class Runner:
             return None
         return self._jobs.breaker_reason()
 
+    def _collect_finished(self, result: TickResult) -> set[str]:
+        """Turn every finished job back into a verdict. Returns their ticket ids.
+
+        The other half of the detach model. `_reconcile_lost` notices a job that
+        never answered; this notices one that did, and is the only thing that
+        moves a ticket out of `Running Unattended`.
+        """
+        if self._jobs is None or self._collector is None:
+            return set()
+
+        done: set[str] = set()
+        for job in self._jobs.collect_finished():
+            try:
+                candidate = self._collector.collect(job.ticket, job.handle, job.artifact_ref)
+            except Exception as exc:  # noqa: BLE001 — an artifact we cannot read is not a result
+                self._tracker.comment(
+                    job.ticket,
+                    f"Job `{job.handle}` finished, but its artifact could not be "
+                    f"read into a candidate: {exc}\n\nThe run happened and was "
+                    "paid for; what it produced is unusable. Moved to needs-human "
+                    "rather than retried.",
+                )
+                self._tracker.set_state(job.ticket, STATE_NEEDS_HUMAN)
+                result.failed.append(job.ticket)
+                done.add(job.ticket)
+                continue
+            self._adjudicate(job.ticket, candidate, result, dispatched=False)
+            done.add(job.ticket)
+        return done
+
     def _reconcile_lost(self, result: TickResult) -> set[str]:
         """Ground the tickets whose compute jobs vanished. Returns their ids.
 
@@ -420,7 +528,7 @@ class Runner:
                 return
 
         try:
-            candidate = self._agent.run(ticket, workspace)
+            produced = self._agent.run(ticket, workspace)
         except Exception as exc:  # noqa: BLE001 — any agent failure is the same to us
             # Never silently drop it. A ticket stuck in progress with nobody
             # working on it is the failure mode the whole registry exists to
@@ -435,20 +543,57 @@ class Runner:
             result.failed.append(ticket.id)
             return
 
-        # THE trust boundary. Adjudication happens here, on the runner's verifier,
-        # never inside the agent session. See the module docstring.
+        if isinstance(produced, Submitted):
+            self._detach(ticket, produced, result)
+            return
+
+        self._adjudicate(ticket.id, produced, result, dispatched=True)
+
+    def _detach(self, ticket: Ticket, submitted: Submitted, result: TickResult) -> None:
+        """Park a ticket on a running job. The agent session is over."""
+        if self._collector is None:
+            # Refuse rather than park. `Running Unattended` with no collector is a
+            # state nothing can leave, and a ticket that can never progress is
+            # worse than one that never started: it looks like work in flight.
+            self._tracker.comment(
+                ticket.id,
+                f"Agent submitted job `{submitted.handle}` and detached, but this "
+                "runner has no ResultCollector, so nothing could turn that job "
+                "back into a verdict.\n\nRefused rather than parked.",
+            )
+            self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
+            result.refused[ticket.id] = "detached with no collector wired"
+            return
+
+        note = f"\n\n{submitted.note}" if submitted.note else ""
+        self._tracker.comment(
+            ticket.id,
+            f"Compute job `{submitted.handle}` submitted; the agent session has "
+            "ended. The registry owns the run now. The runner collects the "
+            "artifact when it finishes, or grounds this ticket if the job passes "
+            f"its deadline without answering.{note}",
+        )
+        self._tracker.set_state(ticket.id, STATE_RUNNING_UNATTENDED)
+        result.submitted[ticket.id] = submitted.handle
+
+    def _adjudicate(
+        self, ticket_id: str, candidate: Candidate, result: TickResult, *, dispatched: bool
+    ) -> None:
+        """THE trust boundary. Runs on the runner's verifier, never inside the
+        agent session, and is reached identically whether the candidate came back
+        synchronously or was collected from a detached job hours later."""
         try:
             bundle = self._verifier.run(candidate)
         except Exception as exc:  # noqa: BLE001 — a candidate we cannot judge is not a result
             self._tracker.comment(
-                ticket.id,
+                ticket_id,
                 f"Candidate could not be adjudicated: {exc}\n\n"
                 "The evidence the agent returned did not survive verification. "
                 "This is not a rejected experiment; it is a candidate the gates "
                 "could not judge at all. Moved to needs-human.",
             )
-            self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
-            result.failed.append(ticket.id)
+            self._tracker.set_state(ticket_id, STATE_NEEDS_HUMAN)
+            result.failed.append(ticket_id)
             return
 
         missing = self._required_gates - set(bundle.gate_names)
@@ -465,7 +610,7 @@ class Runner:
             # else here.
             names = ", ".join(sorted(missing))
             self._tracker.comment(
-                ticket.id,
+                ticket_id,
                 f"Verdict refused: adjudicated without {names}.\n\n"
                 "On the empirical lane a verdict must show it was judged by the "
                 "preregistration gates. This one carries "
@@ -474,14 +619,17 @@ class Runner:
                 "the runner rather than anything the agent did. Every ticket will "
                 "hit it until the verifier is built with require_prereg=True.",
             )
-            self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
-            result.refused[ticket.id] = f"missing gates: {names}"
+            self._tracker.set_state(ticket_id, STATE_NEEDS_HUMAN)
+            result.refused[ticket_id] = f"missing gates: {names}"
             return
 
-        self._tracker.comment(ticket.id, proof_of_work(bundle))
+        self._tracker.comment(ticket_id, proof_of_work(bundle))
         # To review, never to done. The runner does not approve its own work.
-        self._tracker.set_state(ticket.id, STATE_IN_REVIEW)
-        result.dispatched.append(ticket.id)
+        self._tracker.set_state(ticket_id, STATE_IN_REVIEW)
+        if dispatched:
+            result.dispatched.append(ticket_id)
+        else:
+            result.collected[ticket_id] = candidate.code_hash
 
 
 def proof_of_work(bundle: VerdictBundle) -> str:

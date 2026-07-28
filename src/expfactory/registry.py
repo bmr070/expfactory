@@ -132,6 +132,20 @@ class JobRecord:
         return self.state is JobState.SUBMITTED
 
 
+@dataclass(frozen=True)
+class FinishedJob:
+    """A job that completed, and the ticket waiting on it.
+
+    Carries an artifact *reference*, never the artifact's contents and never a
+    verdict — the same rule `resolve` follows. What the artifact means is decided
+    by the gates.
+    """
+
+    handle: str
+    ticket: str
+    artifact_ref: str
+
+
 @runtime_checkable
 class ComputeSubstrate(Protocol):
     """The GPU side of the two-substrate split (W-06).
@@ -374,6 +388,33 @@ class JobRegistry:
             }
         )
         return artifact_ref
+
+    def collect_finished(self) -> list[FinishedJob]:
+        """Jobs the substrate reports done, closed here and handed back with the
+        ticket that is waiting on them.
+
+        This is the collection half of the detach model (W-06, M2-03). The agent
+        submits and walks away; nothing brings the artifact back into a verdict
+        until something calls this.
+
+        **Call it before `sweep`.** `sweep` resolves a job that finished *after*
+        its deadline and returns it as not-lost, which closes the record without
+        telling anyone which ticket was waiting — so the ticket would sit in
+        `Running Unattended` forever. Collecting first means `sweep` only ever
+        sees jobs that genuinely never answered.
+        """
+        out: list[FinishedJob] = []
+        for record in self.outstanding():
+            if self._substrate.poll(record.handle) is not JobState.RESOLVED:
+                continue
+            out.append(
+                FinishedJob(
+                    handle=record.handle,
+                    ticket=record.ticket,
+                    artifact_ref=self.resolve(record.handle),
+                )
+            )
+        return out
 
     def sweep(self) -> list[JobRecord]:
         """Find jobs past their deadline, mark them lost, and open the breaker.
