@@ -4,6 +4,31 @@ These are the artifacts the runner and trust model depend on. Creating accounts,
 repos, and changing settings are actions only you can take — apply these, don't
 hand them to an agent.
 
+## The agent's GitHub identity  ·  GH#15
+
+Open `create-github-app.html` in a browser and press the button. GitHub's App
+creation page opens with every permission pre-set from
+`github-app-manifest.json`. Nothing in those files handles a credential; the
+button only pre-fills a form.
+
+What it grants: `contents: write`, `pull_requests: write`, `issues: read`,
+`metadata: read`.
+
+What it **withholds, deliberately**:
+
+- **`administration`** — an agent that can edit branch protection can unlock its
+  own cage, and every other control here becomes decorative.
+- **`issues: write`** — the agent must never apply `agent-ready`, including to a
+  ticket it filed itself. That label is the dispatch boundary (invariant 7).
+
+`tests/test_provision_manifest.py` pins both absences, and pins the HTML copy
+against the JSON, because two copies of a permission set drift and the drifted
+one still creates a real App.
+
+After creating it: add `@expfactory-agent` as a **write** collaborator so its PRs
+are reviewable, and do **not** put it in `.github/CODEOWNERS`. It must be able to
+open the red lane and never to approve it.
+
 ## GitHub (code, PRs and CI — not the work queue; see the W-07 amendment)
 1. Create the factory repo; enable Issues.
 2. `gh label create` each entry in `labels.json` (or import via the API).
