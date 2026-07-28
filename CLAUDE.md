@@ -130,6 +130,21 @@ by a test catching a mistake rather than by reasoning.
 | Linear vs GitHub, and dispatch | [`docs/TRACKING.md`](docs/TRACKING.md) |
 | Before dispatching a real agent | [`docs/DISPATCH-READINESS.md`](docs/DISPATCH-READINESS.md) |
 
+## Workflow skills
+
+`.claude/skills/` holds the repeated flows, each encoding rules this repo already
+enforces rather than inventing new ones. Invoke via the Skill tool.
+
+| Skill | For |
+|---|---|
+| `pull-ticket` | Claiming work, and proving it is dispatch-eligible first |
+| `triage` | A finding becomes a ticket, in the right place with a lane |
+| `hill-climb` | A preregistered attempt against a recorded baseline |
+| `run-experiment` | Submit to the GPU substrate, detach, collect later |
+| `eval-analysis` | Reading a verdict or a lineage without fooling yourself |
+| `add-gate` | A new check, with the fixtures that justify it |
+| `ratchet` | A recurring failure becomes the cheapest sufficient check |
+
 ## Do not re-propose
 
 Declined on evidence. Full list with reasoning in [`docs/MAP.md`](docs/MAP.md).
