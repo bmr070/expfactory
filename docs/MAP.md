@@ -94,7 +94,7 @@ This map produces **decisions, not the build**. The build is the next effort.
   added only when a fixture proves the set misses something.
 - [W-11 — How do review findings become permanent gates?](tickets/) —
   findings land as deterministic gates at the cheapest sufficient point (lint < hook < CI/gate <
-  boundary test < AGENTS.md prose as last resort). Weekly 30-min ratchet promotes the top intervention
+  boundary test < CLAUDE.md prose as last resort). Weekly 30-min ratchet promotes the top intervention
   reason-codes; harness owner decides; promote on recurrence ≥2 to avoid overfitting to noise. Gates
   feed back into stage 3, never stage 1. Every gate traces to a fixture (bloat control).
 - [W-12 — What is the cost model and where are caps enforced?](tickets/) —
@@ -112,7 +112,7 @@ not while charting. The map's *decisions* are closed.
 - **Trust lanes / risk taxonomy** — direction set by W-07 (CODEOWNERS on migrations/auth/billing from
   day one) and W-08 (Factory's read/low/medium/high/unsafe as the template). Exact per-tool
   boundaries are drawn against the real repo during build.
-- **AGENTS.md / skills / hooks contents** — the *mechanism* is fixed by W-10 (where each lands) and
+- **CLAUDE.md / skills / hooks contents** — the *mechanism* is fixed by W-10 (where each lands) and
   W-11 (findings become hooks/gates via the weekly ratchet). The *contents* are populated by the
   ratchet as real failures accumulate — by design, they cannot be written up front.
 - **Egress policy vs dataset downloads** — the one genuinely unresolved design tension. Default-deny

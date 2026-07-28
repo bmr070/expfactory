@@ -9,7 +9,7 @@
 | Specification | [`docs/SPEC.md`](../SPEC.md) | The authoritative document. Read before changing anything under `src/`. |
 | Decision records | [`docs/decisions/`](../decisions/) | **This repo's ADRs.** Not `docs/adr/`. |
 | Maps | [`docs/MAP.md`](../MAP.md), [`docs/MAP2.md`](../MAP2.md) | Closed decisions, open territory, and an explicit rejections list. |
-| Agent contract | [`AGENTS.md`](../../AGENTS.md) | Invariants and gotchas. |
+| Agent contract | [`CLAUDE.md`](../../CLAUDE.md) | Invariants; gotchas in [`GOTCHAS.md`](../GOTCHAS.md). |
 | Build slices | [`docs/tickets/`](../tickets/) | |
 
 `docs/adr/` is deliberately **not** created. This repo already had 22 decision
@@ -19,13 +19,13 @@ empty parallel directory would split the record and leave a reader unsure which
 one is authoritative — the same ambiguity the project spends its effort removing
 elsewhere.
 
-There is no `CONTEXT.md`. `AGENTS.md` and `docs/SPEC.md` between them already
+There is no `CONTEXT.md`. `CLAUDE.md` and `docs/SPEC.md` between them already
 serve that role, and a third overview would be a third thing to keep true.
 
 ## Consumer rules
 
 **Read before writing.** Any change under `src/expfactory/` touches the
-verification layer. `docs/SPEC.md` and the numbered invariants in `AGENTS.md` are
+verification layer. `docs/SPEC.md` and the numbered invariants in `CLAUDE.md` are
 prerequisites, not references.
 
 **Respect the rejections list.** [`docs/MAP.md`](../MAP.md) has an *"Explicitly

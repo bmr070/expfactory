@@ -292,7 +292,7 @@ review work is *context isolation*, not vendor diversity.
 Review findings become deterministic gates at the **cheapest sufficient point**:
 
 ```
-lint  <  hook  <  CI check  <  boundary test  <  gate  <  AGENTS.md prose
+lint  <  hook  <  CI check  <  boundary test  <  gate  <  CLAUDE.md prose
 ```
 
 Prose is the last resort. A weekly 30-minute session promotes the top intervention

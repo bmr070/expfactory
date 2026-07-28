@@ -96,7 +96,8 @@ attaching a persuasive endorsement to it.
 
 | Document | Read when |
 |---|---|
-| [`AGENTS.md`](AGENTS.md) | Working in this repo — invariants and gotchas. |
+| [`CLAUDE.md`](CLAUDE.md) | The handbook: architecture, commands, standards, invariants. |
+| [`AGENTS.md`](AGENTS.md) | Thin entry point for any coding agent; points at CLAUDE.md. |
 | [`docs/SPEC.md`](docs/SPEC.md) | Before changing anything under `src/`. |
 | [`docs/MAP.md`](docs/MAP.md) | Before proposing an architecture change. 12 closed decisions + an explicit rejections list. |
 | [`docs/MAP2.md`](docs/MAP2.md) | Before starting new design work. Open territory. |

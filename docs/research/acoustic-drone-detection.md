@@ -16,7 +16,7 @@ been measured, and the ledger contains no entry for any of it.
 ## Correction — the bar was wrong in the first version of this document
 
 The first version set the target at **0.745 Pd@1%FAR** and repeated it into
-`AGENTS.md`, a decision record, the corpus, three commit messages and two Linear
+`CLAUDE.md`, a decision record, the corpus, three commit messages and two Linear
 tickets.
 
 That number came from [EchoHawk's](https://arxiv.org/abs/2606.29589) **abstract**,
