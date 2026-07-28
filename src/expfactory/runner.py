@@ -158,6 +158,7 @@ class Runner:
         *,
         human_allowlist: frozenset[str],
         max_concurrent: int = 1,
+        max_awaiting_human: int | None = None,
         lane: str = LANE_EMPIRICAL,
         required_gates: frozenset[str] | None = None,
     ) -> None:
@@ -179,16 +180,32 @@ class Runner:
         Pass an explicit `frozenset()` to disable that check. Deliberately
         awkward to write and easy to spot in review: the difference between a
         chosen exemption and a default nobody chose.
+
+        `max_awaiting_human` bounds how many tickets may be sitting in a human's
+        queue before dispatch stalls. MAP.md's founding constraint — "throughput
+        ceiling is human review bandwidth; any design that raises agent
+        concurrency without raising review capacity is rejected by default" —
+        was prose until now. Prose does not ratchet (invariant 8).
+
+        Left `None` by default, which means unbounded, because a value picked
+        here would be a guess about one particular human's capacity. Set it
+        deliberately per deployment.
         """
         if not human_allowlist:
             # Fail closed. An empty allowlist would make every label acceptable,
             # which is the opposite of what this control is for.
             raise ValueError("human_allowlist must name at least one human")
+        if max_awaiting_human is not None and max_awaiting_human < 1:
+            # Zero would be a runner that never dispatches, which `needs-human`
+            # already expresses and which is better said out loud than encoded
+            # as a limit nobody reads.
+            raise ValueError("max_awaiting_human must be at least 1, or None for unbounded")
         self._tracker = tracker
         self._agent = agent
         self._verifier = verifier
         self._humans = human_allowlist
         self._max_concurrent = max_concurrent
+        self._max_awaiting_human = max_awaiting_human
         self._lane = lane
         if required_gates is None:
             required_gates = REQUIRED_EMPIRICAL_GATES if lane == LANE_EMPIRICAL else frozenset()
@@ -226,10 +243,16 @@ class Runner:
 
     def tick(self) -> TickResult:
         result = TickResult()
-        in_flight = sum(1 for t in self._tracker.open_tickets() if t.state == STATE_IN_PROGRESS)
-        budget = max(0, self._max_concurrent - in_flight)
+        # Read once. This used to poll twice — the count and then the loop — so a
+        # ticket that changed state between the two calls was counted against one
+        # budget and dispatched against another.
+        tickets = self._tracker.open_tickets()
 
-        for ticket in self._tracker.open_tickets():
+        in_flight = sum(1 for t in tickets if t.state == STATE_IN_PROGRESS)
+        budget = max(0, self._max_concurrent - in_flight)
+        review_budget = self._review_budget(tickets)
+
+        for ticket in tickets:
             reason = self.eligibility(ticket)
             if reason is not None:
                 result.skipped[ticket.id] = reason
@@ -237,9 +260,36 @@ class Runner:
             if budget == 0:
                 result.skipped[ticket.id] = "concurrency limit reached"
                 continue
+            if review_budget == 0:
+                result.skipped[ticket.id] = (
+                    f"review queue full: {self._max_awaiting_human} ticket(s) already "
+                    "awaiting a human. Dispatch stalls rather than queueing more."
+                )
+                continue
             budget -= 1
+            if review_budget is not None:
+                # Decremented before dispatch, not after, and not conditioned on
+                # where the ticket lands. A dispatch that ends in needs-human
+                # rather than review still consumed the human's attention, and
+                # erring toward under-dispatch is the safe side of this control.
+                review_budget -= 1
             self._dispatch(ticket, result)
         return result
+
+    def _review_budget(self, tickets: Sequence[Ticket]) -> int | None:
+        """How many more tickets may be handed to a human this tick, or None when
+        unbounded.
+
+        Counts `needs-human` alongside `in-review` because both are the factory
+        putting work in front of a person. That gives this one control a second
+        job: a run of correlated failures piles into needs-human and stalls
+        dispatch on its own — the circuit breaker W-08 noted Symphony lacks,
+        falling out of the review bound rather than needing its own mechanism.
+        """
+        if self._max_awaiting_human is None:
+            return None
+        waiting = sum(1 for t in tickets if t.state in (STATE_IN_REVIEW, STATE_NEEDS_HUMAN))
+        return max(0, self._max_awaiting_human - waiting)
 
     def _dispatch(self, ticket: Ticket, result: TickResult) -> None:
         self._tracker.set_state(ticket.id, STATE_IN_PROGRESS)
