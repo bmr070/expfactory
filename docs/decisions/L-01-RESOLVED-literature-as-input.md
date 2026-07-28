@@ -86,7 +86,7 @@ precisely the domain this repository picked as its proving workload.
 
 ## Amendment to the "vehicle, not a ship target" invariant
 
-`AGENTS.md` says the proving workload is *"a vehicle, not a ship target. The
+`CLAUDE.md` says the proving workload is *"a vehicle, not a ship target. The
 acceptance bar is 'the gates behaved correctly,' not 'the model beat a
 benchmark.'"* It then warns: *"If you find yourself trying to make something get
 promoted, stop and re-read this paragraph."*

@@ -78,7 +78,7 @@ mistake, not by reasoning.
 7. **Only a human-applied `agent-ready` label is dispatch-eligible.** The tracker is untrusted input;
    anyone who can file a ticket can prompt-inject the factory.
 8. **Prose does not ratchet.** A recurring failure becomes a lint rule, hook, CI check, boundary test,
-   or gate. Adding a line to `AGENTS.md` is the last resort, not the first.
+   or gate. Adding a line to `CLAUDE.md` is the last resort, not the first.
 
 ---
 
@@ -104,7 +104,7 @@ order they should be tackled:
 - ~~The demo in `demo_drone.py` has a **miscalibrated scenario**~~ — **RESOLVED**, and it was worse than
   this note knew. Measurement found three of four scenarios wrong, a seed-variance band of exactly zero,
   and a file that had not imported since the `Ledger` rename. Recalibrated against measured numbers and
-  pinned by `tests/test_demo_drone.py`. See `AGENTS.md#gotchas`.
+  pinned by `tests/test_demo_drone.py`. See `docs/GOTCHAS.md`.
 - The dominance gate in `gates_v1.py` was **wrong on first implementation** (inverted ratio) and passed
   nothing. The fixture caught it. If you modify that gate, verify against both suite partitions.
 
@@ -123,7 +123,7 @@ Ranked. The first three are doable entirely in Claude Code; the rest need the us
 2. **Run the refactor** — candidates 3 → 1 → 2 from §5, red-green, keeping all 34 tests green. If a test
    *has* to change, that test was coupled to an implementation detail and is telling you something.
 3. **Set up strict CI** — typecheck, lint, tests, and a boundary test. The factory's own repo should be
-   agent-ready before it dispatches anything. Write `AGENTS.md` while doing it.
+   agent-ready before it dispatches anything. Write `CLAUDE.md` while doing it.
 4. **M2-04 (design) then M2-05 (build)** — the preregistration gate. Design is a genuine open problem:
    preregistration assumes a confirmatory study, and a hill-climb is exploratory by construction. Needs
    a decision before code.

@@ -1,229 +1,49 @@
 # AGENTS.md — expfactory
 
-Table of contents for agents working in this repo. Progressive disclosure: this
-file orients you and points at the real documents. It is not the specification.
+Entry point for any coding agent, per the [agents.md](https://agents.md) standard.
 
-**Read `docs/SPEC.md` before changing anything in `src/expfactory/`.**
+**The full instructions live in [`CLAUDE.md`](CLAUDE.md). Read that.** This file
+is deliberately thin: the two would drift if both carried the same content, and a
+stale copy of a safety rule is worse than no copy.
 
----
+What follows is only what an agent must know before touching anything.
 
-## What this is
-
-A software factory for **empirical work** — ML experiments where CI cannot be the
-verifier, because there are no tests to pass, only numbers that may or may not be
-real. The thesis:
-
-> Adopt infrastructure. Build verification. No existing system has a ledger or
-> anti-fooling gates, because they all verify code against tests.
-
-The proving workload (drone detection) is a **vehicle, not a ship target**. The
-acceptance bar for the factory is "the gates behaved correctly," not "the model
-beat a benchmark." **A run in which every proposed improvement is correctly
-rejected is a passing run.** If you find yourself trying to make something get
-promoted, stop and re-read this paragraph.
-
-**Amended 2026-07-26 (L-01).** A hill-climb may now carry a *published external
-target*, and beating it is a permitted **outcome** — never an acceptance
-criterion. `promoted` is still derived only from the gates. The live target is
-[`docs/research/acoustic-drone-detection.md`](docs/research/acoustic-drone-detection.md),
-and note which number it competes against: the *session-grouped* one, never the
-clip-level one. **The specific figure was corrected on 2026-07-27** — 0.745 came
-from the paper's abstract and its Table 2 reports 72.3% for the RF baseline and
-93.8% for a CNN. Read the target doc, not this line.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `src/expfactory/verifier.py` | The plugin boundary. `Verifier.run(candidate) -> VerdictBundle`. |
-| `src/expfactory/harness.py` | The original six gates, behind the boundary. |
-| `src/expfactory/gates_v1.py` | Tamper gate, seed-dominance gate, G-09 group leakage, G-10 attested run. |
-| `src/expfactory/literature.py` | Paper/mechanism/hypothesis provenance. Substrate; the corpus it reads is not. |
-| `docs/literature/corpus.json` | The reading list and the mechanisms extracted from it. Data, not substrate. |
-| `docs/research/` | Live hill-climb targets, their protocols and their published bars. |
-| `src/expfactory/holdout.py` | Durable holdout query budget, atomic across restarts. |
-| `src/expfactory/adversarial_suite.py` | Known-answer fixtures, visible + held-out. |
-| `src/expfactory/pipeline.py` | `run_and_record`: train → verify → append. |
-| `src/expfactory/prereg.py` | Preregistration record + the G-07 gate. |
-| `src/expfactory/selfcheck.py` | The boundary test. |
-| `src/expfactory/registry.py` | JobRegistry + ComputeSubstrate seam. Holds the GPU credential. |
-| `src/expfactory/local_substrate.py` | The local GPU behind that seam. Detached jobs, imputed cost. |
-| `src/expfactory/runner.py` | The outer loop and the trust boundary: what gets worked on, and who adjudicates it. |
-| `src/expfactory/github_tracker.py` | GitHub Issues adapter for `Tracker`. |
-| `src/expfactory/linear_tracker.py` | Linear adapter — **the queue the runner reads** (W-07 amendment). |
-| `CONTEXT.md` | The glossary. Terms only — start here if a word seems to mean two things. |
-| `src/expfactory/scorer.py` | Holds the labels and computes the metric. The agent submits predictions. |
-| `src/expfactory/egress.py` | Outbound allowlist + artifact pinning. Widening it is a reviewed diff, by design. |
-| `src/expfactory/substrate_guard.py` | PR-level wall: refuses any PR editing the verification layer. |
-| `examples/demo_drone.py` | Worked example. End-to-end check on the gate set; pinned by `tests/test_demo_drone.py`. |
-| `docs/SPEC.md` | The specification. Start here. |
-| `docs/DISPATCH-READINESS.md` | What must be true before a real agent runs here. |
-| `docs/MAP.md`, `docs/MAP2.md` | Closed decisions and open territory. |
-| `docs/decisions/` | One file per decision, with rationale. |
-| `provision/` | CODEOWNERS, labels — needs the owner's accounts, applied by hand. |
-| `docs/TRACKING.md` | Linear vs GitHub Issues, and the `agent-ready` dispatch rule. |
-
-## Commands
+## Setup and test
 
 ```bash
 pip install -e ".[dev]"
-pytest                              # 402 tests (set EXPFACTORY_REQUIRE_DEMO=1 to force the demo test)
-ruff check src tests
-ruff format --check src tests
-mypy                                # strict on the whole verification core
-python -m expfactory.selfcheck      # boundary test, visible partition
-python -m expfactory.local_substrate  # what compute is available, and its imputed cost
+pytest
+ruff check src tests && ruff format --check src tests
+mypy
+python -m expfactory.selfcheck
 ```
 
-## Invariants — do not break these
+## Four rules, before your first edit
 
-Each was arrived at the hard way; several were found by a test catching a mistake,
-not by reasoning. Breaking one silently guts the verification layer.
+1. **Never push to `main`.** Branch, then open a PR. A pre-commit hook blocks
+   edits on `main` and branch protection blocks the push.
 
-1. **`promoted` is derived, never settable.** `VerdictBundle` is frozen. If a
-   caller can set it, the whole layer is theatre.
-2. **L0 gates run before L1 review, always.** Reversing the order lets a fake
-   result reach a human wearing a persuasive LLM endorsement — worse than no
-   review, because the narrative launders it. **A reviewer may never override a
-   blocking gate.**
-3. **The reviewer runs in fresh context, read-only.** A reviewer sharing the
-   implementer's context rubber-stamps its own reasoning.
-4. **Every gate traces to a fixture.** No speculative gates; the set must not
-   bloat.
-5. **Never consult the held-out fixture partition while tuning gates.** The
-   factory is held to the holdout discipline it enforces on experiments. This
-   already caught a real error once. CI runs the visible partition only, by
-   design — see `selfcheck.py`.
-6. **The agent never holds GPU or tracker credentials.** It submits a job and
-   receives an artifact.
-7. **Only a human-applied `agent-ready` label is dispatch-eligible.** The tracker
-   is untrusted input: anyone who can file a ticket can prompt-inject the factory.
-8. **Prose does not ratchet.** A recurring failure becomes a lint rule, hook, CI
-   check, boundary test, or gate. Adding a line to this file is the last resort,
-   not the first.
-9. **The untrusted party returns evidence, never a verdict.** `AgentSession.run`
-   yields a `Candidate`; the runner adjudicates it on a verifier the agent cannot
-   reach. Checking an agent-supplied verdict cannot work — it can be built with
-   `promoted=True` and whatever gate names the check wants. **You cannot verify a
-   result by asking the thing that produced it what the result was.**
+2. **`src/expfactory/` is verification substrate.** A PR touching it fails
+   `substrate-guard` on purpose, and that failure is not a bug to route around —
+   it requires a deliberate human override, recorded in the PR timeline. Adding a
+   module there also fails the test suite until the module is classified in
+   `_HARNESS_PATHS` or `_NOT_SUBSTRATE` in `gates_v1.py`, plus a line in
+   `.github/CODEOWNERS`.
 
-## Gotchas
+3. **A run where every proposed improvement is correctly rejected is a passing
+   run.** This factory verifies empirical claims. If you find yourself trying to
+   make something get promoted, stop.
 
-- **`examples/demo_drone.py` is calibrated by measurement, and by a test.** It
-  was not. It planted labels by intent and was wrong about three of four
-  scenarios — the "noise" case was the best model in the demo, the "leak" case
-  gained +0.0005 over the honest one, and every seed returned an identical
-  number, so `gate_seed_variance` had a zero-width band and promoted anything
-  positive while appearing to scrutinise it. It had also stopped importing
-  entirely at the `Ledger` -> `ExperimentLedger` rename, unnoticed, because
-  nothing ran it. `tests/test_demo_drone.py` now asserts every verdict and CI
-  sets `EXPFACTORY_REQUIRE_DEMO=1` so it cannot silently skip. **If you retune a
-  scenario, measure it — do not relabel it.**
-- **`gate_no_leakage` cannot see session-level leakage.** It intersects train and
-  eval *sample ids*; clips cut from one continuous recording have distinct ids and
-  it passes. That is what G-09 (`gate_no_group_leakage`) is for, and G-09 only
-  bites when the task supplies a `DatasetGrouping` to the verifier. Declaring the
-  grouping is therefore part of defining a task, not an optional extra. Found in
-  the literature, not by a bug: EchoHawk (arXiv:2606.29589) documents it in
-  DroneAudioDataset, where 1,332 drone files come from only 257 continuous
-  recording sessions. **Do not quote a single inflation figure from memory** —
-  the abstract and Table 2 disagree, and that is recorded unresolved in the
-  corpus.
-- **Test-time adaptation reintroduces that leak after the split**, where G-09
-  cannot reach it. See the H5 hazard in `docs/research/acoustic-drone-detection.md`
-  before proposing any per-session adaptation.
-- **Local GPU cost is imputed, and must never be zero.** The registry's caps and
-  breaker are in dollars; hardware you own has no invoice. `CostModel` charges
-  ~$0.09/GPU-hour so the caps still bind. Setting it to zero does not "simplify
-  free compute" — it silently disables every cap while leaving them looking
-  enforced. Same shape as the zero-width noise band.
-- **A pid is not proof a job is alive.** Pids are reused, and the liveness probe
-  costs ~250 ms on Windows, long enough for a short job to finish inside it.
-  `done.json` is the authority; the probe is a hint. Getting this backwards
-  marked finished jobs LOST, which opens the breaker and needs a human to reset.
-- **The local card drives the display.** ~1.2 GB is gone before any job starts and
-  it moves when a browser opens, so `reserve_mib` headroom is not optional. 12 GB
-  total is also a real ceiling on what hypotheses are runnable here.
-- **The dominance gate in `gates_v1.py` was wrong on first implementation**
-  (inverted ratio) and passed nothing. A fixture caught it. If you modify it,
-  verify against *both* suite partitions.
-- **`mean_metric` is NaN in the deterministic lane.** It serialises as `null`,
-  not the bare `NaN` token Python emits by default, because the ledger must be
-  readable by whatever language the runner ends up in.
-- **The tamper gate matches path basenames**, so moving harness files around does
-  not weaken it — but renaming one silently would.
-- **The agent never computes its own metric.** It submits *predictions*; `scorer.py` holds the labels and scores them (T-01). A model artifact was rejected: loading one executes agent code inside the process holding the labels. Feedback goes through a **Ladder** — a score is reported only when it clearly beats the incumbent, because the holdout leak is driven by feedback, not by query count.
-- **"Holdout" names two different things here.** The experiment holdout (a model's lockbox) and the held-out fixture partition (invariant 5). Both have budgets and they protect different parties — see `CONTEXT.md`.
-- **G-10: a candidate must cite a job the registry issued.** The agent returning
-  evidence instead of a verdict left it one move — describe runs that never
-  happened. Fabricated evidence is the same *shape* as real evidence, so no gate
-  reading the numbers can separate them; only the append-only job log can, and
-  the agent does not write it. Like G-09, the source is a verifier constructor
-  argument, and without one the gate warns rather than blocks. **It cannot check
-  that the metric is right** — the agent still writes the code that computes it,
-  which needs a trusted evaluator (GH#39).
-- **The agent returns a `Candidate`, never a `VerdictBundle`.** The runner
-  adjudicates, on a verifier the agent cannot reach. It briefly worked the other
-  way, with the runner *checking* an agent-supplied verdict — which cannot work,
-  because a sandboxed agent can build a bundle with `promoted=True` and exactly
-  the gate names the check wants. You cannot verify a result by asking the thing
-  that produced it what the result was. The agent still authors the *evidence*;
-  closing that needs the numbers to come from the compute substrate, not the
-  agent (W-06, and GH#33's remaining half).
-- **`require_prereg=True`, the `PreregStore` and G-09's `DatasetGrouping` are the
-  runner's to set.** They became enforceable only once the runner owned the
-  verifier. A runner built without them still refuses its own verdicts — the
-  `required_gates` check now catches a misconfigured *runner* rather than a
-  misconfigured agent.
-- **The runner runs where the compute does.** A cloud-hosted runner cannot reach
-  a GPU under the desk without exposing it, so while compute is local the runner
-  is a local daemon (M2-08). An explicit coupling, not a preference: moving to
-  rented compute reopens the hosted options.
-- **PR authorship is not load-bearing.** `substrate_guard` asks what changed,
-  never who, so an agent runtime that opens PRs as the triggering human degrades
-  CODEOWNERS without touching the wall. The identity that *is* load-bearing is
-  the Linear one, because `label_actor` reads it — and that one is free.
-- **The egress allowlist is code, and exact-match only.** No env var, no config
-  file, no runtime API — inside a sandbox the agent can set env vars and write
-  config, but it cannot merge a PR, and that is the whole control. Matching is
-  exact because `endswith` accepts `evil-huggingface.co`, substring accepts
-  `huggingface.co.evil.example`, and both accept `huggingface.co@evil.example`.
-  Host matching alone is not integrity either: pin the SHA-256.
-- **Neither a baseline nor a guardrail threshold is agent-declared.** Both are
-  read from the parent's recorded verdict. A threshold the agent names is
-  decorative.
-- **A preregistration's baseline is read from the ledger, never from the prereg.**
-  The agent authors the prereg; if it could also name the number it is measured
-  against, G-07 would be theatre. A confirmatory run needs a recorded parent.
-- **Two ledgers, two names.** `verifier.Ledger` is *the* ledger (verdicts +
-  preregistrations). `harness.ExperimentLedger` is the prototype's, kept behind
-  the boundary. `ledger_ctx` is typed `HoldoutSource`, so handing over the wrong
-  one is now a type error rather than a runtime crash.
+4. **Tests and docs ship in the same commit as the change.** Not the next PR.
 
-## Do not re-propose
+## Where to look
 
-Declined on evidence; re-suggesting wastes a session. Full list in `docs/MAP.md`.
-
-- Forking Baton as the runner. Recommended then withdrawn twice.
-- Persona agent org-charts. Only three roles earn isolation: planner, reviewer,
-  triage.
-- An LLM "Evaluation Agent" deciding whether results are significant. That
-  question is arithmetic on recorded seeds and belongs in L0.
-- LangGraph / CrewAI / AutoGen as the outer loop. **Boundary:** a coding agent
-  *implemented in* LangGraph (Open SWE) is a different claim and is **adopted** —
-  see `docs/decisions/M2-07-RESOLVED-open-swe.md`.
-- A five-database knowledge stack.
-- Deferring cost caps or security to a later phase. Both are day-one, fail-closed.
-
-## Agent skills
-
-### Issue tracker
-
-Work lives in **Linear** (team `Brett`, project `expfactory — empirical software
-factory`). GitHub holds code, PRs and CI, not the work queue, and there is no
-sync between them. See `docs/agents/issue-tracker.md`.
-
-### Domain docs
-
-Single-context. Decision records live in `docs/decisions/`, **not** `docs/adr/`.
-See `docs/agents/domain.md`.
+| For | Read |
+|---|---|
+| Everything: architecture, commands, standards, invariants, gotchas | [`CLAUDE.md`](CLAUDE.md) |
+| The specification | [`docs/SPEC.md`](docs/SPEC.md) |
+| Who is trusted and who adjudicates | [`docs/ROLES.md`](docs/ROLES.md) |
+| A word that seems to mean two things | [`CONTEXT.md`](CONTEXT.md) |
+| Why a decision went the way it did | [`docs/decisions/`](docs/decisions/) |
+| What is left to build | [`docs/tickets/NEXT.md`](docs/tickets/NEXT.md) |
+| Before dispatching a real agent | [`docs/DISPATCH-READINESS.md`](docs/DISPATCH-READINESS.md) |
