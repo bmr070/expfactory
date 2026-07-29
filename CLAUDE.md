@@ -129,6 +129,8 @@ by a test catching a mistake rather than by reasoning.
 | Ideas already declined on evidence | [`docs/MAP.md`](docs/MAP.md) |
 | Linear vs GitHub, and dispatch | [`docs/TRACKING.md`](docs/TRACKING.md) |
 | Before dispatching a real agent | [`docs/DISPATCH-READINESS.md`](docs/DISPATCH-READINESS.md) |
+| What upstream systems actually do | [`docs/research/`](docs/research/) — read the addenda, they correct the body |
+| Reviews, the map, the rendered spec | [`docs/reference/`](docs/reference/) |
 
 ## Workflow skills
 

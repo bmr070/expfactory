@@ -25,9 +25,10 @@ of recorded evidence and never something a caller can assert.
 ```bash
 pip install -e ".[dev]"
 
-pytest                            # 402 tests
+pytest                            # gate lane: deterministic, free, every commit
 mypy                              # strict across the verification core
 ruff check src tests
+ruff format --check src tests     # CI checks both; a long line in a test has failed a build
 python -m expfactory.selfcheck    # boundary test: known-answer fixtures
 ```
 
@@ -75,6 +76,8 @@ factory, not a product.
 | `no_test_tampering` | diffs that weaken verification itself |
 | `G-07` preregistration | HARKing / metric-shopping (opt in with `require_prereg=True`) |
 | `G-08` prereg churn | serial re-filing until one lands (opt in with `require_prereg=True`) |
+| `G-09` group leakage | the same source in train and eval under different sample ids |
+| `G-10` attestation | a candidate citing a compute job the registry never issued |
 
 Every gate traces to a fixture in the adversarial suite. New gates are added only
 when a fixture proves the set misses something.
@@ -107,14 +110,38 @@ attaching a persuasive endorsement to it.
 
 ## Status
 
-The verifier core is built and green. The runner, the experiment queue, and the
-two-substrate execution split are designed but not built — they need
-infrastructure (GPU substrate, live tracker, durable store) that the prior
-environment did not have.
+**Built and green.** The loop is closed end to end: `ticket → runner → agent →
+verifier → gates → ledger`, all ten gates, plus `JobRegistry` and the detach path
+for jobs that outlive an agent session. `LocalGpuSubstrate` is the first real
+`ComputeSubstrate` behind that seam.
+
+**Not ready for a live agent.** An external review on 2026-07-28
+([`docs/reference/code-review-insights-2026-07-28.html`](docs/reference/code-review-insights-2026-07-28.html))
+found four paths that let an untrusted party bypass a stated control or leave an
+expensive run unaccounted for. Two are P0. They are filed as BRE-28 through
+BRE-32 and are tracked in
+[`docs/DISPATCH-READINESS.md`](docs/DISPATCH-READINESS.md).
+
+The review's verdict on the architecture was that it is sound and the gap is
+implementation completeness at the same boundary. That distinction is the point:
+the thesis is not in question, the door latches are.
+
+### Where compute fits
+
+The GPU is **one slice of one lane**, not the factory. Work arriving here splits
+two ways, and conflating them is the failure mode the design is built against:
+
+| Lane | Verifier | Needs a GPU? |
+|---|---|---|
+| Deterministic — web, infra, tooling | CI is ground truth | no |
+| Empirical — ML research, hill-climbing | this repo's gates on recorded evidence | only when a job trains a model |
+
+`ComputeSubstrate` is deliberately hardware-neutral (`submit`, `poll`,
+`fetch_artifact`). Compute is pluggable: local GPU today, edge and infra later.
+Nothing above that seam should name a card.
 
 Provisioning in [`provision/`](provision/) is applied by hand, never by an agent.
 `main` is protected: PR required, CI green on 3.11 and 3.13, and code-owner
-review on the verification substrate.
-
-One gap remains before a real agent can be dispatched here — see
-[`docs/DISPATCH-READINESS.md`](docs/DISPATCH-READINESS.md).
+review on the verification substrate. Every merge currently needs `--admin`,
+because a solo owner cannot approve their own PR — that is BRE-18 happening
+literally, not a workaround.
