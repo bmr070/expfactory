@@ -674,7 +674,7 @@ class Runner:
         agent session, and is reached identically whether the candidate came back
         synchronously or was collected from a detached job hours later."""
         try:
-            bundle = self._verifier.run(candidate)
+            bundle = self._verifier.run(candidate, ticket=ticket_id)
         except Exception as exc:  # noqa: BLE001 — a candidate we cannot judge is not a result
             self._tracker.comment(
                 ticket_id,

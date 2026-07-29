@@ -71,7 +71,7 @@ class FakeVerifier:
         self._raises = raises
         self.seen: list[Candidate] = []
 
-    def run(self, candidate: Candidate):
+    def run(self, candidate: Candidate, ticket: str | None = None):
         self.seen.append(candidate)
         if self._raises is not None:
             raise self._raises
