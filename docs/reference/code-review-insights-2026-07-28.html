@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>expfactory review — 2026-07-28</title>
+  <style>
+    :root { --ink:#172033; --muted:#596579; --paper:#f6f8fc; --card:#fff; --line:#dce3ee; --good:#16764c; --warn:#a55b00; --bad:#b42318; --blue:#155eef; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--paper); color:var(--ink); font:16px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width:1100px; margin:auto; padding:48px 24px 72px; }
+    header { border-bottom:1px solid var(--line); padding-bottom:24px; margin-bottom:28px; }
+    h1 { font-size:clamp(2rem,5vw,3.5rem); line-height:1.08; letter-spacing:-.04em; margin:0 0 12px; }
+    h2 { margin:42px 0 12px; font-size:1.45rem; letter-spacing:-.02em; }
+    h3 { margin:0 0 8px; font-size:1.08rem; }
+    p { margin:8px 0 14px; }
+    a { color:var(--blue); }
+    .lede { font-size:1.2rem; max-width:850px; color:#344054; }
+    .meta { color:var(--muted); font-size:.92rem; }
+    .callout { border-left:5px solid var(--blue); background:#eff4ff; padding:16px 18px; border-radius:0 8px 8px 0; margin:22px 0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+    .card, .finding { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+    .metric { font-size:1.65rem; font-weight:750; letter-spacing:-.03em; }
+    .good { color:var(--good); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+    .finding { margin:16px 0; border-left:5px solid var(--line); }
+    .finding.p0 { border-left-color:var(--bad); } .finding.p1 { border-left-color:var(--warn); } .finding.p2 { border-left-color:#4477bb; }
+    .tag { display:inline-block; padding:2px 8px; margin:0 7px 7px 0; border-radius:999px; background:#f1f5f9; color:#344054; font-size:.78rem; font-weight:700; letter-spacing:.03em; }
+    .p0 .tag:first-child { background:#fef3f2; color:var(--bad); } .p1 .tag:first-child { background:#fff7ed; color:var(--warn); }
+    code { font: .9em ui-monospace, SFMono-Regular, Consolas, monospace; background:#f1f5f9; padding:1px 4px; border-radius:4px; overflow-wrap:anywhere; }
+    pre { overflow:auto; background:#101828; color:#e5e7eb; padding:16px; border-radius:8px; font-size:.86rem; }
+    table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+    th, td { text-align:left; vertical-align:top; padding:11px; border-bottom:1px solid var(--line); } th { background:#f8fafc; font-size:.86rem; } tr:last-child td { border-bottom:0; }
+    ol li, ul li { margin:7px 0; }
+    .source { color:var(--muted); font-size:.92rem; }
+    @media print { body { background:#fff; } main { max-width:none; padding:20px; } .card,.finding,table { break-inside:avoid; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="meta">Independent code and web review · 28 July 2026 · repository HEAD <code>0e67b0c</code></div>
+    <h1>expfactory is on the right track — but its live boundary is not ready yet.</h1>
+    <p class="lede">The project has an unusually sound thesis: do not ask the producer of an empirical result to certify it. Its trust boundaries, negative acceptance criterion, and decision record are real strengths. The next work should be narrower and more urgent than expanding gates: make every promoted number and every budget event originate from trusted, durable infrastructure.</p>
+  </header>
+
+  <section class="callout">
+    <strong>Bottom line.</strong> Keep the architecture. Do not dispatch a real empirical agent yet. First close the four P0/P1 paths below: finite-value validation, trusted cost accounting, durable/idempotent job submission, and end-to-end attestation binding. These are not cosmetic hardening; each currently lets an untrusted party bypass a stated control or leaves an expensive run unaccounted for.
+  </section>
+
+  <section>
+    <h2>What was reviewed</h2>
+    <div class="grid">
+      <div class="card"><div class="metric good">584 / 584</div><div>pytest passing</div></div>
+      <div class="card"><div class="metric good">0</div><div>Ruff or strict mypy findings</div></div>
+      <div class="card"><div class="metric">22</div><div>Python source modules read and cross-checked with their tests</div></div>
+      <div class="card"><div class="metric">5</div><div>implementation findings: 2 P0, 2 P1, 1 P2</div></div>
+    </div>
+    <p>The visible adversarial suite also passes under <code>PYTHONPATH=src python -m expfactory.selfcheck</code>. The initial selfcheck invocation without installation failed only because the package was not installed in this review environment; the project’s own setup instructions specify an editable install.</p>
+  </section>
+
+  <section>
+    <h2>What is already notably good</h2>
+    <ul>
+      <li><strong>The central boundary is correct.</strong> <code>AgentSession</code> returns a <code>Candidate</code>; <code>Runner</code> owns a verifier and adjudicates it. That removes the easy failure mode of the producer returning a pre-approved verdict.</li>
+      <li><strong>The project treats rejection as success when appropriate.</strong> This is exactly the mindset an empirical factory needs and prevents benchmark-chasing from becoming a hidden acceptance criterion.</li>
+      <li><strong>Gates have fixtures and a held-out discipline.</strong> The visible/held-out adversarial split and the policy not to tune against the held-out partition are disciplined, evidence-oriented choices.</li>
+      <li><strong>Trust design is concrete.</strong> Human-applied dispatch labels, separate runner credentials, workspace-name refusal, a non-overridable L0, and an explicit review-cap back-pressure mechanism are much stronger than relying on prompts or role names.</li>
+      <li><strong>The project is honest about incomplete work.</strong> <code>DISPATCH-READINESS.md</code> and <code>NEXT.md</code> name several gaps rather than claiming the system is deployed. Preserve that standard.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Findings</h2>
+
+    <article class="finding p0">
+      <span class="tag">P0 — block live dispatch</span><span class="tag">Integrity</span>
+      <h3>1. Non-finite metrics can turn an impossible result into a promotion</h3>
+      <p><code>Candidate</code>/<code>RunResult</code> accepts arbitrary floats without requiring finiteness. With three clean runs whose <code>val_metric</code> is <code>float("inf")</code>, the base <code>GateVerifier</code> promotes the candidate. The dominance arithmetic becomes <code>nan</code>, whose comparisons are false, and the other gates do not reject it. The reproduction during this review returned <code>promoted=True</code> and <code>mean_metric=inf</code>.</p>
+      <p>This is a direct violation of “evidence, not verdict”: a malicious or faulty producer can send an infinity rather than a real result. The preregistration path may reject some such cases, but numeric validity must not depend on an optional or workflow-specific gate.</p>
+      <p><strong>Fix:</strong> validate all numerical boundary fields once, at candidate/run construction: finite metric values, finite non-negative duration and cost, integer non-negative overlap, and finite preregistration/guardrail parameters. Add adversarial fixtures for <code>NaN</code>, <code>+/-inf</code>, negative cost, and duplicate seeds where required. Fail the candidate loudly rather than converting it.</p>
+      <p class="source">Evidence: <code>src/expfactory/verifier.py:66-107</code>, <code>src/expfactory/harness.py:204-237</code>, <code>src/expfactory/gates_v1.py:225-252</code>. Reproduced locally in this review.</p>
+    </article>
+
+    <article class="finding p0">
+      <span class="tag">P0 — block live dispatch</span><span class="tag">Cost control</span>
+      <h3>2. The registry accepts negative and NaN job-cost estimates</h3>
+      <p><code>JobRegistry.submit()</code> tests only whether an estimate is greater than a cap. Therefore <code>-100.0</code> and <code>NaN</code> both pass the per-job and per-day checks and are recorded. The review reproduced both accepted submissions. A negative value also lowers the trailing-day total, creating additional apparent budget.</p>
+      <p>More fundamentally, a caller-provided estimate is not a cap if the untrusted caller can choose it. The registry must derive or verify the maximum charge from trusted job parameters and provider pricing before submission; actual provider-reported usage should be reconciled afterwards.</p>
+      <p><strong>Fix:</strong> reject every non-finite or negative input and invalid cap/deadline at construction. Replace the free <code>cost_estimate_usd</code> argument at the untrusted request boundary with a trusted admission/pricing function keyed by image, GPU SKU, requested duration, and provider rate card. Reserve the worst-case amount before submit, reconcile actual spend, and retain the reservation on uncertainty.</p>
+      <p class="source">Evidence: <code>src/expfactory/registry.py:317-372</code>. Reproduced locally in this review.</p>
+    </article>
+
+    <article class="finding p1">
+      <span class="tag">P1 — fix before detached GPU runs</span><span class="tag">Durability</span>
+      <h3>3. Submission has an unrecoverable crash window and no multi-writer guarantee</h3>
+      <p>The registry calls the substrate first and appends its <code>submitted</code> event afterwards. A process failure in that gap creates a live, billable job with no registry record. The documented <code>reconcile()</code> cannot find it because it only polls records already in the log. Separately, cap-check → submit → append is not locked or transactional, so two runner processes can both admit work against the same daily budget.</p>
+      <p><strong>Fix:</strong> make submission an explicit state machine: durable <em>intent/reservation</em> with an idempotency key → provider submission carrying that key → durable handle binding. On startup, reconcile both reservations and provider-side jobs by key, not only known handles. Use a single-writer service/database transaction or an OS/database lock around the admission/reservation transition. Make log writes durable enough for the stated recovery model (<code>flush</code>/<code>fsync</code> or a transactional store).</p>
+      <p class="source">Evidence: <code>src/expfactory/registry.py:187-224, 317-373, 442-453</code>; <code>docs/SPEC.md</code> specifies a single-writer assumption only for the verdict ledger, not this compute ledger.</p>
+    </article>
+
+    <article class="finding p1">
+      <span class="tag">P1 — fix before using G-10 as evidence</span><span class="tag">Attestation</span>
+      <h3>4. G-10 currently proves only that a handle exists, not the claimed artifact or ticket</h3>
+      <p><code>RunAttestation</code> models command, exit code, wall time, and artifact digest, and the gate knows how to compare digest/exit code and ticket. But the real registry stores none of those completion values in <code>attested_job()</code>; it returns only handle, ticket, state, submission time, and artifact reference. The verifier also passes no ticket to the gate. Consequently, a candidate can cite a registry-issued handle with arbitrary artifact digest/exit code, and a handle from another ticket is not bound in the production verifier. The tests explicitly document the latter as currently slipping through.</p>
+      <p><strong>Fix:</strong> have the substrate/control plane write a signed or control-plane-authenticated completion record containing the ticket/job id, immutable source revision, command/image digest, exit status, timestamps, artifact digest, and evaluator-output digest. Store and verify it before parsing a candidate. Bind the runner’s ticket id to verification, or make the attestation-to-ticket mapping an immutable lookup performed by the runner. Treat the candidate as a request to locate trusted output, not as the source of the attestation.</p>
+      <p class="source">Evidence: <code>src/expfactory/registry.py:85-115, 259-279</code>; <code>src/expfactory/verifier.py:405-416</code>; <code>src/expfactory/gates_v1.py:437-459</code>; <code>tests/test_attested_run.py:159-173</code>.</p>
+    </article>
+
+    <article class="finding p2">
+      <span class="tag">P2 — reliability / readiness</span><span class="tag">Integration</span>
+      <h3>5. The detach path cannot reach “Running Unattended” through either production tracker</h3>
+      <p><code>Runner._detach()</code> only requires a collector, not a job ledger, so it can park a ticket that no component will poll. It then asks the tracker to set <code>Running Unattended</code>; neither the GitHub label mapping nor the Linear writable-state allowlist supports that state. A fake tracker makes unit tests pass, but the production adapters reject it. Both adapters also fetch only their first page of issues/history, which can indefinitely skip old tickets or fail closed after normal queue growth.</p>
+      <p><strong>Fix:</strong> refuse detachment unless <em>both</em> registry and collector are configured; add the unattended state to the supported tracker state model with adapter integration tests; and implement cursor/link pagination with an explicit ordering policy. Treat an impossible tracker transition as a pre-dispatch configuration error, not a post-submit exception.</p>
+      <p class="source">Evidence: <code>src/expfactory/runner.py:552-577</code>; <code>src/expfactory/github_tracker.py:31-37</code>; <code>src/expfactory/linear_tracker.py:35-37</code>.</p>
+    </article>
+  </section>
+
+  <section>
+    <h2>Recommended sequence</h2>
+    <ol>
+      <li><strong>Make the numerical and cost boundaries total.</strong> Add a shared finite/non-negative validator and adversarial cases first; it is cheap and closes direct bypasses.</li>
+      <li><strong>Redesign compute admission as a durable reservation protocol.</strong> This is the foundation for honest caps and restart recovery; do not build a Modal adapter on the current submit-then-record shape.</li>
+      <li><strong>Replace candidate-authored attestations with trusted completion provenance.</strong> Bind job ↔ ticket ↔ source/image ↔ artifact ↔ evaluation result. The trusted scorer should read the immutable artifact and emit the metric, rather than trusting a metric inside agent-written output.</li>
+      <li><strong>Wire the full detached path against real adapters.</strong> Exercise submit, restart, collection, timeout, cancellation, and a tracker outage end to end with a short deterministic workload before training anything.</li>
+      <li><strong>Only then add breadth.</strong> More gates, MLflow, and L1 review are valuable later, but none compensate for a result or budget that originates in the untrusted side.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>External research: what it confirms</h2>
+    <table>
+      <thead><tr><th>Source</th><th>Relevant current guidance</th><th>Implication here</th></tr></thead>
+      <tbody>
+        <tr><td><a href="https://slsa.dev/spec/v1.2/provenance">SLSA provenance v1.2</a></td><td>Provenance is verifiable information about where, when, and how an artifact was produced. Its model separates untrusted external parameters from trusted control-plane details and identifies outputs/dependencies.</td><td>Use this shape for experiment attestations. A bare job handle is only an identifier; it is not provenance for the source, command, output, and evaluator that produced a metric.</td></tr>
+        <tr><td><a href="https://slsa.dev/spec/v1.1/provenance">SLSA build provenance</a></td><td>Verifiers should reject unrecognized external parameters; provenance should capture resolved dependencies and builder identity.</td><td>Pin and bind code revision, image/lockfile, dataset manifest, evaluator version, and run configuration in the trusted completion record. Do not let the worker self-assert those values.</td></tr>
+        <tr><td><a href="https://modal.com/docs/guide/job-queue">Modal job processing</a></td><td><code>spawn()</code> returns a durable call id, and <code>FunctionCall.from_id(...).get(timeout=0)</code> supports later polling; outputs are available for a finite retention period.</td><td>The chosen detached-job architecture is viable. Record the call id durably before considering the ticket parked, use bounded polling, and explicitly handle expired outputs. Provider retries must be reconciled with the holdout/cost policy.</td></tr>
+        <tr><td><a href="https://linear.app/developers/pagination">Linear GraphQL pagination</a></td><td>All query lists are paginated; default page size is 50; clients should follow cursor/pageInfo.</td><td>Implement pagination for issues, history, labels, and workflow states before treating the Linear adapter as a durable work queue.</td></tr>
+        <tr><td><a href="https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api">GitHub REST pagination</a></td><td>REST lists expose next-page links and limit <code>per_page</code> to 100.</td><td>Follow Link headers for issue/timeline reads. First-page-only attribution is not a durable authorization decision.</td></tr>
+        <tr><td><a href="https://airc.nist.gov/airmf-resources/playbook/">NIST AI RMF Playbook</a></td><td>The Measure function calls for regular assessment of metrics and controls; Manage uses measurement results for monitoring and response.</td><td>Your ratchet and fresh review are aligned with this. Add operational measurements for control health: rejected-invalid-input count, unrecorded-job reconciliation count, attestation mismatch rate, and breaker events.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Landscape expansion: software factories and agent factories</h2>
+    <p>This follow-up reviewed the current official sites and public repositories for the systems below. The useful question is not “which system has the most agents?” It is: <em>which control is enforced outside the agent that benefits from bypassing it?</em> That is the boundary expfactory is trying to make real.</p>
+
+    <div class="callout">
+      <strong>Important correction to the earlier landscape note.</strong> GitHub Agentic Workflows (<code>gh-aw</code>) now documents hard AI-credit limits per run and per workflow per day, plus a separate safe-output stage. So “no upstream cost enforcement” is too broad for agent inference. It remains true that this does not price, reserve, or cap long-lived GPU experiment work, and it does not adjudicate the truth of an empirical metric.
+    </div>
+
+    <table>
+      <thead><tr><th>System</th><th>What its public material establishes</th><th>What to borrow</th><th>What not to confuse it with</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>OpenAI Symphony</strong><br><a href="https://github.com/openai/symphony">repo</a> · <a href="https://github.com/openai/symphony/blob/main/SPEC.md">spec</a></td>
+          <td>A language-agnostic daemon specification for issue-driven coding runs: per-issue workspaces, an internal claim state machine, retries, observability, and pluggable coding agents. Its own README labels the reference preview as suitable for trusted environments.</td>
+          <td>Explicit orchestration states, workspace containment, operation-specific concurrency, and a clear service/worker split.</td>
+          <td>A durable experiment queue or an empirical verifier. Its scheduler state is intentionally an orchestration concern; a six-hour GPU job still needs a durable, provider-reconcilable registry.</td>
+        </tr>
+        <tr>
+          <td><strong>Open SWE</strong><br><a href="https://github.com/langchain-ai/open-swe">repo</a> · <a href="https://github.com/langchain-ai/open-swe/blob/main/INSTALLATION.md">installation</a></td>
+          <td>A customizable asynchronous coding-agent runtime built on Deep Agents/LangGraph, with isolated cloud sandboxes, GitHub App support, proxy-mediated GitHub access, Slack/Linear/GitHub triggers, subagents, and automatic PRs. Its public README accurately calls validation prompt-driven by default.</td>
+          <td>The GitHub-App identity pattern, short-lived scoped tokens, dummy-token proxy, sandbox circuit breaker, and “isolate first; full permissions only inside the boundary” model.</td>
+          <td>A trustworthy judge of empirical output. The agent still runs tests, commits, and opens the PR; deterministic CI can assess code, but it cannot establish whether a claimed ML number is genuine.</td>
+        </tr>
+        <tr>
+          <td><strong>GitHub Agentic Workflows</strong><br><a href="https://github.com/github/gh-aw">repo</a> · <a href="https://github.github.com/gh-aw/">docs</a></td>
+          <td>Markdown workflows compile into locked GitHub Actions workflows. The agent has read-only/default-minimal access; a distinct safe-output job sanitizes and applies allowlisted actions. It documents sandbox/firewall controls, SHA-pinned actions, threat detection, auditing, and per-run/daily AI-credit ceilings.</td>
+          <td><strong>Most transferable pattern in the survey:</strong> agent emits a declarative output artifact; a separate, credentialed post-processor validates and applies only policy-allowed effects. Also borrow compile-to-lock configuration, audit artifacts, and distinct inference-budget enforcement.</td>
+          <td>The empirical runner itself. GitHub Actions is not the durable owner of an hours-long GPU job, and safe-output validation is not validation of a metric inside an agent-written artifact.</td>
+        </tr>
+        <tr>
+          <td><strong>Tessl</strong><br><a href="https://docs.tessl.io/">docs</a> · <a href="https://tessl.io/about/">site</a></td>
+          <td>An agent-enablement/context platform: versioned skills, rules, documentation, registry distribution, and evaluations that compare agent performance with and without context. It treats context as maintained software rather than copied prompts.</td>
+          <td>Evaluate <code>AGENTS.md</code> and the repository’s skills with representative scenarios before rollout; version and distribute reusable procedure separately from enforcement. This complements the project’s existing “skills are instructions; gates are walls” distinction.</td>
+          <td>A safety boundary. Context evaluation can show that a skill improves agent behavior; it cannot prove the agent complied on a particular run or that an empirical observation is true.</td>
+        </tr>
+        <tr>
+          <td><strong>Factory / Droid</strong><br><a href="https://factory.ai/product/droids">site</a> · <a href="https://github.com/Factory-AI/factory">repo</a> · <a href="https://github.com/Factory-AI/droid-action">action</a></td>
+          <td>Factory publicly describes supervised-to-autonomous execution, risk-classified commands, secret scanning, hooks, long-horizon missions, and a GitHub Action for review/security workflows. The public <code>factory</code> repository is documentation/packaging, not the Droid runtime implementation.</td>
+          <td>Risk classification and hookable policy points are good product ideas. The action’s “collect context → constrain tools → produce a narrow result” shape is also useful for review-only lanes.</td>
+          <td>A reviewable trusted computing base. Do not make control-plane claims from private runtime behavior; public docs are evidence of a feature contract, not proof of its implementation.</td>
+        </tr>
+        <tr>
+          <td><strong>OpenHands</strong><br><a href="https://github.com/OpenHands/OpenHands">repo</a> · <a href="https://docs.openhands.dev/openhands/usage/architecture/runtime">runtime docs</a></td>
+          <td>A composable OSS software-agent SDK/CLI with Docker-based sandbox runtime and cloud-scale execution. Its runtime documentation explicitly frames isolation, resource control, and reproducibility as reasons to sandbox untrusted execution.</td>
+          <td>A sandbox/runtime candidate if an implementation needs one; containerized, task-specific execution can support reproducibility and blast-radius reduction.</td>
+          <td>A durable control plane or scorer. A secure worker sandbox protects the host; it does not make the worker’s reported metric independently true.</td>
+        </tr>
+        <tr>
+          <td><strong>SWE-agent / mini-SWE-agent</strong><br><a href="https://github.com/SWE-agent/SWE-agent">repo</a> · <a href="https://github.com/SWE-agent/SWE-agent/blob/main/docs/usage/trajectories.md">trajectories</a></td>
+          <td>A research-oriented agent that turns issues into patches and records trajectories; the project now recommends its simpler mini-SWE-agent for most future use. Evaluation is a separate step rather than an agent self-verdict.</td>
+          <td>Keep trajectories/artifacts separate from evaluation and prefer the smallest harness that demonstrates the claim. Its separation of execution from benchmark evaluation is conceptually aligned with expfactory’s verifier boundary.</td>
+          <td>A production governance plane. It is intentionally hackable and maximally agentic; that is valuable for research, but does not give it credential isolation, cost admission, or authoritative experiment provenance.</td>
+        </tr>
+        <tr>
+          <td><strong>Codex cloud</strong><br><a href="https://openai.com/index/running-codex-safely/">security guidance</a> · <a href="https://openai.com/index/introducing-codex/">product overview</a></td>
+          <td>Official guidance describes isolated task environments, network access disabled by default, and explicit treatment of higher-risk actions. It is a strong example of making execution restrictions technical rather than prompt-based.</td>
+          <td>Default-deny network posture, ephemeral task environments, and action-risk classification.</td>
+          <td>Evidence adjudication. An isolated agent can still make an invalid scientific claim; execution isolation and measurement validity are distinct controls.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>The three patterns that materially improve expfactory</h2>
+    <ol>
+      <li><strong>Adapt <code>gh-aw</code>’s safe-output split to evidence.</strong> The agent should request a job or name an artifact; a separate runner-owned component should obtain provider completion metadata, invoke the trusted scorer, and produce the candidate/verdict inputs. This is the clearest available implementation pattern for your invariant that the untrusted party returns evidence rather than a verdict.</li>
+      <li><strong>Adopt a two-level budget design.</strong> Delegate LLM-token caps to the provider/runtime that holds the model credential (as <code>gh-aw</code> does for AI credits); retain expfactory-owned GPU reservation, daily cap, and breaker because no coding-agent framework can truthfully price your compute substrate for you.</li>
+      <li><strong>Add a context-evaluation lane, not more prose.</strong> Tessl’s lifecycle reinforces your ratchet: treat skills and <code>AGENTS.md</code> as versioned inputs with scenario evaluations. Track whether they improve task behavior, while keeping policy enforcement in deterministic gates, CI, or post-processing jobs.</li>
+    </ol>
+    <p>None of these changes overturn the thesis. They sharpen the division of labor: adopt mature agent harness/security machinery; build the empirical ledger, trusted scorer, evidence provenance, and compute controls that those systems intentionally do not provide.</p>
+  </section>
+
+  <section>
+    <h2>Conclusion</h2>
+    <p>The differentiator is real: the project is not another agent runner that treats a green-looking number as success. Its core decision — verification must be outside the producer’s reach — is exactly right. The remaining risk is implementation completeness at that same boundary. Concentrate the next milestone on a trusted control plane that produces the metric provenance and reserves cost before work starts. Once that is true, the gates and the carefully designed human process will have a reliable foundation to stand on.</p>
+  </section>
+</main>
+</body>
+</html>
