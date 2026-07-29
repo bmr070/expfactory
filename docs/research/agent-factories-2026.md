@@ -392,3 +392,236 @@ All of the above came from GitHub code search against the repositories, not from
 documentation or write-ups. The first pass read `SPEC.md` and the droid docs and
 concluded "nobody solves identity" — which was true of what those documents say,
 and false of what the code does. Search the repo, not the README.
+
+---
+
+## Addendum, 2026-07-28: landscape expansion and one correction
+
+Additional official-site and public-repository research covered OpenHands,
+SWE-agent, Tessl, Factory's public Action, GitHub Agentic Workflows, and current
+OpenAI Codex security guidance. The central conclusion stands: these systems
+automate software delivery; none is an authority for an empirical metric. Three
+reusable controls are now clearer.
+
+### Correction — `gh-aw` does enforce an inference budget
+
+The statement in §1 that no upstream orchestrator enforces a cost cap is now too
+broad. [GitHub Agentic Workflows cost management](https://github.github.com/gh-aw/reference/cost-management/)
+documents hard defaults of 1,000 AI Credits per run and 5,000 per workflow per
+day, configurable with `max-ai-credits` and `max-daily-ai-credits`. This is a
+real control at the agent-inference credential boundary, not reporting.
+
+It does **not** change W-12's GPU conclusion: AI Credits do not reserve, meter,
+or cap an hours-long compute job on the experiment substrate. The correct split
+is now explicit: delegate token caps to the runtime/provider that holds the
+model credential; keep GPU caps, reservation and breaker in `JobRegistry`.
+
+### Adoptable pattern — safe outputs as a separate credentialed job
+
+`gh-aw` compiles Markdown into a locked workflow and keeps the agent read-only by
+default. A later [safe-output](https://github.github.com/gh-aw/reference/safe-outputs/)
+job validates the agent's requested effects, sanitizes text, and applies only
+allowlisted operations with a separate credential. The agent returns an artifact;
+the privileged job decides what it may do.
+
+This is the closest off-the-shelf pattern to invariant 9. Adapt the *shape*, not
+the GitHub-Action runtime: an agent should request or identify a compute artifact;
+runner-owned code fetches trusted completion metadata, runs the scorer, and only
+then constructs evidence for the verifier. Safe output validation cannot itself
+verify an ML metric, so the scorer/provenance remain ours.
+
+### Context is an evaluated input, not a control
+
+[Tessl's context lifecycle](https://docs.tessl.io/introduction-to-tessl/context-lifecycle)
+and [evaluation documentation](https://docs.tessl.io/evaluate/evaluating-your-codebase)
+provide a useful complement to the ratchet. Version skills, documentation and
+rules; run representative scenarios with and without them; measure whether they
+improve agent behavior before rollout. That belongs beside `gate_probe` and the
+adversarial suite, never in place of them: a skill can influence an agent but
+cannot enforce a boundary it can ignore.
+
+### Other systems, in one line each
+
+- [OpenHands](https://docs.openhands.dev/openhands/usage/architecture/runtime)
+  is a credible sandbox/runtime source: Docker isolation helps resource control
+  and reproducibility, but does not make worker-produced numbers trusted.
+- [SWE-agent](https://github.com/SWE-agent/SWE-agent) usefully separates
+  trajectories from external evaluation and now recommends its smaller
+  mini-SWE-agent for most new work; it is a research harness, not a durable
+  governance plane.
+- [Factory's public action](https://github.com/Factory-AI/droid-action) is useful
+  as a narrow review-action shape, but Factory's public repository is documentation
+  rather than Droid's runtime, so it is not evidence for a reviewable TCB.
+- [Codex safety guidance](https://openai.com/index/running-codex-safely/) confirms
+  the default-deny, isolated-workspace direction already taken here. It concerns
+  safe execution, not empirical result validity.
+
+---
+
+## Addendum, 2026-07-28: HumanLayer, and where an approval stops being advice
+
+Read after the code review in
+[`docs/reference/code-review-insights-2026-07-28.html`](../reference/code-review-insights-2026-07-28.html),
+which asks the sharpest version of this survey's question: *which control is
+enforced outside the agent that benefits from bypassing it?*
+
+HumanLayer is the obvious place to test that, because approval-before-action is
+the entire product rather than a hardening feature bolted onto a coding agent.
+It is also the one system here whose name is a claim about the trust boundary.
+
+| Repo | ★ | What was read |
+|---|---|---|
+| [humanlayer/humanlayer](https://github.com/humanlayer/humanlayer) | 11.2k | `hld/mcp/server.go`, `hld/approval/manager.go`, `hld/rpc/handlers.go`, `hld/store/errors.go` |
+| [humanlayer/agentcontrolplane](https://github.com/humanlayer/agentcontrolplane) | 445 | `acp/internal/controller/toolcall/toolcall_controller.go`, `README.md` §"Incorporating Human Approval" |
+| [12-factor-agents](https://github.com/humanlayer/12-factor-agents) | 24.9k | Methodology, not a runtime. Not evidence for a boundary. |
+
+**First, a fact that changes how to read the star counts.** The 11.2k-star
+`humanlayer` SDK is gone. Its README now says the code is "pretty much all
+deprecated" and points at the hosted product. What lives in that repo today is
+CodeLayer: a daemon (`hld`), a CLI (`hlyr`), and a desktop UI. Citing
+"HumanLayer, 11k stars" as evidence for an approval library is citing a
+tombstone.
+
+### The finding: the same company shipped both shapes, and they are opposites
+
+**CodeLayer's approval is advisory.** `request_approval` is registered as an
+*MCP tool the agent calls* (`hld/mcp/server.go:60-61`). The daemon blocks on a
+channel, and when the human decides it returns a JSON body — `{"behavior":
+"allow", "updatedInput": ...}` or `{"behavior": "deny"}`. The daemon never
+executes the tool and never holds a credential for it. Enforcement is Claude
+Code honouring that string. An agent that declines to call `request_approval`,
+or that ignores a `deny`, is not stopped by anything in this repository.
+
+**ACP's approval is a boundary.** `toolcall_controller.go` is an explicit state
+machine whose phases are separate reconciler methods: `handleCheckApproval` →
+`handleWaitForApproval` → `handleExecute` (lines 138, 146, 154), with
+`ToolCallPhaseAwaitingHumanApproval` as a durable phase on the CRD. The
+*controller* executes the tool after the transition. The agent proposes; the
+operator disposes. `kubectl get toolcall` showing `AwaitingHumanApproval` is the
+boundary being visible from outside the agent's process.
+
+This is invariant 9 for the seventh time, and the first time both sides of it
+appear inside one organisation. It is not a criticism of CodeLayer: its threat
+model is an overeager assistant at a developer's keyboard, not an adversary, and
+against that threat an advisory prompt is the right cost. It is the wrong shape
+here for the same reason Symphony's is, and the reason is worth stating in the
+form the code review used — **an approval that the approved party enforces is a
+verdict returned by the producer.**
+
+### `DangerouslySkipPermissions`, and giving credit where it is due
+
+`hld/rpc/handlers.go:556-585` auto-approves *every pending approval* the moment
+bypass mode is enabled, and `hld/approval/manager.go:304` lets bypass mode
+override the per-tool path entirely. Three things about this are right and worth
+copying rather than sneering at:
+
+1. **The name carries the warning.** `DangerouslySkipPermissions`, not
+   `autoApprove`. Compare `--dangerously-skip-permissions`.
+2. **It expires.** `DangerouslySkipPermissionsExpiresAt` is checked at
+   `manager.go:306` and self-disables. A bypass with no clock is a bypass
+   forever.
+3. **It is loud.** Every auto-approval emits a `slog.Info` naming the approval
+   id and session.
+
+One caveat found by reading rather than by the docs: the expiry is evaluated
+**lazily, only when the next approval is created**. There is no sweeper. A
+session that goes quiet stays nominally in bypass until something asks. That is
+harmless there and would not be harmless in a ledger.
+
+Also worth taking: `store/errors.go` defines `ErrAlreadyDecided` so an approval
+is single-decision by construction, and `MCP_AUTO_DENY_ALL` gives the test lane a
+fail-closed switch. Both are cheap. `ErrAlreadyDecided` is the shape
+`holdout.py` already wants for a spent budget.
+
+### Consequence for M2-03 / BRE-16 — the first real durable-queue answer
+
+Symphony §14.3 says scheduler state is deliberately in-memory and a restart
+orphans a long job. ACP answers exactly that, and its README names the mechanism:
+"async/await at the infrastructure layer, checkpointing a conversation chain
+whenever a tool call or agent delegation occurs." State is CRDs in etcd, so it
+survives operator restart by construction.
+
+**Correction, made the same day this section was written.** The first draft
+dismissed ACP as "Kubernetes and etcd to schedule one RTX 4070." That reasons
+from the wrong denominator and the error is worth recording, because it is the
+same conflation the rest of this file makes in places.
+
+**The GPU is not the factory.** It is one slice: the workloads that arrive
+needing model training. Most software work that lands here needs no GPU at all,
+and for the work that does, compute is deliberately pluggable — edge, local GPU,
+or infra compute (TBA). C-01 said this already ("local GPU now, edge or external
+later"); the 4070 is today's cheapest instance of one slice, not the thing being
+designed around.
+
+This is not a new position, which is the embarrassing part.
+[`factory-chart.html`](../reference/factory-chart.html) already calls it "the
+split that shapes everything" and warns in the same breath that "conflating them
+is the failure mode that sinks this": a **deterministic** lane (web, iOS, infra,
+sim harness — ticket → PR, CI is ground truth, "gh-aw + CI already solves this
+well") and an **empirical** lane (ML research, hill-climbing, sensor fusion —
+experiment → adjudicated result, "nothing off-the-shelf"). The GPU belongs to
+the second lane only. Reasoning about factory-wide infrastructure from the size
+of one card is the conflation the chart names, committed in the file that
+surveys everyone else for committing it.
+
+Two consequences, and they point the opposite way from the draft:
+
+1. **Durable execution is a factory-wide requirement, not an ML one.** A long
+   test matrix, a migration, a crawl, a build, and a six-hour training run all
+   fail the same way when the orchestrator restarts. Sizing the durable queue to
+   the GPU slice understates it. This *raises* BRE-16 rather than parking it.
+2. **The reservation protocol must be substrate-agnostic.** `ComputeSubstrate`
+   is already a `Protocol`; the durable intent → idempotency key → handle
+   binding from the code review's finding 3 belongs in `JobRegistry` on the
+   registry side of that seam, identical across edge, local and infra. Likewise
+   finding 2's pricing function is keyed by *substrate rate card*, not by GPU
+   SKU — the three targets have three different cost shapes and one of them is
+   not yet chosen.
+
+So: adopt the **shape** — a phase made durable *before* the side effect, with
+the executor reading it back, which is exactly what `handleCheckApproval` →
+`handleWaitForApproval` → `handleExecute` encodes and exactly what finding 3
+asks for. Whether the deployment is Kubernetes is a separate question that
+scales with where compute actually lands, and it is **deferred until infra
+compute is chosen, not declined**. M2-02's "adopt no orchestrator codebase"
+still stands and is not what this touches.
+
+BRE-16 can no longer say a durable queue does not exist upstream. It does.
+
+### Consequence for BRE-18 — checked against the live API, not the docs
+
+The Linear token was set this session and the identity question answered by
+querying rather than reasoning:
+
+```
+viewer { name: "Brett R", email: bmr070@gmail.com, isMe: true }
+organization { name: "brett", urlKey: "biosun" }
+teams { BRE }
+```
+
+A `lin_api_` personal key **is the issuing human**. It cannot satisfy invariant 7,
+because `label_actor` would see `actor: Brett R, botActor: null` for a label the
+runner applied to itself. Confirmed against real history: every `IssueHistory`
+node on BRE-18 and BRE-21 today reads exactly that way. The `actor`/`botActor`
+split `linear_tracker.py` relies on is real and present in the schema, but it has
+never been exercised against an actual bot actor here, because nothing but a
+human has ever written to this workspace.
+
+So BRE-18's "the Linear one is free" still holds and the ticket is still an
+account action. What is new is that the free thing is **not** a personal API key.
+It is an OAuth application with `actor=app`, which is what populates `botActor`.
+A personal key is the trap, and it is the one sitting in `.env` right now.
+
+**Unrelated but confirmed by the same query:** `issues(first:3)` returned
+`pageInfo.hasNextPage: true` on a workspace with one team and a handful of
+tickets. The code review's finding 5 — that first-page-only reads are not a
+durable work queue — is not a future concern. It is already true here.
+
+### Method note, again
+
+The deprecation notice, the advisory-vs-enforced split, and the lazy expiry are
+all invisible from the READMEs and the product pages; two of them contradict what
+the marketing implies. The previous addendum's rule held for a third time:
+**search the repo, not the README.** The corollary this pass adds: when a system's
+name asserts a boundary, go find the line that executes the action, and see who
+owns the process it runs in.
