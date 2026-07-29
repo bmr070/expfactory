@@ -3,8 +3,9 @@ id: M2-03
 parent: wayfinder:map2
 labels: [wayfinder:grilling]
 mode: HITL
-status: RESOLVED — awaiting ratification
+status: RATIFIED — shape ratified, provider unnamed, one box unmet (BRE-30)
 resolved: 2026-07-25
+ratified: 2026-07-29
 supersedes-blocking-edge: M2-01
 ---
 
@@ -162,3 +163,98 @@ workload lane needing cross-job scheduling.
 - The `running-unattended` state needs adding to the tracker workflow (N-06).
 - **This is a HITL ticket.** The reasoning is recorded so the call can be
   ratified or overturned deliberately, not inherited by default.
+
+---
+
+# Ratification, 2026-07-29 (BRE-16)
+
+**Ratified — the shape, not the noun.** Three things have changed since this was
+written, and one of them means the decision is ratified while the *implementation*
+is recorded as not yet meeting it.
+
+## 1. Modal is superseded. The protocol absorbed it, which is the evidence.
+
+The verdict above says "Modal `spawn` → handle → poll" and "Modal as the first
+implementation." C-01 replaced that with the local GPU before any Modal adapter
+was written, and `local_substrate.LocalGpuSubstrate` is the first real
+`ComputeSubstrate` instead.
+
+**Nothing above the seam changed.** That is not a lucky escape, it is the
+"Reversibility" section being right on its first real test: the lock-in was to a
+provider the protocol isolates, and swapping the provider cost nothing. Ratify
+`submit` / `poll` / `fetch_artifact` and the thin registry. Do not ratify Modal —
+it is now one candidate among edge, local GPU and infra compute (TBA), and no
+part of the design names it.
+
+## 2. A durable queue does exist upstream. It is declined on cost, not absence.
+
+This decision assumed nothing off-the-shelf owned durable long-job state.
+Symphony §14.3 confirmed that for Symphony. It is no longer true of the field:
+HumanLayer's Agent Control Plane checkpoints to etcd and makes
+`handleCheckApproval` → `handleWaitForApproval` → `handleExecute` separate
+reconciler phases, with the awaiting state durable **before** the executor acts.
+
+That is exactly the protocol this decision describes, already built.
+
+It is still declined, and the reason has to change from *"it does not exist"* to
+*"it is Kubernetes and etcd, and we have one machine."* An honest decline names
+the price. See `docs/research/agent-factories-2026.md`.
+
+**What to take from it:** the phase made durable before the side effect. That is
+the same reservation protocol BRE-30 asks for, arrived at from two directions.
+
+## 3. The GPU is one slice of one lane, so the registry must stay hardware-neutral
+
+Written when the empirical lane and the GPU were treated as the same thing. They
+are not: most work entering the factory needs no GPU, and compute is pluggable
+across edge, local GPU and infra.
+
+`ComputeSubstrate` was already neutral — no signature names hardware — and
+BRE-29 extended it with `rate_card()` so the substrate prices its own work. The
+registry holds caps and reserves; it never learns what silicon it is buying.
+Anything that would put a device class into the registry contradicts this
+ratification.
+
+## What is ratified, precisely
+
+- No general-purpose orchestrator. **Unchanged and reinforced** — M2-02 reached
+  the same conclusion independently, and nothing since has produced a candidate.
+- Adopt the substrate's own job primitive behind `ComputeSubstrate`. **Ratified**,
+  with the provider unnamed.
+- A thin `JobRegistry` owning caps, breaker, sweep and failure semantics.
+  **Ratified in design.** See the box below.
+- Metaflow declined on the second-authoritative-store ground. **Ratified**, and
+  it has aged well: the argument was ambiguity about which record is the truth,
+  and that is the same argument BRE-31 makes about a candidate-authored
+  attestation.
+
+## The unmet box, stated rather than inherited
+
+This decision's own list of what must be owned includes:
+
+> 5. Durable restart state
+> 10. **If the queue loses a job, someone must notice**
+
+**Neither holds today, and ratifying without saying so would be exactly the green
+summary this repo refuses.**
+
+`JobRegistry.submit()` calls the substrate first and appends its `submitted`
+event afterwards. A process failure in that gap leaves a live, billable job with
+**no registry record**. `reconcile()` cannot find it, because it polls records
+already in the log — so the one case box 10 exists to catch is the one case it
+cannot see. There is also no multi-writer guard, so two runner processes can
+both admit work against the same daily budget.
+
+Filed as **BRE-30**. Until it lands, "durable" describes the design and not the
+code, and the registry should be treated as a bookkeeper that is correct only if
+nothing crashes at the wrong instant.
+
+## Revisit trigger, updated
+
+The original trigger stands: more than ~10 concurrent experiments, or a second
+workload lane needing cross-job scheduling.
+
+Add one: **if compute moves off this machine to infra (TBA), re-read ACP before
+building a scheduler.** The reason to decline it is the deployment cost of
+Kubernetes on a single desktop, and that reason expires the moment there is a
+cluster.
