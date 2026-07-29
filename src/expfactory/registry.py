@@ -34,21 +34,40 @@ Cost caps are checked *before* submission, and an unreadable log refuses
 submission rather than assuming zero spend. A breaker, once tripped, stays
 tripped until a human resets it. W-12 puts cost and security on day one because
 the precedents were each retrofitted after a shock.
+
+## Who names the price (BRE-29)
+
+`submit` used to take a `cost_estimate_usd` argument. Two defects came out of
+that one signature and they are the same defect:
+
+- Every check was `estimate > cap`, so `NaN` passed both caps (it compares false
+  against everything) and a negative estimate passed both *and* subtracted from
+  the trailing-day total, manufacturing budget that was never spent.
+- More basically, the number was chosen by whoever was submitting. W-12 already
+  recorded the general form: a self-reported cost cap is not a cap.
+
+So costs are no longer an input. The substrate quotes them from its own
+`RateCard`, over the job's deadline — the only window this registry enforces —
+and every number that reaches the caps is validated finite and non-negative
+first. Refuse, never coerce: a cost that cannot be read means spend is
+**unknown**, and clamping it to zero is exactly the reading that must not happen.
 """
 
 from __future__ import annotations
 
 import enum
 import json
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypeGuard, runtime_checkable
 
 Clock = Callable[[], float]
 
 SECONDS_PER_DAY = 86_400.0
+SECONDS_PER_HOUR = 3_600.0
 
 
 class JobState(enum.StrEnum):
@@ -68,6 +87,73 @@ class BreakerTripped(RegistryRefused):
 
 class CostCapExceeded(RegistryRefused):
     """A per-job or per-day GPU cap would be breached by this submission."""
+
+
+class InvalidJobInput(RegistryRefused):
+    """A cost, cap or deadline that is not a usable number (BRE-29).
+
+    A `RegistryRefused` rather than a `ValueError` because the outcome is the
+    same one every other refusal here has: nothing was submitted, nothing was
+    recorded, and the caller has to deal with it rather than read a falsy return
+    and carry on.
+
+    Refused, never coerced. Clamping `NaN` to zero, or `-100.0` to `0.0`, turns
+    "this number is unreadable" into "this job is free", which is the single
+    reading the caps must never make.
+    """
+
+
+# --------------------------------------------------------------------------- #
+# Input validation. Every number that reaches a cap comparison goes through here
+# first, because the comparison itself cannot defend the caps: `NaN > cap` is
+# False and so is `NaN < cap`, so a non-finite estimate satisfies any test
+# written either way round.
+# --------------------------------------------------------------------------- #
+
+
+def _finite(value: object) -> TypeGuard[float]:
+    """A real, finite number — not a bool, not a string, not inf, not NaN.
+
+    `bool` is excluded explicitly because it is a subclass of `int`, so `True`
+    would otherwise price a job at one dollar and pass every check silently.
+    """
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def _checked_usd(value: object, what: str) -> float:
+    """`value` read as dollars, or refused. Finite and non-negative."""
+    if not _finite(value):
+        raise InvalidJobInput(
+            f"{what} is {value!r}, which is not a finite dollar amount. A cost "
+            "that cannot be compared against a cap means spend is UNKNOWN, not "
+            "zero: NaN passes every `>` test and inf fails every one."
+        )
+    amount = float(value)
+    if amount < 0.0:
+        raise InvalidJobInput(
+            f"{what} is ${amount:.2f}. Negative dollars subtract from the "
+            "trailing-day total and manufacture budget that was never spent, so "
+            "the next job over the cap is admitted by arithmetic."
+        )
+    return amount
+
+
+def _checked_seconds(value: object, what: str) -> float:
+    """`value` read as a duration, or refused. Finite and strictly positive."""
+    if not _finite(value):
+        raise InvalidJobInput(
+            f"{what} is {value!r}, which is not a finite number of seconds. A "
+            "deadline that cannot be compared is a job nothing can call lost."
+        )
+    seconds = float(value)
+    if seconds <= 0.0:
+        raise InvalidJobInput(
+            f"{what} is {seconds}s. A deadline at or before the moment of "
+            "submission is already expired — the next sweep calls the job lost "
+            "and opens the breaker — and it prices the run's billable window at "
+            "nothing, which is the zero-cost failure C-01 exists to prevent."
+        )
+    return seconds
 
 
 @dataclass(frozen=True)
@@ -147,16 +233,52 @@ class FinishedJob:
 
 
 @runtime_checkable
+class RateCard(Protocol):
+    """What a substrate charges for its own compute (BRE-29).
+
+    The price is quoted by the side that owns the hardware and holds the
+    credential, never by the side asking for the work. That is the whole change:
+    a number the submitter picks is a *request*, and W-12 recorded the general
+    form — a self-reported cost cap is not a cap.
+
+    **Deliberately not keyed on hardware.** No GPU, no SKU, no device class
+    appears in this signature. `ComputeSubstrate.submit`/`poll`/`fetch_artifact`
+    mention no hardware anywhere, and this must not become the method that
+    introduces it: the GPU under the desk is one lane of this factory, and edge
+    devices and rented infra are the same seam at a different rate. What a
+    substrate prices *on* is that substrate's own business, which is why it gets
+    the whole `JobSpec` and the registry never reads a field of it.
+
+    `billable_seconds` is the job's **deadline**, not a duration the caller
+    estimates. The deadline is the only bound this factory actually enforces —
+    `sweep` calls a job lost past it — so pricing that window prices the worst
+    case the registry has committed to. A caller who wants a cheaper job has to
+    accept a shorter deadline, which is a constraint rather than a claim.
+
+    Contract: finite, non-negative, and non-decreasing in `billable_seconds`. A
+    card that got cheaper the longer a job ran would break the argument above,
+    and `tests/test_substrate_conformance.py` checks it for every substrate.
+    """
+
+    def price_usd(self, spec: JobSpec, billable_seconds: float) -> float: ...
+
+
+@runtime_checkable
 class ComputeSubstrate(Protocol):
     """The GPU side of the two-substrate split (W-06).
 
     The registry holds the credential for this; the agent never does. The agent
     asks the registry to submit, and receives an artifact reference back later.
+
+    `rate_card` lives here rather than as a second `JobRegistry` argument so a
+    registry cannot be wired to one substrate and priced by another's rates. The
+    thing that runs the job is the thing that knows what running it costs.
     """
 
     def submit(self, spec: JobSpec) -> str: ...
     def poll(self, handle: str) -> JobState: ...
     def fetch_artifact(self, handle: str) -> str: ...
+    def rate_card(self) -> RateCard: ...
 
 
 class JobRegistry:
@@ -172,13 +294,19 @@ class JobRegistry:
         default_deadline_s: float = 6 * 3600.0,
         clock: Clock = time.time,
     ) -> None:
+        # Validated before the log file is even created. A registry whose caps
+        # cannot bind must not come into existence, let alone leave a file
+        # behind that looks like a working ledger: a NaN cap passes every `>`
+        # comparison below and a negative one refuses every job, and neither is
+        # something a caller should be able to configure by accident.
+        self._per_job_cap = _checked_usd(per_job_cap_usd, "per_job_cap_usd")
+        self._per_day_cap = _checked_usd(per_day_cap_usd, "per_day_cap_usd")
+        self._default_deadline_s = _checked_seconds(default_deadline_s, "default_deadline_s")
+
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
         self._substrate = substrate
-        self._per_job_cap = per_job_cap_usd
-        self._per_day_cap = per_day_cap_usd
-        self._default_deadline_s = default_deadline_s
         self._clock = clock
         self._damaged = 0
 
@@ -230,7 +358,13 @@ class JobRegistry:
         return self._damaged
 
     def records(self) -> dict[str, JobRecord]:
-        """Current state, derived by replaying the log in order."""
+        """Current state, derived by replaying the log in order.
+
+        Deliberately a faithful read, not a validating one: whatever the log
+        says is what this returns, so `sweep` can still notice a lost job whose
+        row is otherwise unusable. Refusing on a bad *number* belongs in
+        `spend_today_usd`, which is the only thing that does arithmetic on one.
+        """
         out: dict[str, JobRecord] = {}
         for e in self._events():
             kind = e["event"]
@@ -308,16 +442,44 @@ class JobRegistry:
         Counts *every* submission, resolved or lost. A job that vanished still
         burned compute, and excluding it would let repeated losses spend without
         limit — the one direction this must not be wrong in.
+
+        Fail closed on a poisoned row (BRE-29). The log is append-only but it is
+        still a file on disk, and one bad number wrecks this total in exactly the
+        wrong direction: `-100.0` subtracts real budget and admits the next job
+        over the cap, `NaN` makes the sum NaN and every downstream `>` False. The
+        old `sum(...)` did both silently. `submit` can no longer write either
+        value, so anything unusable here arrived by editing the log — and the
+        honest answer to "what did we spend today" is then *unknown*, which is
+        the same stance an unreadable log already takes.
         """
         cutoff = self._clock() - SECONDS_PER_DAY
-        return sum(r.cost_estimate_usd for r in self.records().values() if r.submitted_at >= cutoff)
+        total = 0.0
+        for record in self.records().values():
+            if not _finite(record.submitted_at):
+                raise BreakerTripped(
+                    f"job {record.handle} in {self.path} has submitted_at="
+                    f"{record.submitted_at!r}, so it can be placed neither inside nor "
+                    "outside the trailing day; today's spend is unknown. Repair or "
+                    "archive the log before submitting."
+                )
+            if record.submitted_at < cutoff:
+                continue
+            try:
+                total += _checked_usd(
+                    record.cost_estimate_usd, f"job {record.handle}'s recorded cost in {self.path}"
+                )
+            except InvalidJobInput as exc:
+                raise BreakerTripped(
+                    f"{exc} Today's spend is therefore unknown. Repair or archive "
+                    "the log before submitting."
+                ) from exc
+        return total
 
     # -- the operations the runner calls ------------------------------------
 
     def submit(
         self,
         spec: JobSpec,
-        cost_estimate_usd: float,
         deadline_s: float | None = None,
     ) -> JobRecord:
         """Submit a job and record it. Checks run before the substrate is touched.
@@ -326,7 +488,27 @@ class JobRegistry:
         job that was started must have been recorded. Recording happens
         immediately after submission, so the widest possible gap is one process
         death between the two — which `reconcile` is there to catch.
+
+        **The caller does not name the price (BRE-29).** There used to be a
+        `cost_estimate_usd` argument here, which made every cap a number the
+        submitting side chose. The substrate quotes it instead, from its own
+        `RateCard`, over the job's deadline — the window `sweep` enforces and
+        therefore the most this run can cost before something notices. The quote
+        is validated before it is compared to anything, because `NaN > cap` is
+        False and a negative quote lowers `spend_today_usd`.
+
+        `deadline_s` is consequently load-bearing in two ways at once: it bounds
+        the run and it prices it. A shorter deadline buys a cheaper job, which is
+        the correct trade to expose.
         """
+        # Checked first: it is a pure argument check, and its refusal names the
+        # actual problem rather than surfacing as a strange price downstream.
+        billable_s = (
+            self._default_deadline_s  # already validated in __init__
+            if deadline_s is None
+            else _checked_seconds(deadline_s, "deadline_s")
+        )
+
         reason = self.breaker_reason()
         if reason is not None:
             raise BreakerTripped(f"breaker open: {reason} — reset required before submitting")
@@ -338,6 +520,14 @@ class JobRegistry:
                 "have been a submission, so today's spend is unknown. Repair or "
                 "archive the log before submitting."
             )
+
+        # The substrate is trusted with the credential, not with arithmetic: a
+        # rate card that returns NaN or a negative number is a bug that would
+        # otherwise disable the caps, so its answer is checked like any other.
+        cost_estimate_usd = _checked_usd(
+            self._substrate.rate_card().price_usd(spec, billable_s),
+            f"the substrate's quote for {spec.ticket} over {billable_s:.0f}s",
+        )
 
         if cost_estimate_usd > self._per_job_cap:
             raise CostCapExceeded(
@@ -356,7 +546,9 @@ class JobRegistry:
             handle=handle,
             ticket=spec.ticket,
             submitted_at=now,
-            deadline_at=now + (deadline_s if deadline_s is not None else self._default_deadline_s),
+            # The window that was priced is the window that is enforced. If these
+            # two ever diverge, the quote stops being an upper bound.
+            deadline_at=now + billable_s,
             cost_estimate_usd=cost_estimate_usd,
             state=JobState.SUBMITTED,
         )
