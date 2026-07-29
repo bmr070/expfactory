@@ -17,6 +17,8 @@ still need infrastructure that does not exist yet.
 | N-04 | G-08 preregistration-churn gate + fixtures | N-03 | — | **DONE** |
 | N-05 | Resolve M2-03 — the experiment queue | — | grilling session | **DONE** |
 | N-08 | JobRegistry + ComputeSubstrate protocol | M2-03 | — | **DONE** |
+| BRE-29 | Cost inputs validated; pricing moves behind a `RateCard` | N-08 | — | **DONE** |
+| BRE-30 | Reservation-before-submit, idempotency, crash-window recovery | BRE-29 | durability design | open |
 | 07 | Runner: poll, claim, dispatch, reconcile | N-08 | see below | **PARTIAL** (1 box: secret store wiring) |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
@@ -61,6 +63,30 @@ Three things that had to be right:
   session has ended, so nothing else marks them busy.
 - **Detaching with no collector is refused, not parked.** A state nothing can
   leave looks like work in flight, which is worse than never starting.
+
+**BRE-29 is done, and it is deliberately narrow.** `JobRegistry.submit` tested
+only `estimate > cap`, so `NaN` and `-100.0` both passed the per-job and per-day
+checks (an external review reproduced both), and the negative one also lowered
+`spend_today_usd` and manufactured budget for the next job. Two changes:
+
+- Every number that reaches a cap — the caps at construction, the deadline, the
+  quote, and any cost replayed out of the log — is refused unless it is finite
+  and non-negative. Raised, never clamped.
+- `submit` no longer takes a cost. `ComputeSubstrate.rate_card()` supplies a
+  `RateCard` and the registry asks it for the price over the job's **deadline**,
+  the one window `sweep` enforces. `CostModel` is the single concrete card; there
+  is deliberately no second one and no generic pricing framework (invariant 4).
+  The card is keyed on a billable window in seconds and **not on a GPU SKU** —
+  `submit`/`poll`/`fetch_artifact` name no hardware and neither does this.
+
+**BRE-30 is not started** — reservation-before-submit, idempotency keys and
+crash-window recovery, which need a durability design of their own. BRE-29 makes
+it slightly easier and changes nothing about its shape: the amount to reserve is
+now computed by the registry from the substrate's own quote before the substrate
+is touched, so a reservation has a number to write and it is not one the caller
+supplied. The gap BRE-30 has to close is unchanged: `submit` appends *after* the
+substrate returns a handle, so a process death in between leaves a started job
+with no row. `reconcile` still catches that after the fact.
 
 **N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
 constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`

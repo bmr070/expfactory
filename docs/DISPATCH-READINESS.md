@@ -124,6 +124,13 @@ agent asks it to submit and receives an artifact reference back.
 fail-closed. Set both to real numbers before anything dispatches. W-12 puts these
 on day one because the precedents were each retrofitted after a shock.
 
+Both are validated at construction: a non-finite or negative cap is refused
+before the log file is created, because a NaN cap passes every comparison in
+`submit` while a registry built with one still reads as configured (BRE-29).
+Nothing sets a job's *price* — the substrate quotes it from `rate_card()` over
+the deadline, so what you configure here is the ceiling, not the number it is
+checked against.
+
 ## 7. Adapters that do not exist yet
 
 Three protocols ship with fakes and no production implementation. Each needs
