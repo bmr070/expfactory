@@ -1,9 +1,9 @@
 # NEXT — build slices for the clean repo
 
 Dependency-ordered. Sliced from `docs/SPEC.md` after Map II closed M2-04 and
-M2-07. **Only closed decisions are sliced here** — M2-03 (experiment queue) is
-still open and deliberately has no build ticket, because slicing fog produces
-sliced fog.
+M2-07. **Only closed decisions are sliced here**, because slicing fog produces
+sliced fog. M2-03 was open when this file was written and is now closed by N-05;
+the header said otherwise for a while and that contradiction is fixed here.
 
 Tickets `01`–`11` in this directory are the prior session's slices. `02`, `03`
 (2 of 3), `04`, `05` are complete and now live in `src/expfactory/`. `06`–`11`
@@ -22,6 +22,32 @@ still need infrastructure that does not exist yet.
 | 07 | Runner: poll, claim, dispatch, reconcile | N-08 | see below | **PARTIAL** (1 box: secret store wiring) |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
+
+## Blocking defects from the 2026-07-28 review
+
+Filed in Linear, not sliced here, because each is a defect in shipped code rather
+than a slice of unbuilt spec. Full statement of each in
+[`../DISPATCH-READINESS.md`](../DISPATCH-READINESS.md).
+
+| ID | Defect | Priority |
+|---|---|---|
+| BRE-28 | Non-finite metrics promote — validate values at the `Candidate` door | **P0** |
+| BRE-29 | `JobRegistry` accepts negative and `NaN` cost estimates | **P0** |
+| BRE-30 | Submit-then-record crash window; no multi-writer guard | P1 |
+| BRE-31 | G-10 proves a handle exists, not the artifact or ticket | P1 |
+| BRE-32 | Detach unreachable through both real trackers; first-page-only reads | P2 |
+| BRE-33 | Compute seam says "GPU" where it means "substrate" | low, **deferred on purpose** |
+
+**BRE-28 is the one worth reading twice**, because it is a lesson about this
+file's own optimism. `architecture-review-verifier.html` proposed making
+`RunResult` the currency of the `Candidate` seam so that input is "validated at
+the door", and that refactor shipped. It validated **shape** and never validated
+**values**, so `float("inf")` walks straight through a door everyone had recorded
+as closed. The door was built; the lock was never fitted, and the summary said
+"done" either way.
+
+That is the same failure this repo exists to prevent, committed against itself:
+a control recorded as present because the work adjacent to it landed.
 
 **Ticket 07 is PARTIAL, not core-done.** Two of its four acceptance boxes were
 unmet and were being hidden by the summary. One is now closed and one is half:

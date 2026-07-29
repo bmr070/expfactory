@@ -41,6 +41,10 @@ class Kind(enum.StrEnum):
     SEED_NOISE = "seed_noise"
     LEAKAGE = "leakage"
     HOLDOUT_BURN = "holdout_burn"
+    # One seed reported twice with two different numbers. `gate_reproducible` is
+    # the only gate that reads the seed *identity* rather than the distribution,
+    # and until BRE-28 it was the one gate in the core set with no fixture.
+    NONDETERMINISM = "nondeterminism"
     # G-07 / G-08 preregistration
     PREREG_CLEAN = "prereg_clean"
     NO_PREREG = "no_prereg"
@@ -122,6 +126,30 @@ def _runs(
             )
         )
     return out
+
+
+def _repeated_seed_runs() -> list[RunResult]:
+    """Seed 0 run twice, disagreeing. Every other gate in the core set passes.
+
+    Deliberately *not* one seed detached from a tight cluster: the metrics are
+    chosen so the top gap (0.07) stays inside the spread of the rest (0.13), so
+    `gate_no_single_seed_dominance` passes and the rejection traces to
+    `gate_reproducible` alone. A fixture two gates both catch proves nothing
+    about either -- the same trap `_grouped_runs` avoids by pinning
+    `overlap_count=0`.
+    """
+    metrics = [(0, 0.80), (0, 0.83), (1, 0.90), (2, 0.70)]
+    return [
+        RunResult(
+            seed=seed,
+            val_metric=metric,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+        )
+        for seed, metric in metrics
+    ]
 
 
 class Suite:
@@ -213,6 +241,16 @@ def build_suite() -> Suite:
             Kind.SEED_NOISE,
             Expect.REJECT,
             cand("one lucky seed", _runs(0.50, jitter=0.45)),
+        ),
+        # nondeterminism: the same seed reported twice with two answers. Legal to
+        # construct on purpose -- duplicate seeds are how `gate_reproducible`
+        # detects unseeded augmentation and nondeterministic data ordering, so
+        # refusing them at the boundary would delete the gate's only input.
+        Fixture(
+            "v-repeat-1",
+            Kind.NONDETERMINISM,
+            Expect.REJECT,
+            cand("same seed, two answers", _repeated_seed_runs()),
         ),
     ]
 

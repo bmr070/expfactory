@@ -21,7 +21,7 @@ import subprocess
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
-from math import isnan
+from math import isfinite, isnan
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -63,25 +63,115 @@ def new_exp_id() -> str:
 # --------------------------------------------------------------------------- #
 
 
+# Value predicates for a run record (BRE-28).
+#
+# `_coerce_run` validated the *shape* of a record and never its *values*, and
+# shape alone is not sufficient. Three runs reporting `val_metric=inf` are a
+# perfectly-formed `RunResult` that the whole gate set then PROMOTES: every
+# comparison against NaN is false, and the dominance arithmetic (`best - second`
+# on two infinities) *produces* NaN, so no gate fires. Promotion happens by the
+# absence of a rejection rather than by a decision, and `mean_metric=inf` is
+# written to an append-only ledger as a recorded result.
+#
+# Refuse, do not sanitize. Clamping inf to a large finite number, or NaN to 0.0,
+# invents a measurement nobody took and hands it to the ledger wearing the
+# substrate's authority — and every distinct broken run collides on the same
+# substituted value, so the record can no longer tell them apart.
+#
+# Raise, do not return a bool: a predicate whose result a future caller can
+# forget to read is not a check, and this one guards the input to every gate.
+
+
+def _finite(value: object, what: str) -> float:
+    """A real, finite number, or a refusal naming the field.
+
+    `bool` is excluded even though it is an `int` subclass: `True` satisfies
+    every numeric test below and would be averaged into the ledger as 1.0.
+    `_mean_metrics` already draws the same line, for the same reason.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{what}: expected a real number, got {type(value).__name__}")
+    number = float(value)
+    if not isfinite(number):
+        raise ValueError(f"{what}: expected a finite value, got {value!r}")
+    return number
+
+
+def _finite_non_negative(value: object, what: str) -> float:
+    """Finite, and not below zero.
+
+    Finiteness is checked first because the ordering comparison cannot do it:
+    `float("nan") < 0` is False, so a magnitude check on its own reads NaN as a
+    valid duration and lets it straight through.
+    """
+    number = _finite(value, what)
+    if number < 0:
+        raise ValueError(f"{what}: expected a non-negative value, got {value!r}")
+    return number
+
+
+def _count(value: object, what: str) -> int:
+    """A non-negative integer.
+
+    `2.5` is refused rather than rounded. A fractional overlap count means the
+    producer counted something other than shared sample ids, and truncating it
+    would hide that behind a number `gate_no_leakage` is willing to sum.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{what}: expected an integer count, got {type(value).__name__}")
+    if value < 0:
+        raise ValueError(f"{what}: expected a non-negative count, got {value!r}")
+    return value
+
+
+def _validate_run(run: RunResult, index: int) -> None:
+    """Refuse a run whose numbers no gate can adjudicate.
+
+    Checked at this one construction site rather than inside each gate: there
+    are nine gates and one boundary, so a per-gate guard would have to be
+    remembered nine times and once more for every gate added. That asymmetry is
+    how this module came to validate shape everywhere and values nowhere.
+
+    `extra` is filtered, not refused wholesale — it also carries group ids and
+    other non-numeric provenance. Every *numeric* entry is a metric that
+    `_mean_metrics` averages into the verdict and that a preregistered guardrail
+    may be measured against, so an infinity there is the same defect one field
+    over.
+    """
+    _finite(run.val_metric, f"Candidate.runs[{index}].val_metric")
+    _finite_non_negative(run.wall_seconds, f"Candidate.runs[{index}].wall_seconds")
+    _count(run.overlap_count, f"Candidate.runs[{index}].overlap_count")
+    for key, value in run.extra.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        _finite(value, f"Candidate.runs[{index}].extra[{key!r}]")
+
+
 def _coerce_run(value: RunResult | Mapping[str, Any], index: int) -> RunResult:
-    """Normalise one run record, naming the offending index if it is malformed.
+    """Normalise and validate one run record, naming the offending index.
 
     Callers at the edge (a train_fn, a JSON artifact from a subprocess) naturally
     produce mappings. They are accepted and converted exactly once, here, so that
     everything downstream of construction sees a typed RunResult. A bad record
     fails at this boundary with its index in the message, rather than as an
     AttributeError deep inside gate evaluation.
+
+    A `RunResult` handed over already typed is validated too, not waved through:
+    the shape was never the part that could be wrong.
     """
     if isinstance(value, RunResult):
-        return value
-    if not isinstance(value, Mapping):
+        run = value
+    elif not isinstance(value, Mapping):
         raise TypeError(
             f"Candidate.runs[{index}]: expected RunResult or mapping, got {type(value).__name__}"
         )
-    try:
-        return RunResult(**value)
-    except TypeError as exc:
-        raise TypeError(f"Candidate.runs[{index}]: {exc}") from exc
+    else:
+        try:
+            run = RunResult(**value)
+        except TypeError as exc:
+            raise TypeError(f"Candidate.runs[{index}]: {exc}") from exc
+    _validate_run(run, index)
+    return run
 
 
 @dataclass(frozen=True)
@@ -105,6 +195,12 @@ class Candidate:
     def __post_init__(self) -> None:
         # frozen dataclass: normalise through object.__setattr__, exactly once
         object.__setattr__(self, "runs", tuple(_coerce_run(r, i) for i, r in enumerate(self.runs)))
+        # Cost is checked here and not left to `gate_cost`. That gate asks
+        # `cost_usd <= max_usd`, which is True for -inf and for any negative
+        # number, so a candidate could book negative spend and offset real spend
+        # in any total computed off the ledger — while the gate reports a clean
+        # check. Fail closed on money: an unmeasurable cost is not a cheap one.
+        _finite_non_negative(self.cost_usd, "Candidate.cost_usd")
 
     def experiment(self, exp_id: str) -> Experiment:
         """Project this candidate into the harness's Experiment record."""
