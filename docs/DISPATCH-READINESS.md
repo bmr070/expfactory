@@ -28,11 +28,13 @@ design: *keep the architecture, do not dispatch a real empirical agent yet.*
 | **P1** | G-10 proves a handle exists, not the artifact or ticket it claims. A handle from another ticket is not bound in the production verifier. | BRE-31 |
 | **P2** | The detach path cannot reach `Running Unattended` through either production tracker, and both adapters read only the first page. | BRE-32 |
 
-**BRE-32's pagination half is already live, not theoretical.** Checked against
-the real API on 2026-07-28: `issues(first: 3)` returns `hasNextPage: true` on
-this workspace. Invariant 7's check — *which human applied the label* — is
-therefore being decided on a truncated history today. That is an authorization
-decision made on partial data.
+**BRE-32's pagination half was live, not theoretical.** Checked against the real
+API on 2026-07-28: `issues(first: 3)` returns `hasNextPage: true` on this
+workspace. Invariant 7's check — *which human applied the label* — was therefore
+being decided on a truncated history, which is an authorization decision made on
+partial data. **Fixed:** both adapters now walk every collection to its end and
+raise rather than return a prefix. The table above records what the review found,
+not what is still open.
 
 Order matters here. The numerical and cost boundaries (BRE-28, BRE-29) are cheap
 and close direct bypasses, so they go first. Do not build a second substrate
@@ -234,10 +236,10 @@ than against memory:
 
 | Protocol | State | Note |
 |---|---|---|
-| `runner.Tracker` (GitHub) | **done** — `github_tracker.GitHubTracker` | first page only; BRE-32 |
-| `runner.Tracker` (Linear) | **done** — `linear_tracker.LinearTracker` | the queue the runner actually reads (W-07 amendment); first page only, BRE-32 |
+| `runner.Tracker` (GitHub) | **done** — `github_tracker.GitHubTracker` | BRE-32: walks the `Link` header to the end, `per_page` capped at 100, ascending creation order enforced on arrival. A page that fails mid-walk raises rather than returning the prefix |
+| `runner.Tracker` (Linear) | **done** — `linear_tracker.LinearTracker` | the queue the runner actually reads (W-07 amendment). BRE-32: cursor pagination over all four connections — issues, history, labels, workflow states — same all-or-nothing rule |
 | workspace isolation | **done** | `Runner(workspaces=...)`; names refused, not sanitized. Filesystem isolation only, not a security boundary |
-| runner ↔ registry detach | **done** | `Submitted` → park → `collect_finished` → same `_adjudicate`. Cannot reach `Running Unattended` through either real tracker yet, BRE-32 |
+| runner ↔ registry detach | **done** | `Submitted` → park → `collect_finished` → same `_adjudicate`. BRE-32: both adapters now reach `Running Unattended`, detachment needs **both** registry and collector, and the runner asks `writable_states()` at construction so an unreachable state is a wiring error rather than a refusal after the spend |
 | `registry.ComputeSubstrate` | **done** — `local_substrate.LocalGpuSubstrate` | **Not Modal.** C-01 superseded the Modal assumption with the local GPU; edge and infra remain open behind the same seam |
 | secret store | **half** | `SecretStore` exists and satisfies SPEC §15.3's scrub MUST, but is not yet the source of tracker credentials — the runner does not construct trackers. Ticket 07's last open box |
 | `runner.AgentSession` | **fake only** | the real sandboxed agent; must construct its verifier with `require_prereg=True` (#4), and nothing yet enforces that it does |
@@ -278,8 +280,8 @@ dispatch before it.
 
 **The detach path is now wired**, unlike when this list was first written:
 `AgentSession.run` may return `Submitted`, the ticket parks, and
-`collect_finished` brings the artifact back to the same `_adjudicate`. What is
-still missing is that neither production tracker supports the parked state
-(BRE-32), so the path works only against a fake today.
+`collect_finished` brings the artifact back to the same `_adjudicate`. BRE-32
+closed the last gap — both production trackers support the parked state, and
+the runner refuses to start against one that does not.
 
 A first live run should be a short deterministic ticket, not a training run.

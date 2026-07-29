@@ -115,16 +115,38 @@ class Ticket:
 class Tracker(Protocol):
     """GitHub Issues in production. Read-only for eligibility; writes are limited
     to state transitions and comments — the runner never edits a ticket's labels,
-    because that is the human's channel for granting dispatch rights."""
+    because that is the human's channel for granting dispatch rights.
+
+    `writable_states` is what the runner asks *before* dispatching, so that a
+    state an adapter cannot express is a wiring error rather than an exception
+    thrown at a ticket already holding a GPU. Every adapter has this answer for
+    free — it is an allowlist constant on both real ones — and no adapter is
+    permitted to answer it with a network call's worth of uncertainty.
+    """
 
     def open_tickets(self) -> Sequence[Ticket]: ...
     def label_actor(self, ticket_id: str, label: str) -> str | None: ...
     def comment(self, ticket_id: str, body: str) -> None: ...
     def set_state(self, ticket_id: str, state: str) -> None: ...
+    def writable_states(self) -> frozenset[str]: ...
 
 
 class AgentFailed(RuntimeError):
     """The agent session did not produce a verdict."""
+
+
+class StateUnreachable(RuntimeError):
+    """The tracker cannot express a state this runner will need to write.
+
+    A configuration error, raised where configuration happens. The alternative
+    shipped for one release: the runner dispatched, the agent submitted a GPU
+    job, the runner tried to park the ticket in `Running Unattended`, and the
+    adapter refused a state its map had no entry for — after the spend.
+
+    Every ticket would hit it, so this is not a per-ticket refusal. A runner
+    wired against a tracker that cannot move work through the states it needs
+    should not start.
+    """
 
 
 @dataclass(frozen=True)
@@ -292,6 +314,11 @@ class Runner:
         submits no GPU work — but on the empirical lane its absence means **no
         component in the system can notice a lost job**, since `sweep` is the
         only thing that can and nothing else calls it. Wire it.
+
+        Detachment needs *both*, which is why they are checked together below
+        rather than one at a time: a collector alone cannot notice a job that
+        stopped answering, and a registry alone cannot turn one that finished
+        back into evidence.
         """
         if not human_allowlist:
             # Fail closed. An empty allowlist would make every label acceptable,
@@ -315,6 +342,51 @@ class Runner:
         if required_gates is None:
             required_gates = REQUIRED_EMPIRICAL_GATES if lane == LANE_EMPIRICAL else frozenset()
         self._required_gates = required_gates
+        self._check_states_are_reachable()
+
+    def _can_detach(self) -> bool:
+        """Whether a `Submitted` return can be honoured at all.
+
+        Both halves or neither. `_collect_finished` already needs the pair, and a
+        runner holding only one of them can park a ticket in a state it has no
+        way to move out of.
+        """
+        return self._collector is not None and self._jobs is not None
+
+    def _check_states_are_reachable(self) -> None:
+        """Refuse to start against a tracker that cannot write what we will need.
+
+        Asked once, at construction, because the answer cannot change during a
+        run and because "before dispatching" is the only useful time to learn it.
+        A per-ticket check would notice the same problem one GPU job later.
+
+        `Running Unattended` is required only when detachment is possible. A
+        deterministic-lane runner with no registry never writes it, and demanding
+        it there would force every tracker to model a state that lane has no
+        concept of.
+        """
+        needed = {STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_NEEDS_HUMAN}
+        if self._can_detach():
+            needed.add(STATE_RUNNING_UNATTENDED)
+
+        declare = getattr(self._tracker, "writable_states", None)
+        if declare is None:
+            # Fail closed. A tracker that will not say what it can write cannot
+            # be checked, and dispatching anyway gambles a GPU job on the guess.
+            raise StateUnreachable(
+                f"{type(self._tracker).__name__} does not implement writable_states(), so "
+                "the runner cannot establish that the states it needs are reachable "
+                f"before it dispatches. Needed: {sorted(needed)}."
+            )
+
+        missing = needed - set(declare())
+        if missing:
+            raise StateUnreachable(
+                f"{type(self._tracker).__name__} cannot write {sorted(missing)}, which this "
+                f"runner needs. It declares {sorted(declare())}. This is a wiring error and "
+                "it is raised here rather than at the transition, where it would surface "
+                "after an agent session had already run and possibly submitted a job."
+            )
 
     # -- the trust boundary -------------------------------------------------
 
@@ -551,18 +623,37 @@ class Runner:
 
     def _detach(self, ticket: Ticket, submitted: Submitted, result: TickResult) -> None:
         """Park a ticket on a running job. The agent session is over."""
-        if self._collector is None:
-            # Refuse rather than park. `Running Unattended` with no collector is a
-            # state nothing can leave, and a ticket that can never progress is
-            # worse than one that never started: it looks like work in flight.
+        if not self._can_detach():
+            # Refuse rather than park. `Running Unattended` is only leavable by
+            # two components acting together, and a ticket in a state nothing can
+            # move it out of is worse than one that never started: it looks like
+            # work in flight, so nobody goes looking.
+            #
+            # Both are named because they fail differently and a reader has to
+            # know which one to wire. Without a collector, a job that finishes
+            # perfectly never becomes a verdict. Without a registry, `sweep`
+            # never runs, so a job that dies is never even noticed to be gone —
+            # and *that* is the case where the ticket sits forever, because
+            # nothing will ever report the job at all.
+            missing = ", ".join(
+                name
+                for name, wired in (
+                    ("ResultCollector", self._collector is not None),
+                    ("JobLedger", self._jobs is not None),
+                )
+                if not wired
+            )
             self._tracker.comment(
                 ticket.id,
                 f"Agent submitted job `{submitted.handle}` and detached, but this "
-                "runner has no ResultCollector, so nothing could turn that job "
-                "back into a verdict.\n\nRefused rather than parked.",
+                f"runner has no {missing}, so nothing here can bring that job back: "
+                "a collector turns a finished artifact into a verdict, and the "
+                "registry is the only thing that notices a job that stopped "
+                "answering.\n\nRefused rather than parked in a state nothing can "
+                "leave. The job may still be running — check the substrate.",
             )
             self._tracker.set_state(ticket.id, STATE_NEEDS_HUMAN)
-            result.refused[ticket.id] = "detached with no collector wired"
+            result.refused[ticket.id] = f"detached with no {missing} wired"
             return
 
         note = f"\n\n{submitted.note}" if submitted.note else ""
