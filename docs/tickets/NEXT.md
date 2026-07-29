@@ -19,7 +19,7 @@ still need infrastructure that does not exist yet.
 | N-08 | JobRegistry + ComputeSubstrate protocol | M2-03 | — | **DONE** |
 | BRE-29 | Cost inputs validated; pricing moves behind a `RateCard` | N-08 | — | **DONE** |
 | BRE-30 | Reservation-before-submit, idempotency, crash-window recovery | BRE-29 | durability design | open |
-| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | see below | **PARTIAL** (1 box: secret store wiring) |
+| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | - | **DONE** (last box closed by BRE-38) |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
 
@@ -49,8 +49,10 @@ as closed. The door was built; the lock was never fitted, and the summary said
 That is the same failure this repo exists to prevent, committed against itself:
 a control recorded as present because the work adjacent to it landed.
 
-**Ticket 07 is PARTIAL, not core-done.** Two of its four acceptance boxes were
-unmet and were being hidden by the summary. One is now closed and one is half:
+**Ticket 07 is now core-done, and the history is kept.** Two of its four
+acceptance boxes were once unmet and were being hidden by a green summary. Both
+are now closed, and the record of what each needed stays here rather than being
+deleted -- a box that was quietly wrong is worth more as a record than as a tick:
 
 - *"prepares an isolated workspace"* — **DONE.** `Runner(workspaces=...)` gives
   each ticket a directory prepared by the runner and handed to the agent, and
@@ -58,14 +60,24 @@ unmet and were being hidden by the summary. One is now closed and one is half:
   than sanitized**: every sanitizer is lossy, and a lossy mapping lets two
   tickets share one directory. Filesystem isolation only — Symphony's caveat
   applies verbatim, it is the minimal primitive and not a security boundary.
-- *"Tracker credentials live in the runner's secret store"* — **HALF.**
-  `SecretStore` exists and satisfies §15.3's normative MUST: it declares its
-  names so a launcher can scrub them from a child environment, and strips the
-  whole declared set rather than only the secrets a given run uses.
-  **It is not yet the source of tracker credentials**, because the runner does
-  not construct trackers — they arrive already built, with a transport the
-  caller wired. Closing that box means inverting who builds what, which is a
-  real change and not a wiring detail.
+- *"Tracker credentials live in the runner's secret store"* — **DONE (BRE-38).**
+  `SecretStore` already satisfied §15.3's normative MUST: it declares its names
+  so a launcher can scrub them from a child environment, and strips the whole
+  declared set rather than only the secrets a given run uses.
+
+  What was missing was the inversion this entry called for — *"the runner does
+  not construct trackers, they arrive already built, with a transport the caller
+  wired."* `AgentSessionFactory` is that inversion. The runner holds the factory,
+  the factory holds the `SecretStore`, and a session exists only after its
+  environment has been scrubbed. Invariant 6 stops depending on every caller
+  being careful, because there is no longer a moment at which the wrong wiring
+  can exist.
+
+  `FixedSessionFactory` keeps existing callers working and is deliberately named
+  rather than implicit: it grants no isolation, and a caller reaching for it is
+  choosing to keep constructing its own session.
+
+  **Ticket 07 is now core-done.** All four acceptance boxes are met.
 
 **Reconcile is now done.** The runner takes an optional `jobs: JobLedger`, calls
 `sweep()` at the top of every tick, and grounds each lost job's ticket to
