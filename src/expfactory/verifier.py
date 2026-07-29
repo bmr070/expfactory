@@ -377,7 +377,16 @@ class VerdictBundle:
 
 @runtime_checkable
 class Verifier(Protocol):
-    def run(self, candidate: Candidate) -> VerdictBundle: ...
+    def run(self, candidate: Candidate, ticket: str | None = None) -> VerdictBundle:
+        """Adjudicate `candidate`.
+
+        `ticket` is what the RUNNER knows and the candidate cannot forge: which
+        piece of work this claims to be for. Optional so the fixtures and the
+        deterministic lane, which have no ticket, are unaffected. Supplied, it
+        lets G-10 refuse a real job handle borrowed from a different ticket
+        (BRE-31).
+        """
+        ...
 
 
 # --------------------------------------------------------------------------- #
@@ -470,7 +479,7 @@ class GateVerifier:
             verdict_position=(store.position_of_verdict(exp_id) if store else None),
         )
 
-    def run(self, candidate: Candidate) -> VerdictBundle:
+    def run(self, candidate: Candidate, ticket: str | None = None) -> VerdictBundle:
         exp = candidate.experiment(self._id_factory())
         ctx = dict(baseline=self._baseline, ledger=self._ledger_ctx)
         exp.gates = [g(exp, **ctx) for g in self._gates]
@@ -498,17 +507,18 @@ class GateVerifier:
         # constructor argument so a candidate cannot opt out of being checked.
         from expfactory.gates_v1 import gate_attested_run
 
-        # `ticket` is deliberately not passed here: the verifier adjudicates a
-        # candidate and does not know which ticket it came from. The gate
-        # supports the check so that the runner — which does know — can bind a
-        # handle to its ticket once it submits jobs itself. Until then a real
-        # handle borrowed from another ticket would pass, which is recorded in
-        # GH#33 rather than papered over.
+        # BRE-31: the runner passes the ticket it dispatched, so a real handle
+        # borrowed from a *different* ticket no longer passes. It is an argument
+        # rather than a `Candidate` field on purpose — a candidate is assembled
+        # by the agent, and a ticket the agent writes is a ticket the agent
+        # chooses. `None` keeps fixtures and the deterministic lane unaffected,
+        # and G-10 then reports the binding as unchecked rather than as verified.
         exp.gates.append(
             gate_attested_run(
                 exp,
                 attestation=candidate.attestation,
                 attestations=self._attestations,
+                ticket=ticket,
             )
         )
         # Diff-level gates run only when the candidate carries diff evidence.
@@ -540,7 +550,7 @@ class ExitCodeVerifier:
         self._command = list(command)
         self._id_factory = id_factory
 
-    def run(self, candidate: Candidate) -> VerdictBundle:
+    def run(self, candidate: Candidate, ticket: str | None = None) -> VerdictBundle:
         proc = subprocess.run(
             self._command,
             capture_output=True,

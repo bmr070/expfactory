@@ -446,22 +446,74 @@ def gate_attested_run(
         )
 
     problems: list[str] = []
+    unchecked: list[str] = []
+
     if ticket is not None and record.get("ticket") not in (None, ticket):
         # A real handle borrowed from a different ticket: the run happened, but
         # not for the work being claimed.
         problems.append(f"handle belongs to ticket {record.get('ticket')!r}, not {ticket!r}")
-    if record.get("artifact_sha256") not in (None, attestation.artifact_sha256):
-        problems.append("artifact digest does not match the one the substrate recorded")
-    if record.get("exit_code") not in (None, attestation.exit_code):
+
+    # BRE-31. Every comparison below used to read `record.get(...) is None` and
+    # pass, because `attested_job` returned only handle/ticket/state/time and the
+    # completion fields were never populated. The checks existed and were
+    # starved, which is worse than absent: the gate reported "run attested" and
+    # nothing had been compared.
+    #
+    # Absent and mismatched are now different outcomes. Absent is NAMED rather
+    # than passed silently, because "the substrate could not say" and "the
+    # substrate agreed" must not read the same downstream.
+    recorded_digest = record.get("artifact_sha256")
+    if recorded_digest is None:
+        unchecked.append("artifact digest")
+    elif recorded_digest != attestation.artifact_sha256:
         problems.append(
-            f"exit code {attestation.exit_code} does not match the recorded "
-            f"{record.get('exit_code')}"
+            f"artifact digest {attestation.artifact_sha256!r} does not match the "
+            f"{recorded_digest!r} the substrate recorded"
         )
 
-    ok = not problems
-    detail = (
-        f"run attested by job {attestation.job_handle}"
-        if ok
-        else "UNATTESTED: " + "; ".join(problems)
-    )
-    return GateResult("attested_run", ok, detail, blocking=True)
+    recorded_exit = record.get("exit_code")
+    if recorded_exit is None:
+        unchecked.append("exit code")
+    else:
+        if recorded_exit != attestation.exit_code:
+            problems.append(
+                f"exit code {attestation.exit_code} does not match the recorded {recorded_exit}"
+            )
+        if recorded_exit != 0:
+            # A job that failed produced no result to promote. Previously the
+            # exit code was only ever compared for agreement, so an attestation
+            # honestly reporting a crash agreed with a recorded crash and passed.
+            problems.append(f"the job exited {recorded_exit}: a failed run is not a result")
+
+    # The check the review did not ask for, and the one that closes the hole a
+    # matching digest leaves open. A candidate can cite a genuine handle, for a
+    # genuine job, whose command never ran the evaluation at all -- attested and
+    # worthless. TRL's `opencode` reward pays -0.1 for the same failure from the
+    # RL side: "never ran its code, kills blind-write / prose-dump / give-up".
+    requested = record.get("requested_command")
+    completed = record.get("completion_command")
+    if requested is None or completed is None:
+        unchecked.append("command")
+    elif tuple(requested) != tuple(completed):
+        problems.append(
+            f"the substrate ran {tuple(completed)!r}, not the {tuple(requested)!r} "
+            "this job was submitted to run"
+        )
+    elif attestation.command and tuple(attestation.command) != tuple(completed):
+        problems.append(
+            f"the attestation claims command {tuple(attestation.command)!r} but the "
+            f"substrate ran {tuple(completed)!r}"
+        )
+
+    if problems:
+        return GateResult(
+            "attested_run", False, "UNATTESTED: " + "; ".join(problems), blocking=True
+        )
+
+    detail = f"run attested by job {attestation.job_handle}"
+    if unchecked:
+        # Passes, and says exactly how much it did not verify. A gate that
+        # reports a clean check it never performed is the failure this ticket
+        # was filed for.
+        detail += f" (not verified, the substrate reported none: {', '.join(unchecked)})"
+    return GateResult("attested_run", True, detail, blocking=True)

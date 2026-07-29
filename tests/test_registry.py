@@ -22,6 +22,7 @@ import pytest
 from expfactory.registry import (
     SECONDS_PER_HOUR,
     BreakerTripped,
+    CompletionRecord,
     ComputeSubstrate,
     CostCapExceeded,
     InvalidJobInput,
@@ -68,6 +69,7 @@ class FakeSubstrate:
         self.submitted: list[JobSpec] = []
         self.status: dict[str, JobState] = {}
         self.artifacts: dict[str, str] = {}
+        self.completions: dict[str, CompletionRecord] = {}
         self.rate: RateCard = FakeRateCard()
 
     def submit(self, spec: JobSpec) -> str:
@@ -85,6 +87,10 @@ class FakeSubstrate:
 
     def rate_card(self) -> RateCard:
         return self.rate
+
+    def completion(self, handle: str) -> CompletionRecord | None:
+        """What this fake says it ran. Tests drive it by assigning `completions`."""
+        return self.completions.get(handle)
 
 
 class _Clock:
