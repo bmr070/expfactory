@@ -35,6 +35,48 @@ keep them in.
 Enforced by `_WRITABLE_STATES` rather than documented, because a rule in a
 constant survives someone being in a hurry and a rule in a comment does not.
 
+## Pagination, and why it is a trust property here too
+
+Every Linear list is a cursor-paginated connection with a default page size of
+50, and `pageInfo { hasNextPage endCursor }` is the only thing that says whether
+what came back is the whole of it. Reading one page was measured, not theorised:
+`issues(first: 3)` returned `hasNextPage: true` on a workspace with one team and
+about thirty tickets (2026-07-28).
+
+The consequence is the same as on the GitHub side and it is not "some tickets go
+unseen". `label_actor` reads issue history to establish **which human applied
+`agent-ready`** (invariant 7). A history read one page deep answers that question
+from a prefix, and a prefix that happens to end before a bot's re-application
+still contains an earlier human's, so it answers *yes* to a grant that was
+superseded. That is an authorization decision made on partial data and it fails
+open.
+
+So every connection here is walked to `hasNextPage: false` or it raises. Nothing
+returns the nodes it managed to collect: a prefix is indistinguishable from a
+complete list to every caller above. That covers all four reads — issues,
+history, an issue's labels, and the team's workflow states — because each one
+truncates into a different wrong answer (a missing ticket, a laundered grant, an
+unattributable label, a state the adapter reports it cannot reach).
+
+## Ordering policy
+
+**Ascending creation time, enforced here, not inherited from the API.**
+
+Linear's connections order by `updatedAt` descending unless told otherwise, and
+`orderBy` accepts no direction argument — so the order nodes arrive in is not the
+order this adapter needs, and asking nicely cannot make it so. Both lists are
+therefore re-sorted on `createdAt` after the walk completes.
+
+For history that is the whole basis of "most recent application wins". For issues
+it decides which ticket the runner dispatches when its concurrency budget is
+smaller than the queue, and oldest-first is a policy, whereas whatever the server
+returns is a coincidence.
+
+`createdAt` is a Z-suffixed UTC ISO-8601 string, which sorts lexicographically
+exactly as it sorts chronologically, so no parsing is involved. An entry that
+lacks it is refused rather than defaulted: for a history entry that added the
+label, a guess about where it belongs is a guess about who granted dispatch.
+
 ## Credentials
 
 The transport is injected. The token stays outside this class, every path here
@@ -51,6 +93,7 @@ from expfactory.runner import (
     STATE_IN_PROGRESS,
     STATE_IN_REVIEW,
     STATE_NEEDS_HUMAN,
+    STATE_RUNNING_UNATTENDED,
     Ticket,
 )
 
@@ -58,11 +101,55 @@ from expfactory.runner import (
 # That is a better fit than GitHub's labels-as-state and means this adapter never
 # touches labels at all — which removes a whole class of mistake, since the label
 # it must not write is the one that grants dispatch eligibility.
-_WRITABLE_STATES = frozenset({STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_NEEDS_HUMAN})
+#
+# `Running Unattended` joined the set in BRE-32. Its absence made the detach path
+# unreachable through this adapter: the runner parked a ticket, this refused the
+# state, and the refusal arrived *after* a GPU job was already running. Note what
+# was NOT done to fix that — the allowlist was not widened to "anything the
+# runner asks for". It gained one named state, and `agent-ready` remains
+# unwritable by construction because this adapter mutates no labels at all.
+_WRITABLE_STATES = frozenset(
+    {STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_NEEDS_HUMAN, STATE_RUNNING_UNATTENDED}
+)
+
+# Linear's default. Deliberately not its 250 ceiling: page size trades request
+# count against the size of the response held in memory, and the walk reads every
+# page either way, so the only thing a bigger number buys is fewer round trips at
+# a larger blast radius when one of them fails.
+DEFAULT_PAGE_SIZE = 50
+
+# The API's own cap. Asking for more is an error server-side rather than a silent
+# clamp, but refusing here means the caller learns at construction instead of on
+# the first poll.
+MAX_PAGE_SIZE = 250
+
+# A walk longer than this is a loop or a workspace nobody should be polling in
+# one tick. Bounded so a cursor that never stops advancing cannot spin forever
+# holding the runner's tick open.
+_MAX_PAGES = 200
 
 
 class StateWriteRefused(RuntimeError):
     """The adapter was asked to move an issue to a state outside its allowlist."""
+
+
+class PageWalkRefused(RuntimeError):
+    """A connection could not be walked to its end, so none of it is returned.
+
+    All-or-nothing on purpose. Handing back the nodes that did arrive would give
+    a caller a prefix wearing the shape of a complete list, and for `label_actor`
+    that is an authorization decision made on partial data.
+    """
+
+
+class UnorderableEntry(RuntimeError):
+    """A node carries no `createdAt`, so it cannot be placed against the others.
+
+    Refused rather than defaulted to either end. For a history entry that added
+    the label, "which application is the most recent" is "which account granted
+    dispatch", and an entry of unknown age is equally consistent with being the
+    newest or the oldest.
+    """
 
 
 class LinearApiError(RuntimeError):
@@ -78,16 +165,30 @@ class GraphQLTransport(Protocol):
     def query(self, document: str, variables: dict[str, Any]) -> dict[str, Any]: ...
 
 
+# Every list below takes `$first`/`$after` and returns `pageInfo`, including the
+# two nested connections. A nested connection paginates independently of its
+# parent — an issue with 200 history entries truncates at 50 inside a query that
+# reports itself complete — so `pageInfo` on the outer object would say nothing
+# about it.
 _ISSUES = """
-query($teamKey: String!) {
-  issues(filter: {team: {key: {eq: $teamKey}}, state: {type: {nin: ["completed", "canceled"]}}}) {
+query($teamKey: String!, $first: Int!, $after: String) {
+  issues(
+    filter: {team: {key: {eq: $teamKey}}, state: {type: {nin: ["completed", "canceled"]}}}
+    first: $first
+    after: $after
+  ) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       id
       identifier
       title
       description
+      createdAt
       state { name }
-      labels { nodes { name } }
+      labels(first: 100) {
+        pageInfo { hasNextPage }
+        nodes { name }
+      }
     }
   }
 }
@@ -96,11 +197,13 @@ query($teamKey: String!) {
 # `actor` and `botActor` are separate fields in the schema. That distinction is
 # the entire reason the trust check is better here than on GitHub.
 _HISTORY = """
-query($issueId: String!) {
+query($issueId: String!, $first: Int!, $after: String) {
   issue(id: $issueId) {
-    history {
+    history(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
       nodes {
         addedLabelIds
+        createdAt
         actor { name displayName }
         botActor { name }
       }
@@ -110,8 +213,13 @@ query($issueId: String!) {
 """
 
 _LABELS = """
-query($issueId: String!) {
-  issue(id: $issueId) { labels { nodes { id name } } }
+query($issueId: String!, $first: Int!, $after: String) {
+  issue(id: $issueId) {
+    labels(first: $first, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id name }
+    }
+  }
 }
 """
 
@@ -128,8 +236,11 @@ mutation($issueId: String!, $stateId: String!) {
 """
 
 _STATES = """
-query($teamKey: String!) {
-  workflowStates(filter: {team: {key: {eq: $teamKey}}}) { nodes { id name } }
+query($teamKey: String!, $first: Int!, $after: String) {
+  workflowStates(filter: {team: {key: {eq: $teamKey}}}, first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id name }
+  }
 }
 """
 
@@ -144,9 +255,24 @@ class LinearTracker:
     where a human reading a comment can still see it.
     """
 
-    def __init__(self, team_key: str, transport: GraphQLTransport) -> None:
+    def __init__(
+        self,
+        team_key: str,
+        transport: GraphQLTransport,
+        *,
+        page_size: int = DEFAULT_PAGE_SIZE,
+    ) -> None:
+        """`page_size` sizes each request, never the total: every connection is
+        walked to its end regardless."""
+        if not 1 <= page_size <= MAX_PAGE_SIZE:
+            raise ValueError(
+                f"page_size must be between 1 and {MAX_PAGE_SIZE}, got {page_size}. "
+                "Linear rejects a larger `first` outright, and finding that out on the "
+                "first poll rather than at construction is a worse place to learn it."
+            )
         self._team = team_key
         self._transport = transport
+        self._page_size = page_size
         self._state_ids: dict[str, str] | None = None
 
     # -- reads -------------------------------------------------------------
@@ -160,6 +286,89 @@ class LinearTracker:
             raise LinearApiError("Linear API returned no data")
         return dict(data)
 
+    def _walk(
+        self, document: str, variables: dict[str, Any], *, path: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        """Every node of one connection, or an exception. Never a prefix.
+
+        `path` names where the connection sits in the response — `("issues",)`
+        for a top-level one, `("issue", "history")` for a nested one — so the
+        same walk covers both rather than having a bespoke loop per query, which
+        is how three of the four came to lack one.
+
+        A transport failure part-way through is deliberately not caught. It
+        propagates with its type intact, because whoever is above needs to tell
+        an auth failure from a rate limit, and flattening both into one adapter
+        error erases the distinction that decides whether a human or a backoff is
+        the right response. What matters here is that `nodes` is local: nothing
+        partially collected escapes.
+        """
+        nodes: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        pages = 0
+
+        while True:
+            pages += 1
+            if pages > _MAX_PAGES:
+                raise PageWalkRefused(
+                    f"{'.'.join(path)} did not terminate within {_MAX_PAGES} pages. Either "
+                    "the connection is larger than anything that should be read in one "
+                    "poll, or the cursor is advancing without ever ending."
+                )
+            data = self._call(document, {**variables, "first": self._page_size, "after": cursor})
+
+            connection: Any = data
+            for key in path:
+                connection = (connection or {}).get(key) or {}
+            nodes.extend(connection.get("nodes") or [])
+
+            info = connection.get("pageInfo") or {}
+            if not info.get("hasNextPage"):
+                # Includes the case of no `pageInfo` at all. A response that does
+                # not claim there is more is taken at its word — there is no
+                # third answer available, and assuming truncation would make
+                # every read fail on a server that omits the field.
+                return nodes
+
+            next_cursor = info.get("endCursor")
+            if not next_cursor:
+                # "There is more" and "here is where it continues" have to arrive
+                # together. One without the other is a page boundary that cannot
+                # be crossed, and the nodes past it are unreachable.
+                raise PageWalkRefused(
+                    f"{'.'.join(path)} reported hasNextPage with no endCursor. The rest of "
+                    "the connection is unreachable, and a partial list is not a list."
+                )
+            if next_cursor in seen:
+                # A cursor that repeats cannot make progress. Bounded above too,
+                # but caught precisely here so the message names the real fault
+                # instead of blaming the page budget.
+                raise PageWalkRefused(
+                    f"pagination looped: cursor {next_cursor!r} was already used while "
+                    f"walking {'.'.join(path)}. The rest of the connection is unreachable."
+                )
+            seen.add(str(next_cursor))
+            cursor = str(next_cursor)
+
+    @staticmethod
+    def _by_created_at(nodes: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
+        """Ascending creation time, established here rather than requested.
+
+        Linear orders connections by `updatedAt` descending by default and
+        `orderBy` takes no direction, so the arrival order is never the one this
+        adapter needs. `createdAt` is Z-suffixed UTC ISO-8601 and therefore sorts
+        lexicographically exactly as it sorts chronologically.
+        """
+        for node in nodes:
+            if not node.get("createdAt"):
+                raise UnorderableEntry(
+                    f"a {what} entry has no createdAt, so it cannot be placed against the "
+                    "others. Refused rather than assumed: order is what decides which "
+                    "application of a label is the most recent one."
+                )
+        return sorted(nodes, key=lambda node: str(node["createdAt"]))
+
     def open_tickets(self) -> Sequence[Ticket]:
         """Issues in this team that are not completed or cancelled.
 
@@ -167,13 +376,25 @@ class LinearTracker:
         names are user-editable and a renamed column must not silently empty the
         queue.
         """
-        data = self._call(_ISSUES, {"teamKey": self._team})
+        nodes = self._walk(_ISSUES, {"teamKey": self._team}, path=("issues",))
         out: list[Ticket] = []
-        for node in data.get("issues", {}).get("nodes", []):
+        # Oldest first, so which ticket gets the runner's last unit of
+        # concurrency is a policy rather than a coincidence of server ordering.
+        for node in self._by_created_at(nodes, "issue"):
+            label_page = node.get("labels") or {}
+            if (label_page.get("pageInfo") or {}).get("hasNextPage"):
+                # The nested label connection is requested at 100 and not walked.
+                # Refusing beats a second query per ticket: an issue carrying
+                # more than 100 labels is a data problem, and a truncated label
+                # set is not merely incomplete — losing `needs-human` from it
+                # would make an escalated ticket read as dispatchable.
+                raise PageWalkRefused(
+                    f"issue {node.get('identifier', node.get('id'))} carries more than 100 "
+                    "labels, so its label set came back truncated. Eligibility is decided "
+                    "from these labels, and a missing needs-human reads as dispatchable."
+                )
             labels = frozenset(
-                label["name"]
-                for label in node.get("labels", {}).get("nodes", [])
-                if label.get("name")
+                label["name"] for label in label_page.get("nodes", []) if label.get("name")
             )
             out.append(
                 Ticket(
@@ -197,30 +418,41 @@ class LinearTracker:
 
         None is also returned when nothing in the history added the label. An
         unattributable label is not a yes.
+
+        The whole history is walked. One page deep, "most recent" meant "most
+        recent among the first fifty entries", which is a different question
+        wearing the same answer — and one whose wrong answer is *yes*.
         """
         label_id = self._label_id(ticket_id, label)
         if label_id is None:
             return None
 
-        data = self._call(_HISTORY, {"issueId": ticket_id})
-        issue = data.get("issue") or {}
+        nodes = self._walk(_HISTORY, {"issueId": ticket_id}, path=("issue", "history"))
+
+        # Narrow first, order second. Only entries that added *this* label decide
+        # the answer, so an unrelated entry missing a timestamp must not refuse
+        # the whole check — while every entry that does decide it has to be
+        # placeable against the others.
+        applications = [entry for entry in nodes if label_id in (entry.get("addedLabelIds") or [])]
+        if not applications:
+            return None
+
         # Most recent application wins: a label removed and re-applied is
         # attributed to whoever put it back, not to whoever put it there first.
-        for entry in reversed(issue.get("history", {}).get("nodes", [])):
-            if label_id not in (entry.get("addedLabelIds") or []):
-                continue
-            if entry.get("botActor"):
-                # A bot applied it. Deliberately not returned as a name: the
-                # runner would then have to decide whether that name is a bot.
-                return None
-            actor = entry.get("actor") or {}
-            return actor.get("displayName") or actor.get("name")
-        return None
+        # Ordered here rather than by reading the list backwards, which only
+        # worked while the server happened to return history ascending.
+        latest = self._by_created_at(applications, "history")[-1]
+        if latest.get("botActor"):
+            # A bot applied it. Deliberately not returned as a name: the runner
+            # would then have to decide whether that name is a bot.
+            return None
+        actor = latest.get("actor") or {}
+        name = actor.get("displayName") or actor.get("name")
+        return str(name) if name else None
 
     def _label_id(self, ticket_id: str, label: str) -> str | None:
-        data = self._call(_LABELS, {"issueId": ticket_id})
-        issue = data.get("issue") or {}
-        for node in issue.get("labels", {}).get("nodes", []):
+        nodes = self._walk(_LABELS, {"issueId": ticket_id}, path=("issue", "labels"))
+        for node in nodes:
             if node.get("name") == label:
                 return str(node["id"])
         return None
@@ -230,8 +462,18 @@ class LinearTracker:
     def comment(self, ticket_id: str, body: str) -> None:
         self._call(_COMMENT, {"issueId": ticket_id, "body": body})
 
+    def writable_states(self) -> frozenset[str]:
+        """The runner states this adapter may set.
+
+        Asked before dispatch, so a state the allowlist cannot reach is a wiring
+        error caught while nothing is running. Previously the runner found out by
+        catching `StateWriteRefused` at the moment it tried to park a ticket —
+        after the GPU job behind it had already started.
+        """
+        return _WRITABLE_STATES
+
     def set_state(self, ticket_id: str, state: str) -> None:
-        """Move an issue to one of the three states this adapter may set.
+        """Move an issue to one of the states this adapter may set.
 
         Refused for anything else. The adapter must not be able to move a ticket
         to Done — the runner does not approve its own work, and a tracker that
@@ -248,10 +490,11 @@ class LinearTracker:
 
     def _state_id(self, name: str) -> str:
         if self._state_ids is None:
-            data = self._call(_STATES, {"teamKey": self._team})
-            self._state_ids = {
-                node["name"]: node["id"] for node in data.get("workflowStates", {}).get("nodes", [])
-            }
+            # Walked, not first-paged. A truncated state list turns the refusal
+            # below into a lie: it would report the team has no such state when
+            # the state exists and simply arrived on page two.
+            nodes = self._walk(_STATES, {"teamKey": self._team}, path=("workflowStates",))
+            self._state_ids = {node["name"]: node["id"] for node in nodes}
         state_id = self._state_ids.get(name)
         if state_id is None:
             raise StateWriteRefused(
@@ -263,8 +506,12 @@ class LinearTracker:
 
 
 __all__ = [
+    "DEFAULT_PAGE_SIZE",
+    "MAX_PAGE_SIZE",
     "GraphQLTransport",
     "LinearApiError",
     "LinearTracker",
+    "PageWalkRefused",
     "StateWriteRefused",
+    "UnorderableEntry",
 ]

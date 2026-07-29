@@ -86,7 +86,15 @@ Three things that had to be right:
 - **Unattended runs count against concurrency.** They hold a GPU, and their agent
   session has ended, so nothing else marks them busy.
 - **Detaching with no collector is refused, not parked.** A state nothing can
-  leave looks like work in flight, which is worse than never starting.
+  leave looks like work in flight, which is worse than never starting. BRE-32
+  extended this to the registry as well: a collector alone turns a *finished*
+  job into a verdict, but `sweep` is the only thing that notices one that
+  stopped answering, so with no registry the ticket sits forever.
+- **The parked state is reachable through both real trackers** (BRE-32). It was
+  not, and a fake tracker made the unit tests pass while both production
+  adapters rejected it. The runner now asks `Tracker.writable_states()` at
+  construction, so a state an adapter cannot express is a wiring error caught
+  before dispatch rather than a refusal raised after a GPU job started.
 
 **N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
 constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`
