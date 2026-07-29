@@ -325,6 +325,14 @@ class JobSpec:
     ticket: str
     command: tuple[str, ...]
     image: str
+    # The one field on this contract that names a device class, and the registry
+    # never reads it — only a substrate does. Generalising it (an `accelerator`
+    # string, a resource mapping) is DEFERRED until a second substrate exists to
+    # generalise against, because an abstraction invented for one hypothetical
+    # caller is the speculative generality invariant 4 refuses. `env` already
+    # carries `EXPFACTORY_VRAM_MIB` for the same class of need, which is the
+    # idiom to reach for first. Recorded in BRE-33 so the moment a Jetson, a TPU
+    # or a CPU-only job arrives is a decision rather than a surprise.
     gpu: str | None = None
     env: Mapping[str, str] | None = None
     idempotency_key: str | None = None
@@ -480,7 +488,18 @@ class RateCard(Protocol):
 
 @runtime_checkable
 class ComputeSubstrate(Protocol):
-    """The GPU side of the two-substrate split (W-06).
+    """The long-job side of the two-substrate split (W-06).
+
+    **The axis is duration and trust, not silicon.** W-06 splits an agent session
+    — minutes, untrusted, LLM-metered — from a job that outlives it and holds a
+    credential the agent never sees. This docstring named the accelerator until
+    BRE-33, which was wrong in a way worth recording: `LocalGpuSubstrate` is the
+    accelerator-bound implementation, and it sits *behind* this seam. The seam
+    itself names no hardware anywhere in it, and most work entering this factory
+    needs no accelerator at all.
+
+    Reading this as "the accelerator protocol" is how a device class ends up in a
+    signature that has to serve edge boards and rented instances too.
 
     The registry holds the credential for this; the agent never does. The agent
     asks the registry to submit, and receives an artifact reference back later.
