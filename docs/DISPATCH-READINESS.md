@@ -100,9 +100,46 @@ The repo is public, which makes protection available, and it is set on `main`:
 
 - pull request required before merging
 - review from Code Owners required (1 approval)
-- status checks required and up to date: `check (3.11)`, `check (3.13)`
+- status checks required and up to date: `check (3.11)`, `check (3.13)`,
+  **`substrate-guard`**
 - conversation resolution required
 - force pushes and deletions blocked
+
+> This list omitted `substrate-guard` until 2026-07-28 and that omission cost
+> real confusion. Read against the live API, not the docs:
+> `required_status_checks.contexts` is
+> `['check (3.11)', 'check (3.13)', 'substrate-guard']` with `strict: true`.
+
+### The guard is a required check that can never pass. That is the design.
+
+Worth stating plainly, because the behaviour looks broken and is not.
+
+`substrate-guard` fails on **any** PR touching `_HARNESS_PATHS`, whether the
+change strengthens the harness or weakens it. There is no version of a
+verification-layer change that turns it green, because editing the verification
+layer is the trigger. BRE-28 strengthened the gate set and the guard failed it,
+correctly.
+
+Since it is also a **required** check, a harness PR has no normal merge path at
+all. `--admin` is the only route, and that is the intended mechanism rather than
+a workaround:
+
+```bash
+gh pr merge <N> --squash --delete-branch --admin
+```
+
+**Why an unsatisfiable check rather than a required approval.** The override is
+tied to *repo admin permission*, which the agent identity will never hold (§1
+withholds it explicitly, and §2 says do not grant the App an admin bypass). An
+approval-based rule, or a rule satisfied by a magic string in the PR body, can be
+met by anything that can write — including the agent. This one cannot. The
+strength is precisely that it is not satisfiable by anything the agent can do.
+
+**Measured firing rate**, last 20 merged PRs: 0 of 8 docs/chore PRs, 12 of 12
+code PRs. So today it sorts by "is this Python", not by "does this weaken
+verification". That is a real observation and it is BRE-34's question, not a
+licence to weaken the guard — see that ticket for why the noise is BRE-18's
+fault and disappears when BRE-18 lands.
 
 **`enforce_admins` is deliberately off**, and this is the thing to understand
 about the current state. GitHub will not let anyone approve their own PR, so with
