@@ -42,6 +42,35 @@ amortisation). The precision is fictional and stated to be; the magnitude is wha
 decides whether a cap binds. Override all three fields on rented compute, at
 which point the numbers stop being imputed and become the provider's price.
 
+### BRE-29 — the estimate is quoted, not declared
+
+The first build took `cost_estimate_usd` as an argument to `submit`, which made
+every check above a comparison against a number the submitting side chose. That
+is this decision's own finding — *a self-reported cost cap is not a cap* — left
+standing in the one place it was supposed to be closed. Two failures fell out of
+it and an external review reproduced both: `NaN` compares false against
+everything so it passed both caps, and a negative estimate passed both *and*
+lowered `spend_today_usd`, manufacturing budget that was never spent.
+
+The fix is not validation. Validation would make a bad number unlikely; removing
+the argument makes a caller-chosen number impossible.
+
+- `ComputeSubstrate.rate_card()` returns a `RateCard`, and the registry asks it
+  for the price at submission time. The side that holds the credential is the
+  side that quotes.
+- The quoted window is the job's **deadline**, the only bound `sweep` enforces.
+  A caller who wants a cheaper job has to accept an earlier deadline, which is a
+  constraint rather than a claim.
+- `RateCard` is keyed on nothing hardware-shaped. `submit`/`poll`/
+  `fetch_artifact` name no device, and neither does this; the GPU is one lane,
+  and an edge box or a rented instance answers "what does this window cost" the
+  same way. `CostModel` is the one concrete card, reusing the imputed rate above.
+- Every number that reaches a cap — the caps themselves, the deadline, the
+  quote, and any cost replayed out of the log — is refused unless it is finite
+  and non-negative. Refused, never clamped: an unreadable cost means spend is
+  *unknown*, and clamping it to zero is precisely the reading fail-closed exists
+  to prevent.
+
 Attribution is per-job and carries the ticket id, so spend rolls up to a ticket
 without a second ledger.
 

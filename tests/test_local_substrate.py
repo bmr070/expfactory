@@ -269,6 +269,38 @@ def test_the_rate_is_configurable_for_rented_compute():
     assert rented.estimate(2.0) == pytest.approx(5.0)
 
 
+def test_the_cost_model_is_the_substrates_rate_card(tmp_path):
+    """BRE-29: the substrate quotes its own price, and this is the quote.
+
+    `rate_card()` returning the model rather than a wrapper is deliberate — one
+    rate card, one place to override when the compute is rented.
+    """
+    from expfactory.registry import RateCard
+
+    cm = CostModel()
+    sub = LocalGpuSubstrate(tmp_path, cost_model=cm, prober=lambda: [])
+
+    assert isinstance(cm, RateCard)
+    assert sub.rate_card() is cm
+
+
+def test_the_rate_card_prices_seconds_not_hardware(tmp_path):
+    """The constraint that shaped the seam.
+
+    Two GPU-hours cost what `estimate(2.0)` costs, and the `JobSpec` — the only
+    place a device is named at all — makes no difference to the answer. Keying
+    the price on a GPU SKU would put hardware into a seam the registry above has
+    kept free of it, and the next substrate may have no GPU to key on.
+    """
+    cm = CostModel()
+    two_hours = 2 * 3600.0
+    on_a_big_card = _spec([PY, "-c", "pass"], gpu="cuda:0")
+    on_no_card = _spec([PY, "-c", "pass"])
+
+    assert cm.price_usd(on_no_card, two_hours) == pytest.approx(cm.estimate(2.0))
+    assert cm.price_usd(on_a_big_card, two_hours) == cm.price_usd(on_no_card, two_hours)
+
+
 # --------------------------------------------------------------------------- #
 # Probe
 # --------------------------------------------------------------------------- #

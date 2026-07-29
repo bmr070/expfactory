@@ -1,0 +1,50 @@
+# CODEOWNERS for a factory PROJECT repo (not the factory itself).
+#
+# Replace @owner with a real handle. An unresolvable handle protects nothing
+# while still looking like protection, which is the most dangerous failure this
+# file has — GitHub silently treats an unknown owner as no owner.
+#
+# NOTE ON PATHS: these must track the real layout. An entry pointing at a path
+# that does not exist is the same failure in a different costume. Delete the
+# lines that do not apply to this project rather than leaving them aspirational.
+
+# ---------------------------------------------------------------------------
+# What is DIFFERENT here from the factory repo
+# ---------------------------------------------------------------------------
+#
+# A project repo has NO verification harness, so there is no `_HARNESS_PATHS`
+# mirror and no `substrate-guard`. Do not copy those across. The verifier lives
+# in the factory repo and this repo must not be able to reach it.
+#
+# What stays red here is narrower: the things that decide what "green" means,
+# and anything that could quietly change the data a result is computed from.
+
+# CI is the enforcement surface; changing it changes what "green" means.
+/.github/workflows/    @owner
+/.github/CODEOWNERS    @owner
+
+# Tool config decides what lint/typecheck/test actually enforce.
+/pyproject.toml        @owner
+
+# ---------------------------------------------------------------------------
+# lane:empirical projects only — delete this block for a deterministic project
+# ---------------------------------------------------------------------------
+#
+# These are red because they decide what the model is measured ON. An agent that
+# can silently widen a split or repin a dataset can move a metric without
+# touching a single line of model code, and no gate downstream would see a
+# change worth objecting to.
+
+# The split policy. Group-aware splitting is the difference between measuring
+# the phenomenon and measuring the recording.
+/src/**/splits.py      @owner
+/src/**/data/          @owner
+
+# The dataset pin. A SHA change is a different experiment wearing the same name.
+/DATASET.lock          @owner
+/configs/dataset*.yaml @owner
+
+# The evaluation entrypoint the runner calls. The scorer itself lives in the
+# factory repo and holds the labels; this is only what emits predictions, but a
+# change here changes what gets scored.
+/src/**/predict.py     @owner
