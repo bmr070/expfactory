@@ -44,7 +44,23 @@ the thing they describe.
   verify against *both* suite partitions.
 - **`mean_metric` is NaN in the deterministic lane.** It serialises as `null`,
   not the bare `NaN` token Python emits by default, because the ledger must be
-  readable by whatever language the runner ends up in.
+  readable by whatever language the runner ends up in. This is the *output* of a
+  lane with no metric, and is unrelated to the *input* rule below — do not
+  "tidy" one into the other.
+- **A non-finite number defeats the gate set by silence, so it is refused at
+  construction** (BRE-28). Three clean runs with `val_metric=inf` promoted:
+  every comparison against NaN is false, and `gate_no_single_seed_dominance`'s
+  `best - second` on two infinities *produces* NaN, so nothing fired and
+  `mean_metric=inf` was written to the ledger as a result. Promotion by the
+  absence of a rejection, not by a decision. The same shape appeared one module
+  over: a NaN `baseline_value` made G-07's rule 8 report agreement with a parent
+  it never compared to, then passed rule 4 on a NaN effect. **The predicates
+  belong at `_coerce_run` / `__post_init__`, not in the gates** — there are nine
+  gates and one construction site, and a per-gate guard has to be remembered
+  again for every gate added. **Refuse, never clamp:** substituting 0.0 for NaN
+  invents a measurement nobody took and collides every distinct broken run onto
+  one value. Duplicate *seeds* are the deliberate exception: they stay legal
+  because `gate_reproducible` has no other input.
 - **The tamper gate matches path basenames**, so moving harness files around does
   not weaken it — but renaming one silently would. **Adding a module to
   `src/expfactory/` fails the suite** until it is classified in `_HARNESS_PATHS`

@@ -37,6 +37,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Any, Literal
 
 from expfactory.harness import Experiment, GateResult, RunResult
@@ -98,6 +99,15 @@ class Guardrail:
                 f"guardrail {self.metric!r}: direction must be maximize|minimize, "
                 f"got {self.direction!r}"
             )
+        # Finiteness before the magnitude check, because the magnitude check
+        # cannot do it (BRE-28): `float("nan") < 0` is False, so NaN reads as a
+        # valid tolerance, and `regressed` then compares against NaN and returns
+        # False every time — a guardrail that is filed, hashed, recorded in the
+        # ledger, and structurally incapable of blocking anything.
+        if not isfinite(self.tolerance):
+            raise ValueError(
+                f"guardrail {self.metric!r}: tolerance must be finite, got {self.tolerance!r}"
+            )
         if self.tolerance < 0:
             raise ValueError("tolerance is a magnitude and must be >= 0")
 
@@ -149,6 +159,20 @@ class Preregistration:
             )
         if self.direction not in ("maximize", "minimize"):
             raise ValueError(f"direction must be maximize|minimize, got {self.direction!r}")
+        # The declared numbers must be finite (BRE-28). A NaN `baseline_value`
+        # defeats G-07 twice over, and both failures are silent: rule 8 asks
+        # `abs(parent - declared) > BASELINE_TOLERANCE`, which is False against
+        # NaN, so the forged-baseline check reports agreement with a parent it
+        # never compared to; then rule 4's `effect < minimum_effect` is False for
+        # the NaN effect that follows, so the run promotes. Refusing at
+        # construction is the only place this can be caught once — the gate
+        # itself has no comparison left that a NaN cannot satisfy.
+        for label, value in (
+            ("baseline_value", self.baseline_value),
+            ("minimum_effect", self.minimum_effect),
+        ):
+            if not isfinite(value):
+                raise ValueError(f"{label} must be finite, got {value!r}")
         if self.minimum_effect < 0:
             raise ValueError("minimum_effect is a magnitude and must be >= 0")
         if not self.seeds:
