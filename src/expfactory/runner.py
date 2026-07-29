@@ -61,12 +61,13 @@ fresh-context reviewer decides. `promoted` still comes only from the gates.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from expfactory.sandbox import WorkspaceRefused, WorkspaceRoot
+from expfactory.sandbox import SecretStore, WorkspaceRefused, WorkspaceRoot
 from expfactory.verifier import Candidate, VerdictBundle, Verifier
 
 LABEL_AGENT_READY = "agent-ready"
@@ -213,6 +214,82 @@ class AgentSession(Protocol):
 
 
 @runtime_checkable
+class AgentSessionFactory(Protocol):
+    """Builds the session, so the runner decides what it can reach (BRE-38).
+
+    Ticket 07's last unmet box, stated there as *"closing that box means
+    inverting who builds what, which is a real change and not a wiring detail."*
+    This is the inversion.
+
+    An `AgentSession` handed in pre-built is a session somebody else configured.
+    Invariant 6 says the agent never holds tracker or GPU credentials, and today
+    that holds only because every caller has been careful — the runner has no way
+    to enforce it on an object it did not construct. A factory closes that: the
+    runner holds the factory, the factory holds the `SecretStore`, and a session
+    exists only once its environment has been scrubbed.
+
+    The shape is not invented here. TRL's OpenEnv `opencode` example builds its
+    sessions the same way — `ResourceSessionFactory` constructed with the
+    verifier and the sandbox backend, so the session cannot choose either:
+
+        FreePortOpenCodeSessionFactory(sandbox_backend=..., verifier=...)
+
+    Their reason is ours: the held-out tests must not be reachable from the thing
+    being scored. Invariant 9 expressed as a constructor rather than as a runtime
+    check, which is strictly stronger because there is no moment at which the
+    wrong wiring exists.
+    """
+
+    def create(self, ticket: Ticket, workspace: Path | None = None) -> AgentSession: ...
+
+
+class FixedSessionFactory:
+    """Adapts one already-built `AgentSession` onto the factory seam.
+
+    The migration path, and deliberately a *named* thing rather than an implicit
+    fallback: a caller using this is choosing to keep constructing its own
+    session, and the name says so at the call site.
+
+    It grants no isolation — the session it returns is the one it was handed, and
+    whatever that session can reach, it could reach already. `SandboxedSessionFactory`
+    is the one that actually enforces anything.
+    """
+
+    def __init__(self, session: AgentSession) -> None:
+        self._session = session
+
+    def create(self, ticket: Ticket, workspace: Path | None = None) -> AgentSession:
+        return self._session
+
+
+class SandboxedSessionFactory:
+    """Builds each session with the runner's secrets stripped from its environment.
+
+    The factory holds the `SecretStore`; the session never sees it. `child_env`
+    removes **every declared name**, not merely the ones a given run happens to
+    use — SPEC §15.3's normative MUST, and the difference matters because a
+    secret nobody remembered to use is exactly the one that leaks.
+
+    `build` receives an environment that has already been scrubbed. It cannot opt
+    out, because it never holds the store to opt out of.
+    """
+
+    def __init__(
+        self,
+        build: Callable[[Ticket, Path | None, Mapping[str, str]], AgentSession],
+        *,
+        secrets: SecretStore,
+        base_env: Mapping[str, str] | None = None,
+    ) -> None:
+        self._build = build
+        self._secrets = secrets
+        self._base_env = dict(base_env) if base_env is not None else dict(os.environ)
+
+    def create(self, ticket: Ticket, workspace: Path | None = None) -> AgentSession:
+        return self._build(ticket, workspace, self._secrets.child_env(self._base_env))
+
+
+@runtime_checkable
 class JobLedger(Protocol):
     """The compute-side registry, as much of it as the runner needs.
 
@@ -330,7 +407,15 @@ class Runner:
             # as a limit nobody reads.
             raise ValueError("max_awaiting_human must be at least 1, or None for unbounded")
         self._tracker = tracker
-        self._agent = agent
+        # BRE-38. A bare session is wrapped rather than rejected, so every
+        # existing caller keeps working while the seam the runner actually
+        # depends on becomes the factory. `isinstance` against a
+        # `runtime_checkable` Protocol rather than `hasattr("create")`: a
+        # session that happens to grow a `create` method must not silently
+        # change meaning.
+        self._agents: AgentSessionFactory = (
+            agent if isinstance(agent, AgentSessionFactory) else FixedSessionFactory(agent)
+        )
         self._verifier = verifier
         self._humans = human_allowlist
         self._max_concurrent = max_concurrent
@@ -600,7 +685,10 @@ class Runner:
                 return
 
         try:
-            produced = self._agent.run(ticket, workspace)
+            # Constructed here, per ticket, so the runner is the thing that
+            # decides what this session can reach (BRE-38). Previously it ran
+            # whatever object the caller had wired.
+            produced = self._agents.create(ticket, workspace).run(ticket, workspace)
         except Exception as exc:  # noqa: BLE001 — any agent failure is the same to us
             # Never silently drop it. A ticket stuck in progress with nobody
             # working on it is the failure mode the whole registry exists to
