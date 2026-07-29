@@ -51,29 +51,102 @@ So costs are no longer an input. The substrate quotes them from its own
 and every number that reaches the caps is validated finite and non-negative
 first. Refuse, never coerce: a cost that cannot be read means spend is
 **unknown**, and clamping it to zero is exactly the reading that must not happen.
+
+## Durable reservation, written before the side effect (BRE-30)
+
+`submit` used to call the substrate and append its row *afterwards*. A process
+death in that gap left a live, billable job with **no registry record at all**,
+and `reconcile` could not find it: `reconcile` polls handles read back out of the
+log, and there was no row to read. M2-03's box 10 — "if the queue loses a job,
+someone must notice" — failed in exactly the case it exists to catch, and box 5,
+"durable restart state", failed with it.
+
+So the intent is now durable *before* the side effect:
+
+    reserved ──bound──▶ job (handle) ──resolved──▶ RESOLVED
+       │      │                       └──lost────▶ LOST
+       │      └── the substrate answered; the handle is bound to the key
+       ├──released ── the substrate stated it started nothing
+       └──orphaned ── nothing bound it: the crash window. Breaker opens, a human
+                      decides, and `abandoned` is the only way out.
+
+A `reserved` row carries the idempotency key, the priced amount and the deadline,
+and is flushed and `fsync`ed *before* `ComputeSubstrate.submit` is called. The
+key rides along on `JobSpec.idempotency_key`, so the provider sees it and one
+intent cannot become two jobs. `bound` then binds the returned handle to the key.
+
+**An orphan is never auto-retried.** W-12 forbids auto-retry on cost, and a job
+whose state is unknown may already have spent; resubmitting can double-spend a
+GPU budget. It goes to a human with the breaker open, and it counts against
+today's spend the whole time, because the honest reading of "we reserved money
+and do not know what happened" is that the money may be gone.
+
+## One writer at a time
+
+Read-the-caps → reserve → submit → bind is a transition, not four statements.
+Two runner processes that interleave it can both admit work against the same
+daily budget: each reads a spend total that does not yet include the other's job.
+`docs/SPEC.md` assumes a single writer for the **verdict ledger**, never for this
+compute ledger, so the assumption had to be made real rather than inherited. An
+advisory OS file lock on a sidecar next to the log does it — see
+`_admission_lock`, which states the platform assumption it rests on.
 """
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import json
 import math
+import os
+import sys
 import time
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+import uuid
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol, TypeGuard, runtime_checkable
+from typing import IO, Any, Protocol, TypeGuard, runtime_checkable
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 Clock = Callable[[], float]
 
 SECONDS_PER_DAY = 86_400.0
 SECONDS_PER_HOUR = 3_600.0
 
+# How long to wait between attempts at the admission lock. Short enough that a
+# handoff between two runner processes is not perceptible, long enough that a
+# contended lock does not spin a core.
+_LOCK_POLL_S = 0.02
+
 
 class JobState(enum.StrEnum):
     SUBMITTED = "submitted"
     RESOLVED = "resolved"
     LOST = "lost"
+
+
+class ReservationState(enum.StrEnum):
+    """Where a reservation sits between "we committed the money" and "we know
+    what happened to it". See the state machine in the module docstring."""
+
+    # Written, and nothing has bound a handle to it yet. Either the submission
+    # is in flight right now, or the process died holding it.
+    RESERVED = "reserved"
+    # The substrate answered and its handle is durably bound to this key. From
+    # here the job is tracked by handle like any other.
+    BOUND = "bound"
+    # The substrate stated it started nothing (`SubstrateDeclined`), so no
+    # compute was bought. The only state that does not count against spend.
+    RELEASED = "released"
+    # Nobody bound it and nobody released it: the crash window. Needs a human.
+    ORPHANED = "orphaned"
+    # A named human looked at an orphan and closed it. Still counts against
+    # spend, because "I looked" is not "nothing ran".
+    ABANDONED = "abandoned"
 
 
 class RegistryRefused(RuntimeError):
@@ -87,6 +160,43 @@ class BreakerTripped(RegistryRefused):
 
 class CostCapExceeded(RegistryRefused):
     """A per-job or per-day GPU cap would be breached by this submission."""
+
+
+class ReservationConflict(RegistryRefused):
+    """This idempotency key already names an intent that is not cleanly bound.
+
+    Idempotency here refuses rather than replays. A key whose reservation never
+    bound a handle is the crash window, and the job behind it may be running and
+    spending right now — so "run it again" is the one answer that can double the
+    bill. A key a human already abandoned refuses too: a deliberate retry is a
+    *new* intent and gets a new key, which keeps it visible in the log as the
+    second attempt it is rather than hiding inside the first one's row.
+    """
+
+
+class SingleWriterTimeout(RegistryRefused):
+    """Another process holds the admission lock and would not let go in time.
+
+    Refused rather than waited out forever: a runner blocked indefinitely on a
+    lock is a runner that has stopped sweeping, and nothing else in the system
+    notices a lost job.
+    """
+
+
+class SubstrateDeclined(RuntimeError):
+    """A substrate's way of saying **nothing was started**.
+
+    Not a `RegistryRefused` — it is raised by the substrate, not by this module,
+    and the registry re-raises it untouched.
+
+    This distinction is load-bearing, and it is the only thing a substrate has to
+    tell the registry beyond the four protocol methods. When `submit` raises
+    *this*, the reservation is released and no compute was bought. When it raises
+    anything else, the outcome is genuinely unknown — the provider may have
+    started the job and failed on the way back — so the reservation stays open
+    and a human decides. Guessing "it probably did not start" is how a live job
+    becomes invisible, which is the whole defect BRE-30 exists to close.
+    """
 
 
 class InvalidJobInput(RegistryRefused):
@@ -156,15 +266,68 @@ def _checked_seconds(value: object, what: str) -> float:
     return seconds
 
 
+# --------------------------------------------------------------------------- #
+# The OS lock primitives, one call each. Kept as module functions so the two
+# platform branches sit side by side and `_admission_lock` reads as policy
+# rather than as portability.
+# --------------------------------------------------------------------------- #
+
+
+def _try_lock(fh: IO[bytes]) -> bool:
+    """One non-blocking attempt at the exclusive lock. True if it was taken.
+
+    The one place in this module that answers with a bool rather than raising,
+    and deliberately so: the caller is a retry loop two lines away that cannot
+    forget to read it, and the *policy* — refuse, do not wait forever — raises
+    `SingleWriterTimeout` from `_admission_lock` where a caller can see it.
+    """
+    fh.seek(0)
+    try:
+        if sys.platform == "win32":
+            # Windows locks a byte range from the current position, so the seek
+            # above is not decoration: two writers must contend for the *same*
+            # byte or they both "succeed".
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fh: IO[bytes]) -> None:
+    fh.seek(0)
+    if sys.platform == "win32":
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 @dataclass(frozen=True)
 class JobSpec:
-    """What to run. Opaque to the registry — the substrate interprets it."""
+    """What to run. Opaque to the registry — the substrate interprets it.
+
+    `idempotency_key` names *this intent to run it* (BRE-30). Leave it `None` and
+    `submit` mints one, so every call is a distinct intent and nothing about the
+    existing behaviour changes. Set it, and a second submission of the same key
+    cannot become a second job: a bound key returns the record it already made,
+    and an unbound one refuses because the first attempt's fate is unknown.
+
+    It lives here, on the thing being submitted, rather than as a third argument
+    to `submit`, for two reasons. The substrate then *receives* it — the registry
+    hands the substrate a spec, so a key on the spec is a key the provider can
+    deduplicate on, which is requirement 2 of the ticket and not something a
+    registry-only field could satisfy. And `submit`'s signature stays exactly
+    what BRE-29 left it: a caller names what to run and how long it may run, and
+    still cannot name what it costs.
+    """
 
     ticket: str
     command: tuple[str, ...]
     image: str
     gpu: str | None = None
     env: Mapping[str, str] | None = None
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +379,58 @@ class JobRecord:
     @property
     def is_open(self) -> bool:
         return self.state is JobState.SUBMITTED
+
+
+@dataclass(frozen=True)
+class Reservation:
+    """A durable intent to spend, written before the substrate is touched.
+
+    This is the row that closes the crash window. It exists on disk from the
+    moment the caps admitted the job, so a process death anywhere after it still
+    leaves something for `reconcile` to find — which is the difference between a
+    lost job and an invisible one.
+
+    `handle` is `None` until the substrate answers. That is not a missing value:
+    it is the state, and it is the state the whole ticket is about.
+    """
+
+    key: str
+    ticket: str
+    reserved_at: float
+    deadline_at: float
+    cost_estimate_usd: float
+    handle: str | None = None
+    state: ReservationState = ReservationState.RESERVED
+
+    @property
+    def is_orphaned(self) -> bool:
+        """No handle, and nobody said nothing started. The crash-window case."""
+        return self.handle is None and self.state is ReservationState.RESERVED
+
+    @property
+    def is_charged(self) -> bool:
+        """Whether this reservation counts against today's spend.
+
+        Everything except `RELEASED`. A reservation that never bound a handle
+        still counts, because the money may be gone and this factory's standing
+        answer to "we cannot tell" is *unknown*, never *zero*.
+        """
+        return self.state is not ReservationState.RELEASED
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """What a startup reconciliation found — by handle *and* by key.
+
+    Two fields rather than one list because they need different actions and
+    conflating them hides the expensive one. `finished` is routine: a job the
+    substrate says is done that this log still lists as open. `orphaned` is the
+    crash window, and every entry in it means a human has to decide whether
+    something is still running.
+    """
+
+    finished: tuple[str, ...] = ()
+    orphaned: tuple[Reservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -293,6 +508,7 @@ class JobRegistry:
         per_day_cap_usd: float,
         default_deadline_s: float = 6 * 3600.0,
         clock: Clock = time.time,
+        lock_timeout_s: float = 30.0,
     ) -> None:
         # Validated before the log file is even created. A registry whose caps
         # cannot bind must not come into existence, let alone leave a file
@@ -302,10 +518,24 @@ class JobRegistry:
         self._per_job_cap = _checked_usd(per_job_cap_usd, "per_job_cap_usd")
         self._per_day_cap = _checked_usd(per_day_cap_usd, "per_day_cap_usd")
         self._default_deadline_s = _checked_seconds(default_deadline_s, "default_deadline_s")
+        # Seconds, and zero is legitimate — "one attempt, then refuse" is what
+        # the two-writer fixtures use — so `_checked_seconds`, which demands a
+        # strictly positive duration for a deadline, is the wrong check here.
+        if not _finite(lock_timeout_s) or lock_timeout_s < 0.0:
+            raise InvalidJobInput(
+                f"lock_timeout_s is {lock_timeout_s!r}; it must be a finite, "
+                "non-negative number of seconds to wait for the admission lock."
+            )
+        self._lock_timeout_s = float(lock_timeout_s)
 
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.touch(exist_ok=True)
+        # A sidecar rather than the log itself. Locking bytes of a file that is
+        # also being appended to by every other operation invites a writer to
+        # block on a reader's advisory lock for reasons unrelated to admission.
+        self._lock_path = self.path.with_name(self.path.name + ".lock")
+        self._lock_path.touch(exist_ok=True)
         self._substrate = substrate
         self._clock = clock
         self._damaged = 0
@@ -313,8 +543,64 @@ class JobRegistry:
     # -- event log ---------------------------------------------------------
 
     def _append(self, event: dict[str, Any]) -> None:
+        """Append one event and make it **durable** before returning (BRE-30).
+
+        `flush` plus `os.fsync`, because the whole reservation protocol rests on
+        one claim: the row was on disk before the side effect happened. A record
+        sitting in a userspace buffer when the process dies is a record that did
+        not exist, and the crash window this ticket closes would simply move
+        from "between two calls" to "between a write and a page flush".
+
+        The cost is a real disk sync per event. That is a handful per job over a
+        six-hour run, so it is not a cost worth reasoning about; losing a live
+        billable job is.
+        """
         with self.path.open("a") as f:
             f.write(json.dumps(event, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+
+    # -- the single-writer guard -------------------------------------------
+
+    @contextlib.contextmanager
+    def _admission_lock(self) -> Iterator[None]:
+        """Exclusive across processes for the whole admission transition.
+
+        **The assumption, stated out loud:** an advisory byte-range lock on a
+        local filesystem, held by processes on one machine. `fcntl.flock` on
+        POSIX, `msvcrt.locking` on Windows; both conflict between two open file
+        descriptions, so this serialises two threads in one process as readily as
+        two runner processes, which is what makes it testable. It does **not**
+        survive a network filesystem with broken lock semantics, and it is not a
+        distributed lock. That is the deployment this factory has — one box, one
+        GPU, a handful of runner processes — and a database bought to do this
+        job would be a second store that also looks authoritative, which is
+        precisely what M2-03 declined Metaflow for.
+
+        A lock is not a substitute for the reservation. It stops two *live*
+        writers interleaving; it says nothing about a writer that died, whose
+        half-finished transition only the durable `reserved` row can reveal.
+
+        Bounded rather than blocking. `SingleWriterTimeout` refuses the
+        submission, which is recoverable; a runner parked forever inside a lock
+        has stopped calling `sweep`, and `sweep` is the only thing in this system
+        that can notice a lost job.
+        """
+        give_up_at = time.monotonic() + self._lock_timeout_s
+        with self._lock_path.open("r+b") as fh:
+            while not _try_lock(fh):
+                if time.monotonic() >= give_up_at:
+                    raise SingleWriterTimeout(
+                        f"another process held the admission lock on {self._lock_path} "
+                        f"for more than {self._lock_timeout_s:g}s; refusing to submit "
+                        "rather than admitting work against a spend total that "
+                        "another writer is in the middle of changing"
+                    )
+                time.sleep(_LOCK_POLL_S)
+            try:
+                yield
+            finally:
+                _unlock(fh)
 
     def _events(self) -> list[dict[str, Any]]:
         """Parse the log, or refuse.
@@ -357,19 +643,56 @@ class JobRegistry:
         self._events()
         return self._damaged
 
-    def records(self) -> dict[str, JobRecord]:
-        """Current state, derived by replaying the log in order.
+    def _replay(self) -> tuple[dict[str, JobRecord], dict[str, Reservation]]:
+        """One pass over the log, yielding both views it can produce.
 
         Deliberately a faithful read, not a validating one: whatever the log
         says is what this returns, so `sweep` can still notice a lost job whose
         row is otherwise unusable. Refusing on a bad *number* belongs in
         `spend_today_usd`, which is the only thing that does arithmetic on one.
+        That split is BRE-29's and BRE-30 does not touch it.
+
+        A job appears in `records` exactly once — via `bound`, or via a legacy
+        `submitted` row — so the two views can be summed without double-counting
+        a job that has both a reservation and a handle.
+
+        `submitted` is still replayed because the log is append-only: rows
+        written before this protocol existed are history, and history is not
+        editable. Nothing writes them any more.
         """
-        out: dict[str, JobRecord] = {}
+        jobs: dict[str, JobRecord] = {}
+        held: dict[str, Reservation] = {}
         for e in self._events():
             kind = e["event"]
-            if kind == "submitted":
-                out[e["handle"]] = JobRecord(
+            if kind == "reserved":
+                held[e["key"]] = Reservation(
+                    key=e["key"],
+                    ticket=e["ticket"],
+                    reserved_at=e["at"],
+                    deadline_at=e["deadline_at"],
+                    cost_estimate_usd=e["cost_estimate_usd"],
+                )
+            elif kind == "bound" and e["key"] in held:
+                held[e["key"]] = replace(
+                    held[e["key"]], handle=e["handle"], state=ReservationState.BOUND
+                )
+                prior = held[e["key"]]
+                jobs[e["handle"]] = JobRecord(
+                    handle=e["handle"],
+                    ticket=prior.ticket,
+                    # The reservation's own timestamp, not the binding's: the
+                    # deadline was computed from it, and `deadline_at -
+                    # submitted_at` has to stay the window that was priced.
+                    submitted_at=prior.reserved_at,
+                    deadline_at=prior.deadline_at,
+                    cost_estimate_usd=prior.cost_estimate_usd,
+                    state=JobState.SUBMITTED,
+                )
+            elif kind in ("released", "orphaned", "abandoned") and e["key"] in held:
+                held[e["key"]] = replace(held[e["key"]], state=ReservationState(kind))
+            elif kind == "submitted":
+                # Legacy shape, pre-BRE-30. See the docstring.
+                jobs[e["handle"]] = JobRecord(
                     handle=e["handle"],
                     ticket=e["ticket"],
                     submitted_at=e["at"],
@@ -377,18 +700,46 @@ class JobRegistry:
                     cost_estimate_usd=e["cost_estimate_usd"],
                     state=JobState.SUBMITTED,
                 )
-            elif kind in ("resolved", "lost") and e["handle"] in out:
-                prior = out[e["handle"]]
-                out[e["handle"]] = JobRecord(
-                    handle=prior.handle,
-                    ticket=prior.ticket,
-                    submitted_at=prior.submitted_at,
-                    deadline_at=prior.deadline_at,
-                    cost_estimate_usd=prior.cost_estimate_usd,
+            elif kind in ("resolved", "lost") and e.get("handle") in jobs:
+                prior_job = jobs[e["handle"]]
+                jobs[e["handle"]] = JobRecord(
+                    handle=prior_job.handle,
+                    ticket=prior_job.ticket,
+                    submitted_at=prior_job.submitted_at,
+                    deadline_at=prior_job.deadline_at,
+                    cost_estimate_usd=prior_job.cost_estimate_usd,
                     state=JobState.RESOLVED if kind == "resolved" else JobState.LOST,
                     artifact_ref=e.get("artifact_ref"),
                 )
-        return out
+        return jobs, held
+
+    def records(self) -> dict[str, JobRecord]:
+        """Jobs that have a handle, keyed by it. Faithful replay — see `_replay`.
+
+        A reservation that never bound a handle is deliberately *not* here, and
+        cannot be: this mapping is keyed by handle and the crash-window case has
+        no handle to key on. It is in `reservations()`, it is in
+        `spend_today_usd`, and `reconcile` escalates it. Making it invisible to
+        all three was the defect.
+        """
+        return self._replay()[0]
+
+    def reservations(self) -> dict[str, Reservation]:
+        """Every durable intent this log has ever recorded, keyed by its key.
+
+        Including bound and closed ones, because idempotency is a question about
+        history: "has this key been used" cannot be answered by a view that
+        forgets the keys that were.
+        """
+        return self._replay()[1]
+
+    def orphaned_reservations(self) -> list[Reservation]:
+        """Reservations with no handle and no explanation — the crash window.
+
+        The whole point of the protocol: this list is what a startup can see
+        that the old submit-then-record shape left invisible.
+        """
+        return [r for r in self.reservations().values() if r.is_orphaned]
 
     def attested_job(self, handle: str) -> dict[str, Any] | None:
         """What the log says about this handle, or None if it never issued one.
@@ -418,12 +769,24 @@ class JobRegistry:
     # -- breaker and caps --------------------------------------------------
 
     def breaker_reason(self) -> str | None:
-        """Why the breaker is open, or None. Any lost job opens it."""
+        """Why the breaker is open, or None. Any lost job opens it.
+
+        So does an orphaned reservation (BRE-30). The two are the same event
+        seen from different sides — compute this factory paid for and cannot
+        account for — and an orphan is the worse of the two, because a lost job
+        at least has a handle somebody can go and look up.
+        """
         for e in reversed(self._events()):
             if e["event"] == "breaker_reset":
                 return None
             if e["event"] == "lost":
                 return f"job {e['handle']} exceeded its deadline and was never resolved"
+            if e["event"] == "orphaned":
+                return (
+                    f"reservation {e['key']} was written but no handle was ever bound "
+                    "to it: a job may have been started and may still be spending. "
+                    "Check the substrate by that key before resetting."
+                )
             if e["event"] == "breaker_tripped":
                 return str(e.get("reason", "tripped"))
         return None
@@ -451,23 +814,38 @@ class JobRegistry:
         value, so anything unusable here arrived by editing the log — and the
         honest answer to "what did we spend today" is then *unknown*, which is
         the same stance an unreadable log already takes.
+
+        **Unbound reservations count (BRE-30).** A reservation whose handle was
+        never bound is money this factory committed and cannot account for, and
+        the only safe reading of that is that it was spent. Excluding it would
+        make a crash the cheapest way to get past the daily cap.
         """
         cutoff = self._clock() - SECONDS_PER_DAY
+        jobs, held = self._replay()
         total = 0.0
-        for record in self.records().values():
-            if not _finite(record.submitted_at):
+        # Every job with a handle, plus every reservation that never got one.
+        # `_replay` guarantees these do not overlap: a bound reservation is
+        # already represented by its `JobRecord`.
+        charges: list[tuple[str, str, float, float]] = [
+            (f"job {r.handle}", "submitted_at", r.submitted_at, r.cost_estimate_usd)
+            for r in jobs.values()
+        ]
+        charges += [
+            (f"reservation {r.key}", "reserved_at", r.reserved_at, r.cost_estimate_usd)
+            for r in held.values()
+            if r.handle is None and r.is_charged
+        ]
+        for what, when, at, cost in charges:
+            if not _finite(at):
                 raise BreakerTripped(
-                    f"job {record.handle} in {self.path} has submitted_at="
-                    f"{record.submitted_at!r}, so it can be placed neither inside nor "
-                    "outside the trailing day; today's spend is unknown. Repair or "
-                    "archive the log before submitting."
+                    f"{what} in {self.path} has {when}={at!r}, so it can be placed "
+                    "neither inside nor outside the trailing day; today's spend is "
+                    "unknown. Repair or archive the log before submitting."
                 )
-            if record.submitted_at < cutoff:
+            if at < cutoff:
                 continue
             try:
-                total += _checked_usd(
-                    record.cost_estimate_usd, f"job {record.handle}'s recorded cost in {self.path}"
-                )
+                total += _checked_usd(cost, f"{what}'s recorded cost in {self.path}")
             except InvalidJobInput as exc:
                 raise BreakerTripped(
                     f"{exc} Today's spend is therefore unknown. Repair or archive "
@@ -482,12 +860,30 @@ class JobRegistry:
         spec: JobSpec,
         deadline_s: float | None = None,
     ) -> JobRecord:
-        """Submit a job and record it. Checks run before the substrate is touched.
+        """Reserve, submit, bind. Checks run before the substrate is touched.
 
         Order matters: a job that is refused must not have been started, and a
-        job that was started must have been recorded. Recording happens
-        immediately after submission, so the widest possible gap is one process
-        death between the two — which `reconcile` is there to catch.
+        job that was started must have been recorded. **Recording now happens
+        first** (BRE-30). The old shape called the substrate and appended
+        afterwards, so a process death in between left a live billable job with
+        no row at all — invisible to `reconcile`, which reads the log, and so
+        invisible to the one component M2-03 made responsible for noticing.
+
+        What is durable before `ComputeSubstrate.submit` is called: the key, the
+        priced amount, the deadline. What is durable immediately after: the
+        handle. A death anywhere in that sequence now leaves a `reserved` row
+        with no `bound` row, which `reconcile` finds and escalates.
+
+        **Idempotent by key.** `spec.idempotency_key` names the intent. Submit it
+        twice and the second call does not reach the substrate: a bound key
+        returns the record the first call made, and an unbound one raises
+        `ReservationConflict`, because the first attempt may be running right now
+        and "try again" is how one intent becomes two bills. Leave the key `None`
+        and one is minted per call, which is the pre-BRE-30 behaviour exactly.
+
+        **One writer at a time.** The whole transition runs under
+        `_admission_lock`, so two runner processes cannot both read a spend total
+        that excludes the other's job and both admit against the same daily cap.
 
         **The caller does not name the price (BRE-29).** There used to be a
         `cost_estimate_usd` argument here, which made every cap a number the
@@ -502,67 +898,126 @@ class JobRegistry:
         the correct trade to expose.
         """
         # Checked first: it is a pure argument check, and its refusal names the
-        # actual problem rather than surfacing as a strange price downstream.
+        # actual problem rather than surfacing as a strange price downstream. It
+        # is also outside the lock, because refusing an unusable argument does
+        # not need to exclude anybody.
         billable_s = (
             self._default_deadline_s  # already validated in __init__
             if deadline_s is None
             else _checked_seconds(deadline_s, "deadline_s")
         )
 
-        reason = self.breaker_reason()
-        if reason is not None:
-            raise BreakerTripped(f"breaker open: {reason} — reset required before submitting")
+        with self._admission_lock():
+            # Before the breaker is read, not after: an orphan found here opens
+            # the breaker, and the check below is then what refuses. That makes
+            # "no new work while a reservation is unaccounted for" hold even in a
+            # process that never calls `reconcile`.
+            self._escalate_orphans()
 
-        if self._damaged:
-            # Spend accounting is incomplete, so the caps below cannot be trusted.
-            raise BreakerTripped(
-                f"{self._damaged} unreadable row(s) in {self.path}: a corrupt row may "
-                "have been a submission, so today's spend is unknown. Repair or "
-                "archive the log before submitting."
+            reason = self.breaker_reason()
+            if reason is not None:
+                raise BreakerTripped(f"breaker open: {reason} — reset required before submitting")
+
+            if self._damaged:
+                # Spend accounting is incomplete, so the caps below cannot be trusted.
+                raise BreakerTripped(
+                    f"{self._damaged} unreadable row(s) in {self.path}: a corrupt row may "
+                    "have been a submission, so today's spend is unknown. Repair or "
+                    "archive the log before submitting."
+                )
+
+            key = spec.idempotency_key or uuid.uuid4().hex
+            # Carried on the spec so the *provider* sees it. A substrate that can
+            # deduplicate on it cannot turn one intent into two jobs even if this
+            # registry is wrong about whether the first one landed.
+            keyed = spec if spec.idempotency_key else replace(spec, idempotency_key=key)
+
+            existing = self.reservations().get(key)
+            if existing is not None:
+                return self._idempotent_result(existing)
+
+            # The substrate is trusted with the credential, not with arithmetic: a
+            # rate card that returns NaN or a negative number is a bug that would
+            # otherwise disable the caps, so its answer is checked like any other.
+            cost_estimate_usd = _checked_usd(
+                self._substrate.rate_card().price_usd(keyed, billable_s),
+                f"the substrate's quote for {spec.ticket} over {billable_s:.0f}s",
             )
 
-        # The substrate is trusted with the credential, not with arithmetic: a
-        # rate card that returns NaN or a negative number is a bug that would
-        # otherwise disable the caps, so its answer is checked like any other.
-        cost_estimate_usd = _checked_usd(
-            self._substrate.rate_card().price_usd(spec, billable_s),
-            f"the substrate's quote for {spec.ticket} over {billable_s:.0f}s",
-        )
+            if cost_estimate_usd > self._per_job_cap:
+                raise CostCapExceeded(
+                    f"estimate ${cost_estimate_usd:.2f} exceeds per-job cap "
+                    f"${self._per_job_cap:.2f}"
+                )
+            projected = self.spend_today_usd() + cost_estimate_usd
+            if projected > self._per_day_cap:
+                raise CostCapExceeded(
+                    f"estimate ${cost_estimate_usd:.2f} would take today's spend to "
+                    f"${projected:.2f}, over the ${self._per_day_cap:.2f} daily cap"
+                )
 
-        if cost_estimate_usd > self._per_job_cap:
-            raise CostCapExceeded(
-                f"estimate ${cost_estimate_usd:.2f} exceeds per-job cap ${self._per_job_cap:.2f}"
+            now = self._clock()
+            record = JobRecord(
+                handle="",  # bound below; a reservation has no handle yet
+                ticket=spec.ticket,
+                submitted_at=now,
+                # The window that was priced is the window that is enforced. If
+                # these two ever diverge, the quote stops being an upper bound.
+                deadline_at=now + billable_s,
+                cost_estimate_usd=cost_estimate_usd,
+                state=JobState.SUBMITTED,
             )
-        projected = self.spend_today_usd() + cost_estimate_usd
-        if projected > self._per_day_cap:
-            raise CostCapExceeded(
-                f"estimate ${cost_estimate_usd:.2f} would take today's spend to "
-                f"${projected:.2f}, over the ${self._per_day_cap:.2f} daily cap"
+            # THE line this ticket exists for. Durable — flushed and fsynced —
+            # before anything bills.
+            self._append(
+                {
+                    "event": "reserved",
+                    "at": now,
+                    "key": key,
+                    "ticket": spec.ticket,
+                    "deadline_at": record.deadline_at,
+                    "cost_estimate_usd": cost_estimate_usd,
+                }
             )
 
-        now = self._clock()
-        handle = self._substrate.submit(spec)
-        record = JobRecord(
-            handle=handle,
-            ticket=spec.ticket,
-            submitted_at=now,
-            # The window that was priced is the window that is enforced. If these
-            # two ever diverge, the quote stops being an upper bound.
-            deadline_at=now + billable_s,
-            cost_estimate_usd=cost_estimate_usd,
-            state=JobState.SUBMITTED,
+            try:
+                handle = self._substrate.submit(keyed)
+            except SubstrateDeclined as exc:
+                # The substrate asserts it started nothing, so the money is not
+                # spent and the reservation is released rather than left to be
+                # escalated. Any other exception falls through untouched: the
+                # outcome is unknown, the reservation stays open, and the next
+                # reconciliation calls it what it is.
+                self._append(
+                    {"event": "released", "at": self._clock(), "key": key, "reason": str(exc)}
+                )
+                raise
+
+            self._append({"event": "bound", "at": self._clock(), "key": key, "handle": handle})
+            return replace(record, handle=handle)
+
+    def _idempotent_result(self, existing: Reservation) -> JobRecord:
+        """The answer to submitting a key that has been used before.
+
+        Bound: hand back the record the first call made. Nothing reaches the
+        substrate and nothing is charged twice, which is what idempotent means.
+
+        Anything else: refuse. An unbound reservation may be a job running right
+        now, and a released or abandoned one has already been reasoned about by
+        someone — in both cases a resubmission under the same key would either
+        double-spend or silently overwrite the history of what happened.
+        """
+        if existing.state is ReservationState.BOUND and existing.handle is not None:
+            job = self.records().get(existing.handle)
+            if job is not None:
+                return job
+        raise ReservationConflict(
+            f"idempotency key {existing.key!r} is already reserved for ticket "
+            f"{existing.ticket} at ${existing.cost_estimate_usd:.2f} and is "
+            f"{existing.state}. Refusing to submit it a second time: the first "
+            "attempt may be running and spending right now. Reconcile it, then "
+            "use a new key if a fresh attempt is genuinely wanted."
         )
-        self._append(
-            {
-                "event": "submitted",
-                "at": now,
-                "handle": handle,
-                "ticket": spec.ticket,
-                "deadline_at": record.deadline_at,
-                "cost_estimate_usd": cost_estimate_usd,
-            }
-        )
-        return record
 
     def resolve(self, handle: str) -> str:
         """Fetch the artifact reference and close the record.
@@ -631,15 +1086,90 @@ class JobRegistry:
             lost.append(record)
         return lost
 
-    def reconcile(self) -> list[str]:
-        """Handles the substrate reports finished that we still list as open.
+    def _escalate_orphans(self) -> list[Reservation]:
+        """Mark every unbound reservation orphaned, which opens the breaker.
 
-        Covers the one gap `submit` cannot close: a process death between
-        starting a job and recording it, and the ordinary case of a resolved job
-        nobody collected yet.
+        Not locked, and deliberately not: both callers already hold the
+        admission lock or take it around this. Appending twice for one key would
+        be harmless anyway — replay is idempotent — but tripping the breaker
+        twice for one orphan would read as two incidents.
+
+        Called from `submit` as well as `reconcile` so the guarantee does not
+        depend on anybody remembering to reconcile at startup.
         """
-        return [
-            r.handle
-            for r in self.outstanding()
-            if self._substrate.poll(r.handle) is JobState.RESOLVED
-        ]
+        found = self.orphaned_reservations()
+        now = self._clock()
+        for reservation in found:
+            self._append({"event": "orphaned", "at": now, "key": reservation.key})
+        return found
+
+    def reconcile(self) -> Reconciliation:
+        """Startup reconciliation, by handle **and** by key.
+
+        Two questions, and until BRE-30 this could only ask the first:
+
+        - `finished` — handles the substrate reports done that this log still
+          lists as open. The ordinary case of a result nobody collected.
+        - `orphaned` — reservations with no handle bound to them. The crash
+          window: something was priced, admitted and very possibly started, and
+          then the process died before anything could record what came back.
+
+        The second list used to be unreachable. `reconcile` polls handles read
+        out of the log, so a job whose row was never written was invisible to
+        the one component M2-03 made responsible for noticing it. Now the row
+        exists before the job does, and this is where it surfaces.
+
+        **An orphan is escalated, never retried.** Each one appends an
+        `orphaned` row, which opens the breaker and stops every further
+        submission until a human resets it — the same treatment a lost job gets,
+        for the same W-12 reason. Automatically resubmitting would be the single
+        worst available move: the job may be running, so the retry doubles the
+        bill for one result. `abandon_reservation` is the way out, and it takes a
+        human's name.
+        """
+        with self._admission_lock():
+            orphaned = self._escalate_orphans()
+        return Reconciliation(
+            finished=tuple(
+                r.handle
+                for r in self.outstanding()
+                if self._substrate.poll(r.handle) is JobState.RESOLVED
+            ),
+            orphaned=tuple(orphaned),
+        )
+
+    def abandon_reservation(self, key: str, operator: str, reason: str) -> None:
+        """Human-only. Close an orphaned reservation that someone has checked.
+
+        The only exit from `orphaned`, and it exists because a state with no exit
+        is not a state, it is a jam: `reconcile` would re-escalate the same key
+        after every breaker reset and the registry would never accept work again.
+
+        Deliberately requires a name and a reason, like `reset_breaker`, because
+        what is being recorded is a person's claim to have gone and looked at the
+        substrate. It does **not** refund the reservation — the amount still
+        counts against the day. "I checked and I think nothing ran" is not the
+        same as the substrate stating it started nothing, and only the second one
+        releases money.
+        """
+        existing = self.reservations().get(key)
+        if existing is None:
+            raise ReservationConflict(
+                f"no reservation {key!r} in {self.path}; nothing to abandon. "
+                "Refusing rather than writing a row about an intent that was "
+                "never recorded."
+            )
+        if existing.state is not ReservationState.ORPHANED:
+            raise ReservationConflict(
+                f"reservation {key!r} is {existing.state}, not orphaned. Only a "
+                "reservation nothing ever bound needs a human to close it."
+            )
+        self._append(
+            {
+                "event": "abandoned",
+                "at": self._clock(),
+                "key": key,
+                "operator": operator,
+                "reason": reason,
+            }
+        )

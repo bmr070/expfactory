@@ -1,6 +1,7 @@
 """
 N-08 — JobRegistry and the compute-substrate seam.
 BRE-29 — the caps are checked on numbers that can actually be compared.
+BRE-30 — the intent is durable before the side effect, and there is one writer.
 
 The properties under test are the ones nothing else in the system can provide:
 a lost job is noticed, cost caps refuse *before* compute is touched, the breaker
@@ -329,7 +330,10 @@ def test_reconcile_reports_finished_jobs_still_listed_open(tmp_path: Path):
     reg = _registry(tmp_path, sub, clock)
     _submit(reg, sub, 5.0)
     sub.status["job-0"] = JobState.RESOLVED
-    assert reg.reconcile() == ["job-0"]
+
+    found = reg.reconcile()
+    assert found.finished == ("job-0",)
+    assert found.orphaned == (), "nothing crashed, so nothing is unaccounted for"
 
 
 def test_a_corrupt_row_does_not_brick_the_registry(tmp_path: Path):
