@@ -54,6 +54,7 @@ M2-03 declined Metaflow to avoid has arrived by the back door.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -66,7 +67,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from expfactory.registry import SECONDS_PER_HOUR, Clock, JobSpec, JobState, RateCard
+from expfactory.registry import (
+    SECONDS_PER_HOUR,
+    Clock,
+    JobSpec,
+    JobState,
+    RateCard,
+    SubstrateDeclined,
+)
 
 # --------------------------------------------------------------------------- #
 # Hardware probe
@@ -214,9 +222,17 @@ class CostModel:
 # --------------------------------------------------------------------------- #
 
 
-class SubstrateRefused(RuntimeError):
+class SubstrateRefused(SubstrateDeclined):
     """Preflight refused the job. Raised before anything is started, so a refused
-    job has definitely not consumed the GPU."""
+    job has definitely not consumed the GPU.
+
+    A `SubstrateDeclined` since BRE-30, which is the registry's name for exactly
+    that claim. The registry writes a reservation *before* calling `submit`, so
+    it has to be told the difference between "I started nothing" and "I do not
+    know what happened": the first releases the reservation, the second leaves it
+    for a human. Without this the everyday case — one card, `max_concurrent=1`,
+    a second job asking for it — would open the circuit breaker every time.
+    """
 
 
 # Written by the wrapper when the payload finishes, whatever its exit code. Its
@@ -263,6 +279,20 @@ class LocalGpuSubstrate:
 
     def _dir(self, handle: str) -> Path:
         return self.root / handle
+
+    def _key_marker(self, key: str) -> Path:
+        """Where this substrate remembers that it has seen an idempotency key.
+
+        A file, not a directory, so `running()` — which scans for job
+        directories — steps over it without needing to know it exists.
+
+        The name is a hash of the key rather than the key itself. Not
+        sanitisation: a key is caller-supplied text and may contain a path
+        separator, and *rewriting* it into something safe is exactly the lossy
+        mapping that put two tickets in one workspace once already. A digest
+        collides only if SHA-256 does.
+        """
+        return self.root / f"key-{hashlib.sha256(key.encode('utf-8')).hexdigest()}.json"
 
     # -- preflight ---------------------------------------------------------
 
@@ -313,7 +343,31 @@ class LocalGpuSubstrate:
         Required VRAM is read from `spec.env['EXPFACTORY_VRAM_MIB']` when present;
         the spec type is shared with the cloud substrate and is deliberately not
         widened for one provider's preflight.
+
+        **Idempotent on `spec.idempotency_key` (BRE-30).** The registry writes its
+        reservation before calling this and binds the handle after, so a process
+        death in between leaves an intent whose fate only this side knows. A key
+        already on disk here returns the handle it produced rather than starting
+        a second run: one intent, one job, whatever the caller believes. The
+        marker is written *before* the process is spawned, because a marker
+        written afterwards would not exist in precisely the case it is for.
         """
+        if spec.idempotency_key is not None:
+            marker = self._key_marker(spec.idempotency_key)
+            if marker.exists():
+                try:
+                    seen = json.loads(marker.read_text(encoding="utf-8"))["handle"]
+                except (OSError, json.JSONDecodeError, KeyError) as exc:
+                    # Refuse rather than start a second job. An unreadable marker
+                    # means this key may already own a run, and guessing "it
+                    # probably does not" is how one intent buys two GPUs.
+                    raise SubstrateRefused(
+                        f"idempotency key {spec.idempotency_key!r} has an unreadable "
+                        f"marker at {marker} ({exc}); refusing to start a second job "
+                        "for a key that may already own one"
+                    ) from exc
+                return str(seen)
+
         required = 0
         env_map: Mapping[str, str] = spec.env or {}
         if "EXPFACTORY_VRAM_MIB" in env_map:
@@ -345,6 +399,7 @@ class LocalGpuSubstrate:
                     "command": list(spec.command),
                     "image": spec.image,
                     "gpu": spec.gpu,
+                    "idempotency_key": spec.idempotency_key,
                     "submitted_at": self._clock(),
                     "required_mib": required,
                 },
@@ -353,6 +408,14 @@ class LocalGpuSubstrate:
             ),
             encoding="utf-8",
         )
+
+        if spec.idempotency_key is not None:
+            # Before the spawn, not after. A marker written after `Popen` would
+            # be missing in exactly the window it exists to cover.
+            self._key_marker(spec.idempotency_key).write_text(
+                json.dumps({"handle": handle, "key": spec.idempotency_key}, sort_keys=True),
+                encoding="utf-8",
+            )
 
         wrapper = d / "run.py"
         wrapper.write_text(_WRAPPER, encoding="utf-8")
