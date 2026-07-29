@@ -28,6 +28,37 @@ allowlist, and `agent-ready` is not in it. An adapter asked to write anything
 outside the allowlist raises. A rule that lives in a constant beats a rule that
 lives in a comment, because only one of them survives someone being in a hurry.
 
+## Pagination, and why it is a trust property rather than a completeness one
+
+Every REST collection here used to be read one page deep. For `open_tickets`
+that loses tickets, which is merely wrong. For `label_actor` it is worse: a
+truncated timeline that happens not to contain the `labeled` event answers
+"nobody applied it", and the runner reads that as *not* dispatch-eligible —
+except when the truncation drops a *later* application by a bot and leaves an
+earlier one by a human visible, which is an authorization decision made on
+partial data, and it fails open.
+
+So the walk is all-or-nothing. A page fetch that fails mid-walk raises; nothing
+here returns the prefix it managed to read, because a prefix is
+indistinguishable from a complete history to every caller above.
+
+## Ordering policy
+
+**Ascending creation time, enforced here, not inherited from the API.**
+
+Requested from GitHub (`sort=created&direction=asc`) *and* re-sorted on arrival,
+because the request is a hint — a server-side default change, a proxy, or a
+`Link` header assembled from a different sort would otherwise silently reorder
+the history that `label_actor`'s "most recent application wins" rule depends on.
+Order the adapter relies on is order the adapter establishes.
+
+Issues sort on `number`, which is monotonic in creation order and always
+present, so no timestamp parsing is involved. Timeline events sort on
+`created_at`, whose GitHub form is Z-suffixed UTC ISO-8601 and therefore sorts
+lexicographically exactly as it sorts chronologically. A `labeled` event with no
+`created_at` is refused rather than defaulted: it cannot be placed against the
+others, and a guess about where it belongs is a guess about who granted dispatch.
+
 ## Credentials
 
 The transport carries the token; this class never sees it. That keeps the
@@ -38,14 +69,18 @@ could reach (invariant 6), and it makes the whole adapter testable without one.
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 from expfactory.runner import (
     LABEL_AGENT_READY,
     STATE_IN_PROGRESS,
     STATE_IN_REVIEW,
     STATE_NEEDS_HUMAN,
+    STATE_RUNNING_UNATTENDED,
     Ticket,
 )
 
@@ -54,7 +89,27 @@ STATE_LABELS: dict[str, str] = {
     STATE_IN_PROGRESS: "state:in-progress",
     STATE_IN_REVIEW: "state:in-review",
     STATE_NEEDS_HUMAN: "needs-human",
+    # The detached state. Absent until BRE-32, which made `_detach` unreachable
+    # through this adapter: the runner asked for a state the mapping could not
+    # express, so every detached ticket died on a `LabelWriteRefused` *after* its
+    # GPU job was already running. The runner now asks `writable_states()` before
+    # it dispatches anything.
+    STATE_RUNNING_UNATTENDED: "state:running-unattended",
 }
+
+# GitHub's ceiling. Asking for more is silently clamped server-side, so the
+# constructor refuses a larger value rather than letting a caller believe it
+# configured a page budget it did not get.
+MAX_PER_PAGE = 100
+
+# A walk longer than this is a loop or a workspace nobody should be polling in
+# one tick. Bounded so a `Link` header that never stops advancing cannot spin
+# forever holding the runner's tick open.
+_MAX_PAGES = 200
+
+# `<url>; rel="next"`. Anchored on the angle brackets rather than split on
+# commas, because a URL may legitimately contain a comma (`labels=a,b`).
+_LINK_ENTRY = re.compile(r'<([^>]*)>\s*;\s*rel\s*=\s*"?([^",;]+)"?')
 
 # The only labels this adapter will ever write. `agent-ready` is deliberately
 # absent: it is how a human grants dispatch rights, and nothing automated may
