@@ -1,7 +1,15 @@
 [
-  {"name": "agent-ready",        "color": "0e8a16", "description": "Human-tagged. The ONLY state a runner will dispatch."},
+  {"name": "agent-ready",        "color": "0e8a16", "description": "Human-tagged. The ONLY state a runner will dispatch. Valid only on stage:ticket."},
+
   {"name": "lane:empirical",     "color": "1d76db", "description": "Verified by the gate harness + ledger."},
   {"name": "lane:deterministic", "color": "5319e7", "description": "Verified by CI exit code."},
+
+  {"name": "stage:wayfinder",    "color": "c2e0c6", "description": "A question, not a task. Closes when the answer is recorded."},
+  {"name": "stage:spec",         "color": "bfd4f2", "description": "A published specification. Must link to the wayfinder node it synthesises."},
+  {"name": "stage:ticket",       "color": "0052cc", "description": "Atomic tracer bullet. Must have a stage:spec parent. The only dispatch-eligible stage."},
+  {"name": "stage:review",       "color": "fbca04", "description": "In /code-review. Clean-context sign-off pending."},
+
   {"name": "blocked",            "color": "b60205", "description": "Has an unmet blocking edge."},
-  {"name": "needs-human",        "color": "d93f0b", "description": "Cost/failure breaker tripped, or red-lane path. Runner will not touch."}
+  {"name": "needs-human",        "color": "d93f0b", "description": "Cost/failure breaker tripped, or red-lane path. Runner will not touch."},
+  {"name": "declined",           "color": "6a737d", "description": "Killed on evidence at the wayfinder stage. Kept, not deleted - a closed option is a result."}
 ]

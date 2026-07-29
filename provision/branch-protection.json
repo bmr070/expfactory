@@ -1,0 +1,62 @@
+{
+  "_why": [
+    "The merge policy for this repository, in version control, because it was not.",
+    "",
+    "docs/DISPATCH-READINESS.md described these settings from memory and omitted",
+    "substrate-guard from the required checks. Nothing caught it, because the",
+    "settings lived only in the GitHub UI where no reviewer sees them and no diff",
+    "shows a change. That is the failure gh-aw's ADR-27193 predicted when it",
+    "rejected 'rely on branch-protection settings' as making policy 'invisible to",
+    "code reviewers and hard to version-control'.",
+    "",
+    "This file is the declared policy. tests/test_branch_protection_policy.py",
+    "asserts the docs agree with it, so the drift that happened cannot happen",
+    "silently again. Verifying the LIVE settings against this file needs network",
+    "and auth, so it is a manual check, documented below.",
+    "",
+    "Verify by hand with:",
+    "  gh api repos/bmr070/expfactory/branches/main/protection"
+  ],
+
+  "repository": "bmr070/expfactory",
+  "branch": "main",
+
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["check (3.11)", "check (3.13)", "substrate-guard"]
+  },
+
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "require_code_owner_reviews": true
+  },
+
+  "required_conversation_resolution": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+
+  "enforce_admins": false,
+  "_enforce_admins_why": [
+    "Deliberately off. GitHub forbids approving your own PR, so with admin",
+    "enforcement on a solo owner could never merge and the repo would deadlock",
+    "on its first red-lane change.",
+    "",
+    "The cost: every merge here needs --admin, including docs-only ones, so the",
+    "override carries no information about WHY it was used. That is BRE-18, not a",
+    "flaw in this setting. A second identity restores the signal.",
+    "",
+    "A GitHub App is not an admin and has no such escape hatch. Do NOT grant the",
+    "App an admin bypass, or every control here becomes decorative."
+  ],
+
+  "_substrate_guard_why": [
+    "substrate-guard is REQUIRED and can never pass on a PR that touches",
+    "_HARNESS_PATHS, whether the change strengthens the harness or weakens it.",
+    "So a substrate PR has no normal merge path and --admin is the intended",
+    "mechanism rather than a workaround.",
+    "",
+    "That is the point: the override is tied to repo admin permission, which the",
+    "agent identity will never hold. An approval, or a magic string in a PR body,",
+    "can be produced by anything that can write. This cannot."
+  ]
+}

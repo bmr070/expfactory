@@ -201,6 +201,10 @@ def test_a_real_registry_satisfies_the_protocol(tmp_path):
     from expfactory.gates_v1 import AttestationSource
     from expfactory.registry import JobRegistry, JobSpec
 
+    class Card:
+        def price_usd(self, spec: JobSpec, billable_seconds: float) -> float:
+            return 1.0
+
     class Sub:
         def submit(self, spec: JobSpec) -> str:
             return "h1"
@@ -213,13 +217,16 @@ def test_a_real_registry_satisfies_the_protocol(tmp_path):
         def fetch_artifact(self, handle: str) -> str:
             return "ref"
 
+        def rate_card(self) -> Card:
+            return Card()
+
     registry = JobRegistry(
         tmp_path / "jobs.jsonl", Sub(), per_job_cap_usd=10.0, per_day_cap_usd=100.0
     )
     assert isinstance(registry, AttestationSource)
 
     assert registry.attested_job("never-submitted") is None
-    record = registry.submit(JobSpec(ticket="BRE-1", command=("x",), image="local"), 1.0)
+    record = registry.submit(JobSpec(ticket="BRE-1", command=("x",), image="local"))
     found = registry.attested_job(record.handle)
     assert found is not None and found["ticket"] == "BRE-1"
 

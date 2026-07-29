@@ -51,3 +51,43 @@ jobs:
           If this was you, apply the label from your own account. If it was not,
           treat it as an attempt to get the factory to act on a ticket nobody
           vetted."
+
+      - name: Strip the label unless the issue is an implementation ticket
+        # The second half of the dispatch rule (BRE-36). The first step asks WHO
+        # applied it; this asks WHAT it was applied to.
+        #
+        # A wayfinder node is a question and a spec is a design. Neither is
+        # implementable, and an agent dispatched at one will confidently produce
+        # something — the failure this ordering exists to prevent. `stage:ticket`
+        # additionally means a spec preceded it, which is the engineering
+        # equivalent of G-07 refusing a run whose preregistration came after.
+        #
+        # Deliberately a separate step rather than a compound condition on the
+        # first: the two refusals have different causes and a reader of the
+        # timeline should be able to tell which one fired.
+        if: github.event.sender.login == 'bmr070'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          # Fail closed: an API hiccup reading labels must not be read as
+          # "no disqualifying label present".
+          LABELS: ${{ toJSON(github.event.issue.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if echo "$LABELS" | grep -q '"stage:ticket"'; then
+            echo "stage:ticket present — dispatch eligibility stands."
+            exit 0
+          fi
+          gh issue edit "$ISSUE" --repo "$REPO" --remove-label agent-ready
+          gh issue comment "$ISSUE" --repo "$REPO" --body \
+            "\`agent-ready\` has been removed: this issue is not a \`stage:ticket\`.
+
+          Only an atomic implementation ticket is dispatch-eligible. A
+          \`stage:wayfinder\` node is a question and a \`stage:spec\` is a design —
+          an agent pointed at either will build something plausible, which is
+          exactly what the pipeline order exists to prevent.
+
+          The chain is \`wayfinder → spec → tickets\`, and \`stage:ticket\` is the
+          claim that it was followed. Run \`/to-tickets\` on the spec and apply
+          \`agent-ready\` to one of the tickets it produces."

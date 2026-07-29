@@ -20,6 +20,7 @@ GPU exists — is deliberately absent.
 from __future__ import annotations
 
 import itertools
+import math
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -32,14 +33,27 @@ from expfactory.local_substrate import (
     SubstrateRefused,
 )
 from expfactory.registry import (
+    SECONDS_PER_HOUR,
     ComputeSubstrate,
     CostCapExceeded,
+    InvalidJobInput,
     JobRegistry,
     JobSpec,
     JobState,
+    RateCard,
 )
 
 PY_NOOP = ("python", "-c", "pass")
+
+
+class PerSecondRateCard:
+    """The fake provider's price list: metered by the second, as rented compute
+    usually is. Nothing to do with the local card's electricity-plus-
+    amortisation arithmetic, which is the point — the seam has to hold two
+    unrelated ways of arriving at a dollar figure, neither keyed on a GPU."""
+
+    def price_usd(self, spec: JobSpec, billable_seconds: float) -> float:
+        return round(billable_seconds * 0.0009, 6)
 
 
 class FakeRemoteSubstrate:
@@ -57,6 +71,9 @@ class FakeRemoteSubstrate:
 
     def submit(self, spec: JobSpec) -> str:
         return f"remote-{spec.ticket}-{next(self._ids)}"
+
+    def rate_card(self) -> RateCard:
+        return PerSecondRateCard()
 
     def poll(self, handle: str) -> JobState:
         if handle in self._done:
@@ -177,6 +194,30 @@ def test_the_artifact_is_a_reference_available_only_after_completion(substrate):
     assert isinstance(ref, str) and ref
 
 
+def test_it_quotes_its_own_price(substrate):
+    """BRE-29: every substrate prices its own compute, because the registry no
+    longer accepts a price from whoever is submitting.
+
+    The contract is thin on purpose — finite, non-negative, non-decreasing in
+    the billable window — and says nothing about hardware. The local card imputes
+    electricity plus amortisation; the fake remote one meters per second. Both
+    answer the same question, which is what makes this a seam and not a
+    description of the GPU under the desk.
+    """
+    sub, _ = substrate
+    card = sub.rate_card()
+
+    prices = [card.price_usd(_spec(), seconds) for seconds in (60.0, 3_600.0, 43_200.0)]
+    for seconds, price in zip((60.0, 3_600.0, 43_200.0), prices, strict=True):
+        assert isinstance(price, float), f"{seconds}s priced as {price!r}"
+        assert math.isfinite(price) and price >= 0.0, f"{seconds}s priced as {price!r}"
+
+    assert prices == sorted(prices), (
+        "a longer billable window must not be cheaper: the registry prices the "
+        "deadline precisely so that the deadline is an upper bound"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Integration: the caps actually bind
 # --------------------------------------------------------------------------- #
@@ -189,6 +230,11 @@ def test_local_cost_makes_the_daily_cap_bind(tmp_path: Path):
     every cap passes forever while still reading as enforced. Here a real
     registry with a real cap refuses a real submission — which it could not do if
     the estimate were zero.
+
+    Since BRE-29 the registry asks the substrate for the price rather than being
+    handed one, so this also exercises the seam: the only lever the caller has is
+    the deadline, and a twelve-hour deadline on this card costs more than a
+    dollar.
     """
     sub = LocalGpuSubstrate(tmp_path / "jobs", prober=lambda: [])
     registry = JobRegistry(
@@ -198,11 +244,11 @@ def test_local_cost_makes_the_daily_cap_bind(tmp_path: Path):
         per_day_cap_usd=10.00,
     )
 
-    overnight = sub.estimate_usd(12.0)
+    overnight = sub.rate_card().price_usd(_spec("T-overnight"), 12 * SECONDS_PER_HOUR)
     assert overnight > 1.00, "twelve GPU-hours must cost more than the per-job cap"
 
     with pytest.raises(CostCapExceeded):
-        registry.submit(_spec("T-overnight"), cost_estimate_usd=overnight)
+        registry.submit(_spec("T-overnight"), deadline_s=12 * SECONDS_PER_HOUR)
 
     # and nothing was started
     assert registry.outstanding() == []
@@ -215,6 +261,11 @@ def test_a_zero_cost_model_would_disable_the_caps(tmp_path: Path):
     If someone 'simplifies' the cost model to zero because local compute is free,
     this test documents exactly what breaks: an eighteen-hour job sails through a
     cap set at one dollar.
+
+    Note what BRE-29 did and did not change. Zero is still a *usable* number, so
+    it is accepted rather than refused — refusing it would be a different ticket
+    and would need an argument about genuinely free substrates. What can no
+    longer happen is a price that is unreadable rather than merely low.
     """
     free = CostModel(board_watts=0.0, electricity_usd_per_kwh=0.0, amortisation_usd_per_hour=0.0)
     sub = LocalGpuSubstrate(tmp_path / "jobs", cost_model=free, prober=lambda: [])
@@ -223,9 +274,32 @@ def test_a_zero_cost_model_would_disable_the_caps(tmp_path: Path):
     )
 
     # 18 hours of GPU, and the cap does not notice
-    record = registry.submit(_spec("T-free"), cost_estimate_usd=sub.estimate_usd(18.0))
+    record = registry.submit(_spec("T-free"), deadline_s=18 * SECONDS_PER_HOUR)
     assert record.cost_estimate_usd == 0.0
 
     # whereas the shipped default refuses it
     real = LocalGpuSubstrate(tmp_path / "jobs2", prober=lambda: [])
-    assert real.estimate_usd(18.0) > 1.00
+    assert real.rate_card().price_usd(_spec(), 18 * SECONDS_PER_HOUR) > 1.00
+
+
+def test_a_broken_rate_card_cannot_disable_the_caps(tmp_path: Path):
+    """The seam moved *who* names the price; it did not make the price trusted.
+
+    A substrate holds the GPU credential. That is not a reason to trust its
+    arithmetic, and a card quoting NaN would otherwise pass both caps — which is
+    the original BRE-29 defect wearing the new signature.
+    """
+
+    class NaNCard:
+        def price_usd(self, spec: JobSpec, billable_seconds: float) -> float:
+            return float("nan")
+
+    sub = LocalGpuSubstrate(tmp_path / "jobs", prober=lambda: [])
+    sub.rate_card = NaNCard  # type: ignore[method-assign, assignment]
+    registry = JobRegistry(
+        tmp_path / "jobs.jsonl", sub, per_job_cap_usd=1.00, per_day_cap_usd=10.00
+    )
+
+    with pytest.raises(InvalidJobInput):
+        registry.submit(_spec("T-nan"))
+    assert registry.outstanding() == []
