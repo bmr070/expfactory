@@ -25,6 +25,7 @@ from expfactory.runner import (
     JobLedger,
     LostJob,
     Runner,
+    StateUnreachable,
     Submitted,
     Ticket,
     Tracker,
@@ -82,12 +83,26 @@ class FakeVerifier:
         return bundle
 
 
+ALL_STATES = frozenset(
+    {STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_NEEDS_HUMAN, STATE_RUNNING_UNATTENDED}
+)
+
+
 class FakeTracker:
-    def __init__(self, tickets: list[Ticket], actors: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        tickets: list[Ticket],
+        actors: dict[str, str] | None = None,
+        writable: frozenset[str] = ALL_STATES,
+    ) -> None:
         self.tickets = {t.id: t for t in tickets}
         self.actors = actors or {}
         self.comments: list[tuple[str, str]] = []
         self.states: list[tuple[str, str]] = []
+        self._writable = writable
+
+    def writable_states(self) -> frozenset[str]:
+        return self._writable
 
     def open_tickets(self):
         return list(self.tickets.values())
@@ -955,8 +970,138 @@ def test_detaching_without_a_collector_is_refused_not_parked():
     result = _runner(tracker, DetachedAgent(), jobs=DetachJobs()).tick()
 
     assert result.submitted == {}
-    assert "no collector" in result.refused["BRE-1"]
+    assert "ResultCollector" in result.refused["BRE-1"]
     assert ("BRE-1", STATE_NEEDS_HUMAN) in tracker.states
+
+
+def test_detaching_without_a_registry_is_refused_too():
+    """BRE-32 defect 1. A collector alone can turn a *finished* job into a
+    verdict, but `collect_finished` and `sweep` both live on the registry, so
+    with no registry nothing ever reports the job as finished or as lost.
+
+    The ticket would sit in `Running Unattended` permanently — the worse of the
+    two failures, because a state nothing can leave reads as work in flight and
+    nobody goes looking at a board that says a job is running.
+    """
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+
+    result = _runner(tracker, DetachedAgent("job-9"), collector=Collector()).tick()
+
+    assert result.submitted == {}
+    assert "JobLedger" in result.refused["BRE-1"]
+    assert ("BRE-1", STATE_RUNNING_UNATTENDED) not in tracker.states
+    assert ("BRE-1", STATE_NEEDS_HUMAN) in tracker.states
+    assert "job-9" in tracker.comments[-1][1]
+
+
+def test_the_refusal_names_both_missing_halves():
+    """A reader has to know what to wire, and "detach is not configured" does
+    not say. Both are named when both are absent."""
+    tracker = FakeTracker([_ticket("BRE-1")], actors={"BRE-1": "bmr070"})
+
+    result = _runner(tracker, DetachedAgent()).tick()
+
+    assert "ResultCollector" in result.refused["BRE-1"]
+    assert "JobLedger" in result.refused["BRE-1"]
+
+
+# ---- the pre-dispatch state check --------------------------------------------
+
+
+def test_a_tracker_that_cannot_park_a_ticket_is_refused_at_construction():
+    """BRE-32 defect 4. Both production adapters rejected `Running Unattended`,
+    and the runner learned that by catching the adapter's refusal *after* the
+    agent had submitted a GPU job.
+
+    Asked before anything runs instead. The failure is in the wiring, so it
+    belongs where the wiring happens.
+    """
+    tracker = FakeTracker([_ticket("BRE-1")], writable=ALL_STATES - {STATE_RUNNING_UNATTENDED})
+
+    with pytest.raises(StateUnreachable, match="Running Unattended"):
+        _runner(tracker, DetachedAgent(), jobs=DetachJobs(), collector=Collector())
+
+
+def test_the_unattended_state_is_only_required_when_detach_is_wired():
+    """The deterministic lane submits no GPU work and never parks a ticket.
+    Demanding the state there would make every tracker model a concept that lane
+    does not have."""
+    tracker = FakeTracker([_ticket("BRE-1")], writable=ALL_STATES - {STATE_RUNNING_UNATTENDED})
+
+    _runner(tracker, FakeAgent())  # no raise
+
+
+def test_a_tracker_missing_an_everyday_state_is_refused_even_without_detach():
+    """`Needs Human` is where every failure path ends. A tracker that cannot
+    write it can accept work and never escalate it."""
+    tracker = FakeTracker([_ticket("BRE-1")], writable=ALL_STATES - {STATE_NEEDS_HUMAN})
+
+    with pytest.raises(StateUnreachable, match="Needs Human"):
+        _runner(tracker, FakeAgent())
+
+
+def test_a_tracker_that_will_not_declare_its_states_is_refused():
+    """Fail closed. A tracker that will not say what it can write cannot be
+    checked, and dispatching anyway gambles a GPU job on the guess."""
+
+    class Silent(FakeTracker):
+        writable_states = None  # type: ignore[assignment]
+
+    with pytest.raises(StateUnreachable, match="writable_states"):
+        _runner(Silent([_ticket("BRE-1")]), FakeAgent())
+
+
+def test_both_real_adapters_declare_the_unattended_state():
+    """The whole of BRE-32 defect 2, asserted against the production adapters
+    rather than the fake that made the unit tests pass while both of them
+    rejected the state."""
+    from expfactory.github_tracker import STATE_LABELS, GitHubTracker
+    from expfactory.linear_tracker import LinearTracker
+
+    class NoHttp:
+        def get(self, path):
+            raise AssertionError("declaring states must not need a network")
+
+        def post(self, path, body):
+            raise AssertionError("declaring states must not need a network")
+
+        def delete(self, path):
+            raise AssertionError("declaring states must not need a network")
+
+    class NoGraphQL:
+        def query(self, document, variables):
+            raise AssertionError("declaring states must not need a network")
+
+    for tracker in (GitHubTracker("o/r", NoHttp()), LinearTracker("BRE", NoGraphQL())):
+        assert STATE_RUNNING_UNATTENDED in tracker.writable_states()
+        assert {STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_NEEDS_HUMAN} <= tracker.writable_states()
+
+    # And it is a real label on the GitHub side, not a key with no mapping.
+    assert STATE_LABELS[STATE_RUNNING_UNATTENDED] == "state:running-unattended"
+
+
+def test_neither_adapter_declares_a_state_that_closes_a_ticket():
+    """The allowlist grew by one state, not into "whatever the runner asks for".
+    The runner does not approve its own work."""
+    from expfactory.github_tracker import GitHubTracker
+    from expfactory.linear_tracker import LinearTracker
+
+    class Nothing:
+        def get(self, path):
+            return None
+
+        def post(self, path, body):
+            return None
+
+        def delete(self, path):
+            return None
+
+        def query(self, document, variables):
+            return {}
+
+    for tracker in (GitHubTracker("o/r", Nothing()), LinearTracker("BRE", Nothing())):
+        assert "Done" not in tracker.writable_states()
+        assert LABEL_AGENT_READY not in tracker.writable_states()
 
 
 def test_the_synchronous_path_still_works():
