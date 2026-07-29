@@ -20,15 +20,21 @@ open to wait for the second is the wrong shape at any timeout value (W-06).
    writes the handle to the append-only log before the job runs. The agent never
    holds the GPU credential (invariant 6).
 
-3. **Detach.** Return `Submitted(handle)` from the agent session and end it. Not
+3. **Pick the deadline, not the price.** `submit(spec, deadline_s=...)` takes no
+   cost: the substrate quotes it from its own rate card over the deadline you
+   chose, because a price the submitting side names is a request rather than a
+   cap (W-12, BRE-29). A shorter deadline is a cheaper job, and it is the only
+   lever there is. A non-finite, zero or negative deadline is refused outright.
+
+4. **Detach.** Return `Submitted(handle)` from the agent session and end it. Not
    a `Candidate`, not a partial verdict, not a prediction of how it will go. The
    ticket parks in `Running Unattended` and the registry owns the run.
 
-4. **Collect on a later tick.** `collect_finished()` returns finished jobs with
+5. **Collect on a later tick.** `collect_finished()` returns finished jobs with
    their waiting ticket; a `ResultCollector` turns the artifact reference into a
    `Candidate`, which reaches the same adjudication a synchronous one does.
 
-5. **Cite the handle in the candidate.** G-10 requires the handle be one the
+6. **Cite the handle in the candidate.** G-10 requires the handle be one the
    registry issued. A candidate quoting a handle with no record describes a run
    this factory never started.
 
@@ -44,6 +50,11 @@ open to wait for the second is the wrong shape at any timeout value (W-06).
   12 GB total is a real ceiling on which hypotheses are runnable here.
 - **Cost is imputed, never zero.** Hardware you own has no invoice, and a zero
   cost model silently disables every cap while leaving them looking enforced.
+- **`estimate > cap` was never a cap check.** `NaN` is under every cap and a
+  negative estimate is too, and the negative one also lowers the trailing-day
+  total. Numbers reaching a cap are refused unless finite and non-negative, and
+  refused means raised — do not clamp one, a cost you cannot read means spend is
+  unknown.
 - **The prober and a training run cannot both hold the card.**
 
 ## Failure modes and where they land

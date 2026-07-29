@@ -203,17 +203,25 @@ agent asks it to submit and receives an artifact reference back.
 numbers before anything dispatches. W-12 puts these on day one because the
 precedents were each retrofitted after a shock.
 
-> **This section used to say the caps "refuse fail-closed". That was not true and
-> the claim is withdrawn (BRE-29).** `submit()` tests only `estimate > cap`, so
-> `NaN` and negative estimates pass, and a negative estimate lowers the
-> trailing-day total and manufactures budget. Worse, a caller-supplied estimate is
-> not a cap at all when the untrusted caller picks the number — W-12's own
-> conclusion, arrived at again from the other end.
+Both are validated at construction: a non-finite or negative cap is refused
+before the log file is created, because a NaN cap passes every comparison in
+`submit` while a registry built with one still reads as configured (BRE-29).
+Nothing sets a job's *price* — the substrate quotes it from `rate_card()` over
+the deadline, so what you configure here is the ceiling, not the number it is
+checked against.
+
+> **This section previously claimed the caps "refuse fail-closed". That was
+> false when written, and BRE-29 is what made it true.** `submit()` tested only
+> `estimate > cap`, so `NaN` and negative estimates passed, and a negative
+> estimate lowered the trailing-day total and manufactured budget — a poisoned
+> `-100.0` row made `spend_today_usd()` return `-40.0` and admit a $130 job
+> against a $100 cap. Deeper still, a caller-supplied estimate is not a cap at
+> all when the untrusted caller picks the number, which is W-12's own conclusion
+> arrived at again from the other end.
 >
-> Setting the two numbers is still necessary and is no longer sufficient. The cap
-> is real once BRE-29 lands a trusted pricing function keyed by the **substrate's
-> rate card** — not by GPU SKU, because compute here is pluggable across edge,
-> local GPU and infra.
+> Kept as a record rather than deleted, because the interesting part is not the
+> bug — it is that a doc asserted a safety property for weeks and nothing
+> contradicted it.
 
 A doc asserting a safety property the code does not have is worse than silence,
 because it is the kind of claim someone later builds on. Recorded rather than

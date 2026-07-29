@@ -32,6 +32,22 @@ the thing they describe.
   ~$0.09/GPU-hour so the caps still bind. Setting it to zero does not "simplify
   free compute" — it silently disables every cap while leaving them looking
   enforced. Same shape as the zero-width noise band.
+- **`x > cap` is not a cap check.** `NaN > anything` is False, so a non-finite
+  estimate is under every cap, and so is `-100.0` — which then *subtracts* from
+  the trailing-day total and buys the next job over the limit. Both were live in
+  `JobRegistry.submit` and both were reproduced by an external review (BRE-29).
+  Anything compared to a cap is now refused first unless it is finite and
+  non-negative, and refused means raised, never clamped: a cost that cannot be
+  read means spend is unknown, not zero.
+- **Nobody submitting a job may name its price.** The substrate quotes it
+  (`ComputeSubstrate.rate_card()`), over the job's deadline. If you find yourself
+  adding a cost argument back to `submit` because a caller "knows better", that
+  is W-12's finding — a self-reported cost cap is not a cap — arriving again.
+  The lever the caller does have is the deadline, and it is priced.
+- **The rate card is not keyed on the GPU.** `submit`/`poll`/`fetch_artifact`
+  name no hardware anywhere and neither does `RateCard`; it prices a window in
+  seconds. A GPU SKU in that signature would make the registry hardware-aware for
+  the first time, and the next substrate may have no GPU to key on.
 - **A pid is not proof a job is alive.** Pids are reused, and the liveness probe
   costs ~250 ms on Windows, long enough for a short job to finish inside it.
   `done.json` is the authority; the probe is a hint. Getting this backwards
