@@ -37,6 +37,12 @@ such, but they are not zero, so the caps keep working and "do not cook the GPU
 for eighteen hours" stays enforceable. Moving to Modal later changes the *rate*,
 not the mechanism.
 
+`CostModel` is also the tree's one concrete `RateCard` (BRE-29): the registry no
+longer takes a cost from whoever is submitting, it asks the substrate what the
+substrate's own time costs. Note what the rate card is *not* keyed on — there is
+no GPU SKU in it, and no device class. It prices a billable window in seconds,
+which is a quantity an edge box or a rented instance answers just as well.
+
 ## What this deliberately does not do
 
 No judgement about whether a run succeeded. A process that exits non-zero is
@@ -60,7 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from expfactory.registry import Clock, JobSpec, JobState
+from expfactory.registry import SECONDS_PER_HOUR, Clock, JobSpec, JobState, RateCard
 
 # --------------------------------------------------------------------------- #
 # Hardware probe
@@ -150,7 +156,8 @@ def probe_gpus(runner: Runner = _run) -> list[GpuInfo]:
 
 @dataclass(frozen=True)
 class CostModel:
-    """Imputed dollars per GPU-hour for hardware you already own.
+    """Imputed dollars per GPU-hour for hardware you already own, and the one
+    concrete `RateCard` in the tree.
 
     Defaults are derived for the machine this was written against (RTX 4070,
     200 W board limit) and are estimates, not measurements:
@@ -176,13 +183,30 @@ class CostModel:
         return kw * self.electricity_usd_per_kwh + self.amortisation_usd_per_hour
 
     def estimate(self, expected_hours: float) -> float:
-        """Cost to hand `JobRegistry.submit`. Never returns zero for a real job.
+        """Imputed cost of `expected_hours` on this machine. Never zero for a
+        real job.
 
         A zero estimate would silently disable the caps, so a non-positive
         duration is floored at one minute rather than trusted.
         """
         hours = max(float(expected_hours), 1.0 / 60.0)
         return round(self.usd_per_hour() * hours, 4)
+
+    def price_usd(self, spec: JobSpec, billable_seconds: float) -> float:
+        """`RateCard` — what this machine charges for a job's billable window.
+
+        Time, not hardware. `spec` is accepted because the seam hands it over
+        and a rented substrate will need it to tell one instance class from
+        another; it is deliberately unused here, because one owned box has one
+        rate. Keying this on a GPU SKU would push hardware into a seam that has
+        stayed hardware-free on purpose — the registry above it names no device
+        anywhere, and the next substrate may not have a GPU at all.
+
+        Non-decreasing in `billable_seconds`, which is the contract `RateCard`
+        states: the registry prices the *deadline*, so a longer window has to
+        cost at least as much or the deadline stops being an upper bound.
+        """
+        return self.estimate(billable_seconds / SECONDS_PER_HOUR)
 
 
 # --------------------------------------------------------------------------- #
@@ -415,9 +439,20 @@ class LocalGpuSubstrate:
             raise SubstrateRefused(f"job {handle} has not produced {_DONE} yet")
         return str(done)
 
+    def rate_card(self) -> RateCard:
+        """`ComputeSubstrate` — this box quotes its own price (BRE-29).
+
+        The registry asks for this at submission time rather than being handed a
+        number by the caller. Returning the model itself keeps one rate card and
+        one place to override when the compute is rented instead of owned.
+        """
+        return self.cost_model
+
     # -- convenience --------------------------------------------------------
 
     def estimate_usd(self, expected_hours: float) -> float:
+        """What a run of roughly this length would cost. Reporting only — the
+        caps are checked against `rate_card()`, which the caller cannot supply."""
         return self.cost_model.estimate(expected_hours)
 
     def cancel(self, handle: str) -> bool:
