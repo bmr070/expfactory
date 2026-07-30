@@ -18,7 +18,10 @@ still need infrastructure that does not exist yet.
 | N-05 | Resolve M2-03 — the experiment queue | — | grilling session | **DONE** |
 | N-08 | JobRegistry + ComputeSubstrate protocol | M2-03 | — | **DONE** |
 | BRE-29 | Cost inputs validated; pricing moves behind a `RateCard` | N-08 | — | **DONE** |
-| BRE-30 | Reservation-before-submit, idempotency, crash-window recovery | BRE-29 | durability design | open |
+| BRE-30 | Reservation-before-submit, idempotency, crash-window recovery | BRE-29 | — | **DONE** |
+| BRE-31 | Trusted completion record; G-10 binds artifact, ticket and command | BRE-30 | — | **DONE** |
+| BRE-32 | Cursor/Link pagination; the parked state reachable through both trackers | — | — | **DONE** |
+| BRE-38 | `AgentSessionFactory` — the runner builds the session it hands out | 07 | — | **DONE** |
 | 07 | Runner: poll, claim, dispatch, reconcile | N-08 | - | **DONE** (last box closed by BRE-38) |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
@@ -29,14 +32,32 @@ Filed in Linear, not sliced here, because each is a defect in shipped code rathe
 than a slice of unbuilt spec. Full statement of each in
 [`../DISPATCH-READINESS.md`](../DISPATCH-READINESS.md).
 
-| ID | Defect | Priority |
-|---|---|---|
-| BRE-28 | Non-finite metrics promote — validate values at the `Candidate` door | **P0** |
-| BRE-29 | `JobRegistry` accepts negative and `NaN` cost estimates | **P0** |
-| BRE-30 | Submit-then-record crash window; no multi-writer guard | P1 |
-| BRE-31 | G-10 proves a handle exists, not the artifact or ticket | P1 |
-| BRE-32 | Detach unreachable through both real trackers; first-page-only reads | P2 |
-| BRE-33 | Compute seam says "GPU" where it means "substrate" | low, **deferred on purpose** |
+**All six are now closed.** The table records what the review found and what
+closed it, because a defect list that silently becomes a list of fixed things
+loses the record of how the code got here.
+
+| ID | Defect | Priority | Status |
+|---|---|---|---|
+| BRE-28 | Non-finite metrics promote — validate values at the `Candidate` door | **P0** | **DONE** |
+| BRE-29 | `JobRegistry` accepts negative and `NaN` cost estimates | **P0** | **DONE** |
+| BRE-30 | Submit-then-record crash window; no multi-writer guard | P1 | **DONE** |
+| BRE-31 | G-10 proves a handle exists, not the artifact or ticket | P1 | **DONE** |
+| BRE-32 | Detach unreachable through both real trackers; first-page-only reads | P2 | **DONE** |
+| BRE-33 | Compute seam says "GPU" where it means "substrate" | low | **DONE** (docstring + a test pinning it; `JobSpec.gpu` generalisation still deferred until a second substrate exists) |
+
+Two of the six turned out to be worse than the review described, and both are
+worth reading rather than ticking:
+
+- **BRE-31** was widened by prior art. TRL's `opencode` example penalises an
+  agent that "never ran its code", and neither G-10 nor this ticket's original
+  scope asked that question. A candidate could cite a genuine handle, for a
+  genuine job, whose command never ran the evaluation. The completion record now
+  carries `command` and `exit_code` and the gate **asserts** on them.
+- **BRE-32** pointed the opposite way from the ticket. A truncated history does
+  not *lose* the labelling event — it still contains the earlier human's one, so
+  it answers **yes** to a grant that was superseded. `label_actor` also had an
+  independent bypass: the old loop kept the previous actor when the newest event
+  had no login, so an anonymous re-application wore a human's attribution.
 
 **BRE-28 is the one worth reading twice**, because it is a lesson about this
 file's own optimism. `architecture-review-verifier.html` proposed making
@@ -125,14 +146,34 @@ checks (an external review reproduced both), and the negative one also lowered
   The card is keyed on a billable window in seconds and **not on a GPU SKU** —
   `submit`/`poll`/`fetch_artifact` name no hardware and neither does this.
 
-**BRE-30 is not started** — reservation-before-submit, idempotency keys and
-crash-window recovery, which need a durability design of their own. BRE-29 makes
-it slightly easier and changes nothing about its shape: the amount to reserve is
-now computed by the registry from the substrate's own quote before the substrate
-is touched, so a reservation has a number to write and it is not one the caller
-supplied. The gap BRE-30 has to close is unchanged: `submit` appends *after* the
-substrate returns a handle, so a process death in between leaves a started job
-with no row. `reconcile` still catches that after the fact.
+**BRE-30 is done, and it closed M2-03's own unmet box.** `submit` used to call the
+substrate and append its record afterwards, so a process death in that gap left a
+live, billable job with **no row at all** — invisible to `reconcile`, which reads
+rows, and therefore invisible to the one component M2-03 made responsible for
+noticing. The case box 10 exists to catch was the case it could not see.
+
+The protocol is now `reserved → bound | released | orphaned → abandoned`. Durable
+before the substrate is touched: the key, the priced amount, the deadline,
+flushed and fsynced. Durable immediately after: the handle. BRE-29 is what made
+the amount available that early, since the quote no longer comes from the caller.
+
+Four decisions in it are worth arguing with rather than inheriting:
+
+- **An orphan is escalated, never retried.** The job may be running, so a retry
+  buys one result twice. W-12 forbids auto-retry on cost; an unknown outcome is
+  the same argument with less information.
+- **`abandon_reservation` takes a human's name and does not refund.** A state
+  with no exit is a jam — every breaker reset would re-escalate the same key. But
+  "I looked and I think nothing ran" is a person's claim, and only
+  `SubstrateDeclined` is the substrate stating it started nothing.
+- **An unbound reservation counts against the day.** Unknown is not zero.
+- **Replaying an unbound key raises rather than resubmitting.** The first attempt
+  may be running right now, and "try again" is how one intent becomes two bills.
+
+The single-writer guard is an advisory byte-range lock, one machine, local
+filesystem — stated in the docstring rather than implied. Bounded, not blocking:
+a runner parked forever inside a lock has stopped calling `sweep`, and `sweep` is
+the only thing that notices a lost job.
 
 **N-01/02/03/04 landed.** G-07 and G-08 run inside `GateVerifier` when it is
 constructed with `require_prereg=True`, backed by a `PreregStore` (which `Ledger`
