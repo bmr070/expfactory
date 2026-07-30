@@ -100,6 +100,12 @@ _HARNESS_PATHS = (
     # environment it is launched into. An agent that could edit this could grant
     # itself the workspace root, or keep a secret the runner meant to remove.
     "sandbox.py",
+    # Decides which reviewers a pull request gets. It adjudicates nothing, but an
+    # agent able to edit the routing table could remove the adversarial lens from
+    # harness changes and the fleet would still report a clean run — the same
+    # shape as a gate that cannot fail, where the output is identical whether the
+    # check happened or not.
+    "review_fleet.py",
 )
 
 # Modules in this package that are deliberately NOT verification substrate.

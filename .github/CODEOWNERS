@@ -37,6 +37,7 @@
 /src/expfactory/gate_probe.py          @bmr070
 /src/expfactory/llm_probe.py           @bmr070
 /src/expfactory/sandbox.py             @bmr070
+/src/expfactory/review_fleet.py        @bmr070
 
 # CI is the enforcement surface; changing it changes what "green" means.
 /.github/workflows/    @bmr070
