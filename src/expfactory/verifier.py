@@ -491,14 +491,44 @@ class GateVerifier:
         store = self._prereg_store
         cited = candidate.prereg_hash
         record = store.get_prereg(cited) if (store and cited) else None
+
+        # **G-08 was switched off by a field the agent writes (BRE-40).**
+        #
+        # The lineage used to be read from two places that nothing reconciled:
+        # the churn count from `candidate.parent_id`, and the baseline from
+        # `record.parent_id`. `non_promoting_prereg_count` returns 0 immediately
+        # for `parent_id=None`, so:
+        #
+        #   file the prereg with parent_id="PARENT"   (rule 8 still passes,
+        #                                              against the real parent)
+        #   submit the Candidate with parent_id=None  (churn counts zero)
+        #
+        # Reproduced: eight shopped preregistrations under one parent, and the
+        # eighth promoted. Any other string works too, so it was never about
+        # `None`. G-08 is the *only* gate that sees across preregistrations, and
+        # it was disabled by a value the untrusted side supplies.
+        #
+        # The preregistration is the authority. It was filed before the run, it
+        # is content-hashed, and rule 8 already trusts its `parent_id` to locate
+        # the recorded baseline — so counting churn anywhere else was the
+        # inconsistency, not the fix.
+        if record is not None and record.parent_id != candidate.parent_id:
+            raise ValueError(
+                f"candidate declares parent_id={candidate.parent_id!r} but the "
+                f"preregistration it cites declares {record.parent_id!r}. These name the "
+                "lineage this attempt belongs to, and G-08 counts churn within it — a "
+                "candidate that disagrees with its own preregistration about which "
+                "lineage it is in gets counted in neither. Refused."
+            )
+        lineage = record.parent_id if record is not None else candidate.parent_id
+
         return PreregContext(
             prereg=record,
             exploratory=candidate.exploratory,
             filed_hashes=store.prereg_hashes() if store else frozenset(),
             cited_hash=cited,
-            lineage_attempts=(
-                store.non_promoting_prereg_count(candidate.parent_id) if store else 0
-            ),
+            # Counted on the *preregistration's* lineage, for the reason above.
+            lineage_attempts=(store.non_promoting_prereg_count(lineage) if store else 0),
             # Read from the ledger, deliberately not from the prereg: the whole
             # point of rule 8 is that the agent does not get to supply this.
             parent_metrics=(
@@ -735,10 +765,43 @@ class Ledger:
         Guardrail thresholds come from here, never from the preregistration —
         an agent-named threshold is decorative, the same defect rule 8 closed
         for the baseline.
+
+        **Non-finite values are dropped, and BRE-28 left this half open (BRE-40).**
+        `get_verdict_metric` above has always filtered NaN. This one — the reader
+        rules 6 and 8 actually consume — did not, so BRE-28 closed the *write*
+        boundary and left the *read* boundary wide.
+
+        A parent row carrying a NaN metric defeats G-07 twice, silently. Rule 8
+        asks `abs(parent - declared) > BASELINE_TOLERANCE`, which is False against
+        NaN, so the forged-baseline check reports agreement with a comparison it
+        never made. Rule 6 then compares each guardrail against NaN, and both
+        branches are False, so no guardrail can ever fire. Reproduced: a declared
+        baseline of `-1000.0` against actual runs of `0.01` promoted, reporting
+        "1 guardrail(s) held".
+
+        Reachability is the uncomfortable part. `to_dict` special-cases NaN for
+        `mean_metric` and never for `metrics`, so **any ledger row written before
+        the BRE-28 fix whose metric was NaN is an unfalsifiable baseline for every
+        child in its lineage, permanently** — the ledger is append-only and those
+        rows are exactly the ones BRE-28's own comment describes as having been
+        "written to an append-only ledger as a recorded result".
+
+        Dropped rather than raised, deliberately, and this is the one place the
+        "refuse, do not sanitize" rule does not apply cleanly: a missing metric is
+        already a state every caller handles (rule 6 reports "no recorded value on
+        parent" and blocks), whereas raising here would make one poisoned historic
+        row permanently unreadable and take the whole lineage with it. Absent
+        fails closed; unreadable fails stuck.
         """
         for row in reversed(self.rows()):
             if isinstance(row.payload, VerdictBundle) and row.payload.exp_id == exp_id:
-                return dict(row.payload.metrics)
+                return {
+                    name: value
+                    for name, value in row.payload.metrics.items()
+                    if isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and isfinite(value)
+                }
         return {}
 
     def position_of_verdict(self, exp_id: str) -> int | None:

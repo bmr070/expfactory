@@ -177,6 +177,43 @@ class Preregistration:
             raise ValueError("minimum_effect is a magnitude and must be >= 0")
         if not self.seeds:
             raise ValueError("a confirmatory run must declare its seed set up front")
+        if len(set(self.seeds)) != len(self.seeds):
+            # **The seed lottery, promoted (BRE-40).**
+            #
+            # Rule 5 compares `tuple(sorted(...))` of observed against declared,
+            # so a declared multiset of duplicates was honoured exactly, and
+            # nothing else in the gate set counts distinct seeds:
+            # `gate_seed_variance` checks `len(exp.runs)` and
+            # `gate_no_single_seed_dominance` checks `len(vals)`.
+            #
+            # Reproduced. Run twenty seeds exploratorily — free and unlimited by
+            # design — keep the one that scored 0.62 against a parent's 0.50,
+            # declare `seeds=(7, 7, 7, 7, 7)`, and submit five runs of seed 7:
+            #
+            #     PASS seed_variance: delta=+0.1200 vs noise band 0.0089 (real)
+            #     PASS no_single_seed_dominance: top gap 0 within noise
+            #     promoted=True
+            #
+            # Every variance gate reads a one-seed replicate as a *perfectly
+            # stable* result, because zero spread makes the noise band tiny and
+            # the dominance gap exactly zero. The gates do not merely miss it —
+            # they actively endorse it. And rule 5's own docstring claims it
+            # "prevents running twenty seeds and reporting the best five".
+            #
+            # Refused here rather than counted with `len(set(...))` downstream,
+            # because a declared seed set is the thing rule 5 checks against and
+            # it should be well formed before anything compares to it.
+            #
+            # This does NOT contradict `gate_reproducible`, which needs two runs
+            # of one seed to detect nondeterminism. That is a property of the
+            # observed `RunResult`s. A *declaration* saying "I will run seed 7
+            # five times and call that five seeds" is a different claim.
+            duplicates = sorted({s for s in self.seeds if list(self.seeds).count(s) > 1})
+            raise ValueError(
+                f"declared seeds contain duplicates: {duplicates}. A repeated seed is one "
+                "sample wearing the shape of several — the variance gates read zero spread "
+                "as a perfectly stable result and endorse it. Declare distinct seeds."
+            )
         overlap = set(self.secondary_metrics) & {g.metric for g in self.guardrails}
         if overlap:
             raise ValueError(f"metric cannot be both secondary and guardrail: {sorted(overlap)}")
