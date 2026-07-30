@@ -17,6 +17,7 @@ write ordering rather than the ordering itself.
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
@@ -27,12 +28,14 @@ from expfactory.registry import (
     SECONDS_PER_HOUR,
     BreakerTripped,
     CompletionRecord,
+    InvalidJobInput,
     JobRegistry,
     JobSpec,
     JobState,
     RateCard,
     RegistryRefused,
     ReservationConflict,
+    ReservationState,
     SingleWriterTimeout,
     SubstrateDeclined,
     SubstrateUncertain,
@@ -251,7 +254,30 @@ def test_abandoning_an_orphan_needs_a_name_and_still_charges(tmp_path: Path):
     key = reg.reconcile().orphaned[0].key
     reg.abandon_reservation(key, operator="bmr070", reason="checked the console, nothing running")
 
-    assert reg.reconcile().orphaned == (), "an abandoned orphan must not re-escalate"
+    # **This test used to be vacuous, and a review proved it (BRE-41).**
+    #
+    # It asserted `reconcile().orphaned == ()` and `spend == 25.0`. Deleting the
+    # `abandon_reservation` call above left both true and the test passing:
+    # `orphaned` is empty after ANY first escalation, and an orphan is charged
+    # whether abandoned or not. Two assertions, neither of which could fail.
+    #
+    # That is the `assert ... or True` family this repo already warns about,
+    # written in the session that added the warning's newest entry. The fix is
+    # to assert the thing that is only true *because* the call happened.
+    assert reg.reservations()[key].state is ReservationState.ABANDONED
+
+    # And the operator's name is the point of requiring one: what is being
+    # recorded is a person's claim to have gone and looked at the substrate.
+    log = (tmp_path / "jobs.jsonl").read_text(encoding="utf-8")
+    abandoned = [
+        json.loads(line)
+        for line in log.splitlines()
+        if line.strip() and json.loads(line).get("event") == "abandoned"
+    ]
+    assert len(abandoned) == 1
+    assert abandoned[0]["operator"] == "bmr070"
+    assert "console" in abandoned[0]["reason"]
+
     assert reg.spend_today_usd() == pytest.approx(25.0), "abandoning is not a refund"
 
 
@@ -480,3 +506,82 @@ def test_a_damaged_log_makes_spend_unknown_not_zero(tmp_path: Path) -> None:
     assert reopened.log_damage() == 1
     with pytest.raises(BreakerTripped, match="unknown"):
         reopened.spend_today_usd()
+
+
+# ---------------------------------------------------------------------------
+# BRE-41 — the remaining fail-opens
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("junk", ["null", "42", "[]", '{"nope": 1}', '"a string"'])
+def test_valid_json_that_is_not_an_event_is_damage(tmp_path: Path, junk: str):
+    """The quarantine caught `JSONDecodeError` only.
+
+    Every value here parses fine and then raises a `TypeError` or `KeyError` out
+    of the replay — which is not a `RegistryRefused`, so callers guarding on that
+    miss it, and it escaped the runner's tick entirely. Worse, `log_damage()`
+    reported **0** for a log that could not be replayed at all, and its contract
+    is "non-zero means spend accounting is incomplete".
+    """
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec(), deadline_s=HOUR)
+
+    log = tmp_path / "jobs.jsonl"
+    log.write_text(log.read_text(encoding="utf-8") + junk + "\n", encoding="utf-8")
+
+    reopened = _registry(tmp_path, FakeSubstrate(), clock)
+    assert reopened.log_damage() == 1, f"{junk!r} was not counted as damage"
+    # And the reads no longer explode; they refuse, which is a state callers handle.
+    with pytest.raises(BreakerTripped):
+        reopened.spend_today_usd()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_a_blank_idempotency_key_is_refused(tmp_path: Path, blank: str):
+    """`key = spec.idempotency_key or uuid4()` mapped `""` onto "no key".
+
+    Two submissions with `""` produced two GPU jobs, charged twice, and because
+    a *different* uuid was minted per call the substrate's own marker dedup could
+    not save it either. A caller reading the key out of an unset environment
+    variable believes it is protected.
+    """
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    with pytest.raises(InvalidJobInput, match="empty or blank"):
+        reg.submit(_spec("BRE-1", key=blank), deadline_s=HOUR)
+    assert sub.submitted == [], "a refused submission must not have started anything"
+
+
+def test_a_real_key_with_leading_space_stays_distinct(tmp_path: Path):
+    """Refuse, do not sanitize. `" k"` and `"k"` are different keys and
+    collapsing them would be the same error in the other direction."""
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec("BRE-1", key=" k"), deadline_s=HOUR)
+    reg.submit(_spec("BRE-2", key="k"), deadline_s=HOUR)
+    assert len(sub.submitted) == 2
+
+
+def test_an_uncomparable_deadline_refuses_rather_than_never_expiring(tmp_path: Path):
+    """`deadline_at` is the only field `sweep` reads and the only one `_replay`
+    never validated.
+
+    `json.loads` accepts bare `Infinity`, so a row carrying it stayed outstanding
+    forever: `now < inf` is always true, the breaker never opened, and
+    `log_damage()` read clean.
+    """
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec(), deadline_s=HOUR)
+
+    log = tmp_path / "jobs.jsonl"
+    poisoned = log.read_text(encoding="utf-8").replace(
+        f'"deadline_at": {1000.0 + HOUR}', '"deadline_at": Infinity'
+    )
+    log.write_text(poisoned, encoding="utf-8")
+
+    reopened = _registry(tmp_path, FakeSubstrate(), clock)
+    reopened._clock = _Clock(10**12)  # type: ignore[assignment]
+    with pytest.raises(BreakerTripped, match="deadline_at"):
+        reopened.sweep()
