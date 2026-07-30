@@ -899,8 +899,43 @@ class JobRegistry:
 
         The whole point of the protocol: this list is what a startup can see
         that the old submit-then-record shape left invisible.
+
+        **Newly discovered only.** `is_orphaned` requires state `RESERVED`, so an
+        entry leaves this list the moment `_escalate_orphans` writes its
+        `orphaned` row — which is correct here, because appending a second row
+        for one key would read as two incidents. For "everything still
+        unaccounted for", including what an earlier tick already escalated, use
+        `unaccounted_reservations`.
         """
         return [r for r in self.reservations().values() if r.is_orphaned]
+
+    def unaccounted_reservations(self) -> list[Reservation]:
+        """Every reservation nobody has explained yet — new *and* already escalated.
+
+        Added because the two were conflated and the difference was a hole
+        (BRE-41). `Reconciliation.orphaned` reported only what the current call
+        escalated, and `breaker_reason` stopped at the first `breaker_reset`. So:
+
+            reset_breaker("bmr070")            # no abandon_reservation
+            orphaned_reservations()  -> []
+            reconcile().orphaned     -> ()
+            submit(...)              -> accepted
+
+        A possibly-live job, and the registry back to accepting work with no
+        `abandoned` row recording that anyone checked. `abandon_reservation`
+        requires a name **and** a reason; `reset_breaker` requires a name and no
+        reason and cleared the orphan's entire practical effect. The control that
+        exists to force someone to look was bypassable by the cheaper operation.
+
+        `ABANDONED` is excluded: that is the state meaning a named human went and
+        looked, which is exactly the account this list is waiting for.
+        """
+        return [
+            r
+            for r in self.reservations().values()
+            if r.handle is None
+            and r.state in (ReservationState.RESERVED, ReservationState.ORPHANED)
+        ]
 
     def attested_job(self, handle: str) -> dict[str, Any] | None:
         """What the log says about this handle, or None if it never issued one.
@@ -951,7 +986,29 @@ class JobRegistry:
         seen from different sides — compute this factory paid for and cannot
         account for — and an orphan is the worse of the two, because a lost job
         at least has a handle somebody can go and look up.
+
+        **An unaccounted reservation survives `reset_breaker` (BRE-41).** This
+        used to be a pure reverse walk that returned `None` at the first
+        `breaker_reset`, so a reset with no `abandon_reservation` cleared an
+        orphan's entire effect and the registry accepted work again with a
+        possibly-live job still unexplained.
+
+        Checked before the walk, so ordering cannot matter: `reset_breaker`
+        clears *incidents*, and an orphan is not an incident, it is an open
+        question. Its only exit is `abandon_reservation`, which takes a name and
+        a reason because what is being recorded is a person's claim to have gone
+        and looked at the substrate.
         """
+        unaccounted = self.unaccounted_reservations()
+        if unaccounted:
+            keys = ", ".join(sorted(r.key for r in unaccounted))
+            return (
+                f"{len(unaccounted)} reservation(s) still unaccounted for ({keys}): a job "
+                "may have been started and may still be spending. Resetting the breaker "
+                "does not close these — check the substrate by key and record what you "
+                "found with abandon_reservation."
+            )
+
         for e in reversed(self._events()):
             if e["event"] == "breaker_reset":
                 return None
@@ -968,7 +1025,18 @@ class JobRegistry:
         return None
 
     def trip_breaker(self, reason: str) -> None:
-        self._append({"event": "breaker_tripped", "at": self._clock(), "reason": reason})
+        """Open the breaker. Takes the admission lock (BRE-41).
+
+        `submit` reads `breaker_reason()` and calls the substrate inside
+        `_admission_lock`, but the breaker's *writers* took no lock at all — so a
+        job could be admitted and started against a breaker that was opening. The
+        window is small and the next submit refuses, but "read the caps, reserve,
+        submit, bind is a transition, not four statements" applies to the breaker
+        read as well, and tripping it is an operator action that should stop the
+        submission in flight.
+        """
+        with self._admission_lock():
+            self._append({"event": "breaker_tripped", "at": self._clock(), "reason": reason})
 
     def reset_breaker(self, operator: str) -> None:
         """Human-only. Deliberately requires naming who reset it, because the
@@ -1289,17 +1357,47 @@ class JobRegistry:
         telling anyone which ticket was waiting — so the ticket would sit in
         `Running Unattended` forever. Collecting first means `sweep` only ever
         sees jobs that genuinely never answered.
+
+        **One job's failure must not discard another's result (BRE-41).** This
+        loop used to let an exception propagate, and `resolve` appends the
+        `resolved` row *before* returning — so if a later job's `fetch_artifact`
+        raised, every already-resolved job's `FinishedJob` was lost while its
+        record stayed durably closed:
+
+            collect_finished raised: OSError
+            records: {'job-0': (RESOLVED, 'ref/job-0'), 'job-1': (SUBMITTED, None)}
+
+        `job-0` is `RESOLVED`, so `outstanding()` excludes it, so `sweep` never
+        sees it and this method never returns it again. **Its ticket sits in
+        `Running Unattended` and nothing in the system will move it out** — M2-03
+        box 10 reintroduced on the collection side, one method away from where
+        BRE-30 closed it.
+
+        So each job is closed and collected independently, and a failure is
+        raised only after the ones that succeeded have been handed back.
         """
         out: list[FinishedJob] = []
+        failures: list[str] = []
         for record in self.outstanding():
-            if self._substrate.poll(record.handle) is not JobState.RESOLVED:
-                continue
-            out.append(
-                FinishedJob(
-                    handle=record.handle,
-                    ticket=record.ticket,
-                    artifact_ref=self.resolve(record.handle),
+            try:
+                if self._substrate.poll(record.handle) is not JobState.RESOLVED:
+                    continue
+                out.append(
+                    FinishedJob(
+                        handle=record.handle,
+                        ticket=record.ticket,
+                        artifact_ref=self.resolve(record.handle),
+                    )
                 )
+            except Exception as exc:  # noqa: BLE001 — one bad job must not strand the others
+                failures.append(f"{record.handle} ({record.ticket}): {exc}")
+        if failures and not out:
+            # Nothing to hand back, so raising loses no work and the caller
+            # learns why. With results in hand the caller gets those first —
+            # `_collect_finished` reports the rest through `TickResult.errors`.
+            raise BreakerTripped(
+                "no finished job could be collected: " + "; ".join(failures) + ". The "
+                "records stay open, so the next tick retries them."
             )
         return out
 
@@ -1339,7 +1437,13 @@ class JobRegistry:
                 # Finished within the window but nobody collected it; not a loss.
                 self.resolve(record.handle)
                 continue
-            self._append({"event": "lost", "at": now, "handle": record.handle})
+            # Under the lock for the same reason `trip_breaker` is (BRE-41): this
+            # append opens the breaker, and a submission reading it a moment
+            # earlier would be admitted against a breaker that was opening.
+            # Taken per-loss rather than around the whole sweep, so a long poll
+            # over many jobs does not hold admission shut throughout.
+            with self._admission_lock():
+                self._append({"event": "lost", "at": now, "handle": record.handle})
             lost.append(record)
         return lost
 

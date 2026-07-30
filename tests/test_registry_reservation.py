@@ -585,3 +585,80 @@ def test_an_uncomparable_deadline_refuses_rather_than_never_expiring(tmp_path: P
     reopened._clock = _Clock(10**12)  # type: ignore[assignment]
     with pytest.raises(BreakerTripped, match="deadline_at"):
         reopened.sweep()
+
+
+def test_resetting_the_breaker_does_not_forget_an_orphan(tmp_path: Path):
+    """`reset_breaker` was the cheap way past the control that forces a look.
+
+    `breaker_reason` walked backwards and returned None at the first
+    `breaker_reset`, so a reset with no `abandon_reservation` cleared an
+    orphan's entire effect:
+
+        after reset, orphaned_reservations(): []
+        after reset, reconcile().orphaned:    ()
+        submit after reset succeeded
+
+    A possibly-live job, and the registry accepting work again with no
+    `abandoned` row saying anyone checked. `abandon_reservation` needs a name
+    AND a reason; `reset_breaker` needs a name and no reason.
+    """
+    sub, clock = _priced(DyingSubstrate(), 25.0), _Clock()
+    with pytest.raises(ProcessDied):
+        _registry(tmp_path, sub, clock).submit(_spec(), deadline_s=HOUR)
+
+    reg = _registry(tmp_path, FakeSubstrate(), clock)
+    reg.reconcile()
+    reg.reset_breaker(operator="bmr070")
+
+    assert reg.breaker_reason() is not None, "a reset forgot an unexplained reservation"
+    assert len(reg.unaccounted_reservations()) == 1
+    with pytest.raises(BreakerTripped):
+        reg.submit(_spec("BRE-2"), deadline_s=HOUR)
+
+
+def test_abandoning_is_what_actually_closes_it(tmp_path: Path):
+    """The exit has to work, or the fix above is a jam rather than a control."""
+    sub, clock = _priced(DyingSubstrate(), 25.0), _Clock()
+    with pytest.raises(ProcessDied):
+        _registry(tmp_path, sub, clock).submit(_spec(), deadline_s=HOUR)
+
+    reg = _registry(tmp_path, _priced(FakeSubstrate(), 1.0), clock)
+    key = reg.reconcile().orphaned[0].key
+    reg.abandon_reservation(key, operator="bmr070", reason="checked, nothing running")
+    reg.reset_breaker(operator="bmr070")
+
+    assert reg.unaccounted_reservations() == []
+    assert reg.breaker_reason() is None
+    reg.submit(_spec("BRE-2"), deadline_s=HOUR)  # accepts work again
+
+
+class _OneBadArtifact(FakeSubstrate):
+    """Every job finishes; fetching the second one's artifact fails."""
+
+    def fetch_artifact(self, handle: str) -> str:
+        if handle == "job-1":
+            raise OSError("artifact store unreachable")
+        return super().fetch_artifact(handle)
+
+
+def test_one_unreadable_artifact_does_not_strand_the_others(tmp_path: Path):
+    """`resolve` appends the `resolved` row BEFORE returning, so a later failure
+    used to discard every already-collected result while its record stayed
+    durably closed — and `outstanding()` then excluded it, so `sweep` never saw
+    it and this method never returned it again. Its ticket would sit in
+    `Running Unattended` with nothing able to move it out.
+    """
+    sub, clock = _priced(_OneBadArtifact(), 1.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    for t in ("BRE-1", "BRE-2", "BRE-3"):
+        reg.submit(_spec(t), deadline_s=HOUR)
+    for h in ("job-0", "job-1", "job-2"):
+        sub.status[h] = JobState.RESOLVED
+
+    collected = reg.collect_finished()
+
+    tickets = sorted(j.ticket for j in collected)
+    assert tickets == ["BRE-1", "BRE-3"], f"a readable job was discarded: {tickets}"
+    # And the one that failed is still open, so the next tick retries it rather
+    # than losing it.
+    assert [r.handle for r in reg.outstanding()] == ["job-1"]
