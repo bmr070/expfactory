@@ -75,6 +75,7 @@ from expfactory.registry import (
     JobState,
     RateCard,
     SubstrateDeclined,
+    SubstrateUncertain,
 )
 
 # --------------------------------------------------------------------------- #
@@ -362,10 +363,20 @@ class LocalGpuSubstrate:
                     # Refuse rather than start a second job. An unreadable marker
                     # means this key may already own a run, and guessing "it
                     # probably does not" is how one intent buys two GPUs.
-                    raise SubstrateRefused(
+                    #
+                    # `SubstrateUncertain`, NOT `SubstrateRefused` (BRE-41). This
+                    # used to raise the latter, which is a `SubstrateDeclined` —
+                    # the registry's name for "nothing was started" — while the
+                    # message right here says "may already own one". The registry
+                    # believed the type over the words and wrote `released`, the
+                    # one state that does not count against spend, for a job that
+                    # was very possibly running.
+                    raise SubstrateUncertain(
                         f"idempotency key {spec.idempotency_key!r} has an unreadable "
                         f"marker at {marker} ({exc}); refusing to start a second job "
-                        "for a key that may already own one"
+                        "for a key that may already own one. Whether the first one is "
+                        "running is exactly what cannot be determined here, so the "
+                        "reservation stays open for a human rather than being released."
                     ) from exc
                 return str(seen)
 

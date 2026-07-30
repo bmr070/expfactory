@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from expfactory.local_substrate import SubstrateRefused
 from expfactory.registry import (
     SECONDS_PER_HOUR,
     BreakerTripped,
@@ -34,6 +35,7 @@ from expfactory.registry import (
     ReservationConflict,
     SingleWriterTimeout,
     SubstrateDeclined,
+    SubstrateUncertain,
 )
 
 HOUR = SECONDS_PER_HOUR
@@ -387,3 +389,94 @@ def test_sweep_still_notices_a_lost_job(tmp_path: Path):
 
     assert [r.ticket for r in lost] == ["BRE-1"]
     assert reg.breaker_reason() is not None
+
+
+# --------------------------------------------------------------------------- #
+# BRE-41 — two meanings sharing one class, and a damaged log answering 0.0
+# --------------------------------------------------------------------------- #
+
+
+def test_uncertain_is_not_declined() -> None:
+    """The type distinction is the whole fix.
+
+    `SubstrateRefused` is a `SubstrateDeclined` — the registry's name for
+    "nothing was started" — and the unreadable-marker path raised it while its
+    own message said "may already own one". The registry believed the type.
+
+    If `SubstrateUncertain` ever becomes a `SubstrateDeclined`, the live-job-as-
+    released bug returns silently, so this pins the hierarchy rather than any
+    behaviour.
+    """
+    assert not issubclass(SubstrateUncertain, SubstrateDeclined)
+    assert issubclass(SubstrateRefused, SubstrateDeclined), (
+        "a preflight refusal really did start nothing; that one must stay declined"
+    )
+
+
+class _UncertainSubstrate(FakeSubstrate):
+    """Cannot tell whether the job started. The unclean-shutdown case."""
+
+    def submit(self, spec: JobSpec) -> str:
+        raise SubstrateUncertain("marker unreadable; this key may already own a run")
+
+
+def test_an_uncertain_submission_stays_open_for_a_human(tmp_path: Path) -> None:
+    """Reproduced before the fix as a live job recorded at zero cost:
+
+        reservation states: {'intent-1': 'released'}
+        spend_today_usd  : 0.0
+        breaker_reason   : None
+
+    `released` is the one state that does not count against spend. The
+    reservation must instead stay open, so the next escalation orphans it and
+    the breaker opens.
+    """
+    sub, clock = _priced(_UncertainSubstrate(), 25.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    with pytest.raises(SubstrateUncertain):
+        reg.submit(_spec("BRE-1", key="intent-1"), deadline_s=HOUR)
+
+    reservation = reg.reservations()["intent-1"]
+    assert reservation.is_orphaned, f"uncertain outcome was resolved to {reservation.state!r}"
+    assert reg.spend_today_usd() == pytest.approx(25.0), "unknown spend was recorded as zero"
+
+    fresh = _registry(tmp_path, FakeSubstrate(), clock)
+    assert len(fresh.reconcile().orphaned) == 1
+    assert fresh.breaker_reason() is not None
+
+
+def test_a_declined_submission_still_releases(tmp_path: Path) -> None:
+    """The distinction must stay a distinction. A substrate that states it
+    started nothing should not open the breaker, or the everyday case — one
+    card, a second job asking for it — trips it every time."""
+    sub, clock = _priced(DecliningSubstrate(), 25.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    with pytest.raises(SubstrateDeclined):
+        reg.submit(_spec("BRE-1", key="intent-2"), deadline_s=HOUR)
+
+    assert reg.spend_today_usd() == pytest.approx(0.0)
+    assert reg.breaker_reason() is None
+
+
+def test_a_damaged_log_makes_spend_unknown_not_zero(tmp_path: Path) -> None:
+    """`_replay` drops a `bound` row whose key is not in `held`, and `held` is
+    built only from *parseable* `reserved` rows — so one damaged line silently
+    erases the live job bound to it.
+
+    Reproduced: `log_damage() -> 1`, `spend_today_usd() -> 0.0`, `records() ->
+    {}`, for a job 95,000s past its deadline. A live job, no spend, and nothing
+    for `sweep` to notice.
+    """
+    sub, clock = _priced(FakeSubstrate(), 25.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec("BRE-1"), deadline_s=HOUR)
+    assert reg.spend_today_usd() == pytest.approx(25.0)
+
+    # A truncated line, as an unclean shutdown leaves.
+    log = tmp_path / "jobs.jsonl"
+    log.write_text(log.read_text(encoding="utf-8") + '{"event": "reserved", "at": 10\n', "utf-8")
+
+    reopened = _registry(tmp_path, FakeSubstrate(), clock)
+    assert reopened.log_damage() == 1
+    with pytest.raises(BreakerTripped, match="unknown"):
+        reopened.spend_today_usd()
