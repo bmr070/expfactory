@@ -24,6 +24,15 @@ than a name that has to be recognised as bot-shaped.
 That is a stronger primitive, and it is why M2-08 concluded the free Linear
 identity is the load-bearing one while the GitHub App is a later nicety.
 
+**`label_actor` returns the account id, not a display name (BRE-42).** Linear's
+`displayName` and `name` are both self-editable by any member of the workspace,
+so an allowlist matched against either could be joined from a settings page: file
+a ticket, rename yourself to a name on the list, apply `agent-ready`. `User.id`
+is server-assigned and immutable, which is the only version of this check that
+means anything. The operational consequence is that `human_allowlist` holds
+Linear user ids; a stale name-based one fails closed and says which id it did not
+recognise.
+
 ## What this adapter may write
 
 The same allowlist rule as the GitHub adapter, for the same reason. This may set
@@ -72,10 +81,17 @@ it decides which ticket the runner dispatches when its concurrency budget is
 smaller than the queue, and oldest-first is a policy, whereas whatever the server
 returns is a coincidence.
 
-`createdAt` is a Z-suffixed UTC ISO-8601 string, which sorts lexicographically
-exactly as it sorts chronologically, so no parsing is involved. An entry that
-lacks it is refused rather than defaulted: for a history entry that added the
-label, a guess about where it belongs is a guess about who granted dispatch.
+`createdAt` is **parsed to an instant**, not compared as text (BRE-42). The
+lexical compare it replaced was correct only while every value was Z-suffixed UTC
+at one fixed precision — true of what Linear emits today, and never something
+this adapter checked. Two ways it fails, both silently, as a misordering:
+
+    '2026-07-01T00:00:03.500Z' < '2026-07-01T00:00:03Z'   # '.' (0x2E) < 'Z' (0x5A)
+    '2026-07-01T00:00:03-04:00'                            # sorts by wall clock
+
+An entry that lacks `createdAt`, carries one that will not parse, or carries one
+with no timezone is refused rather than defaulted: for a history entry that added
+the label, a guess about where it belongs is a guess about who granted dispatch.
 
 ## Credentials
 
@@ -87,6 +103,7 @@ limiter or a retry policy goes later without touching this logic.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from expfactory.runner import (
@@ -204,7 +221,7 @@ query($issueId: String!, $first: Int!, $after: String) {
       nodes {
         addedLabelIds
         createdAt
-        actor { name displayName }
+        actor { id name displayName }
         botActor { name }
       }
     }
@@ -396,22 +413,50 @@ class LinearTracker:
             cursor = str(next_cursor)
 
     @staticmethod
-    def _by_created_at(nodes: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
-        """Ascending creation time, established here rather than requested.
+    def _instants(nodes: list[dict[str, Any]], what: str) -> list[tuple[datetime, dict[str, Any]]]:
+        """Each node paired with its `createdAt` as an instant, ascending.
 
         Linear orders connections by `updatedAt` descending by default and
         `orderBy` takes no direction, so the arrival order is never the one this
-        adapter needs. `createdAt` is Z-suffixed UTC ISO-8601 and therefore sorts
-        lexicographically exactly as it sorts chronologically.
+        adapter needs.
+
+        Parsed, not compared as text (BRE-42). See the module docstring for the
+        two ways a lexical compare inverts. Every refusal below is a value this
+        adapter cannot place in the order, and where a history entry belongs in
+        the order is which account granted dispatch.
         """
+        out: list[tuple[datetime, dict[str, Any]]] = []
         for node in nodes:
-            if not node.get("createdAt"):
+            raw = node.get("createdAt")
+            if not raw:
                 raise UnorderableEntry(
                     f"a {what} entry has no createdAt, so it cannot be placed against the "
                     "others. Refused rather than assumed: order is what decides which "
                     "application of a label is the most recent one."
                 )
-        return sorted(nodes, key=lambda node: str(node["createdAt"]))
+            try:
+                # `fromisoformat` handles the `Z` suffix from 3.11 onward.
+                when = datetime.fromisoformat(str(raw))
+            except ValueError as exc:
+                raise UnorderableEntry(
+                    f"a {what} entry carries createdAt={raw!r}, which is not a timestamp "
+                    "this adapter can place against the others. Refused rather than "
+                    "guessed."
+                ) from exc
+            if when.tzinfo is None:
+                raise UnorderableEntry(
+                    f"a {what} entry carries createdAt={raw!r} with no timezone, so it "
+                    "names a wall clock rather than an instant and cannot be ordered "
+                    "against one."
+                )
+            out.append((when, node))
+        out.sort(key=lambda pair: pair[0])
+        return out
+
+    @classmethod
+    def _by_created_at(cls, nodes: list[dict[str, Any]], what: str) -> list[dict[str, Any]]:
+        """`_instants` for callers that only need the order, not the instants."""
+        return [node for _, node in cls._instants(nodes, what)]
 
     def open_tickets(self) -> Sequence[Ticket]:
         """Issues in this team that are not completed or cancelled.
@@ -452,7 +497,20 @@ class LinearTracker:
         return out
 
     def label_actor(self, ticket_id: str, label: str) -> str | None:
-        """Who applied `label`, or None if that cannot be established.
+        """**The account id** that applied `label`, or None if that cannot be
+        established.
+
+        Returns an id, not a display name (BRE-42). Linear's `displayName` and
+        `name` are both self-editable by any member of the workspace, so matching
+        the runner's allowlist against either meant *anyone who could file a
+        ticket could also rename themselves into the allowlist* and then grant
+        their own dispatch. That is invariant 7 defeated by a settings page. The
+        `User.id` is a server-assigned UUID nothing in the product can change.
+
+        The consequence for operators is real and deliberate: `human_allowlist`
+        must hold Linear user ids, not names. A stale name-based allowlist fails
+        *closed* — the id will not match and the ticket is refused, naming the
+        unrecognised id in the reason. See `docs/TRACKING.md`.
 
         Returns None — never a name — when the actor was a bot. Linear reports
         `botActor` as its own field, so this is a schema-level distinction rather
@@ -485,14 +543,44 @@ class LinearTracker:
         # attributed to whoever put it back, not to whoever put it there first.
         # Ordered here rather than by reading the list backwards, which only
         # worked while the server happened to return history ascending.
-        latest = self._by_created_at(applications, "history")[-1]
+        instants = self._instants(applications, "history")
+        newest, latest = instants[-1]
+
+        # **A tie is refused, not broken by arrival order (BRE-42).** Two
+        # applications sharing the newest instant fall to Python's stable sort,
+        # which preserves whatever order the server sent — the very thing the
+        # comment above distrusts. Only ambiguous when the entries name different
+        # parties, so one account re-adding twice still answers cleanly.
+        contenders = [entry for when, entry in instants if when == newest]
+        parties = {self._party(entry) for entry in contenders}
+        if len(parties) > 1:
+            raise UnorderableEntry(
+                f"{len(contenders)} entries adding {label!r} to issue {ticket_id} share the "
+                f"newest instant {newest.isoformat()} but name different parties "
+                f"({sorted(str(p) for p in parties)}). Which one granted dispatch cannot be "
+                "determined from the history, and arrival order is the server's to choose. "
+                "Refused."
+            )
+
         if latest.get("botActor"):
             # A bot applied it. Deliberately not returned as a name: the runner
             # would then have to decide whether that name is a bot.
             return None
-        actor = latest.get("actor") or {}
-        name = actor.get("displayName") or actor.get("name")
-        return str(name) if name else None
+        actor_id = (latest.get("actor") or {}).get("id")
+        return str(actor_id) if actor_id else None
+
+    @staticmethod
+    def _party(entry: dict[str, Any]) -> str | None:
+        """Who an entry is attributed to, for tie detection only.
+
+        A bot is one party (`None` would collide with an unattributable human
+        entry, and those are different facts), and a human is their account id.
+        """
+        bot = entry.get("botActor")
+        if bot:
+            return f"bot:{(bot or {}).get('name')}"
+        actor_id = (entry.get("actor") or {}).get("id")
+        return f"user:{actor_id}" if actor_id else "unattributed"
 
     def _label_id(self, ticket_id: str, label: str) -> str | None:
         nodes = self._walk(_LABELS, {"issueId": ticket_id}, path=("issue", "labels"))
@@ -507,14 +595,29 @@ class LinearTracker:
         self._call(_COMMENT, {"issueId": ticket_id, "body": body})
 
     def writable_states(self) -> frozenset[str]:
-        """The runner states this adapter may set.
+        """The runner states this adapter can actually reach on *this* team.
 
-        Asked before dispatch, so a state the allowlist cannot reach is a wiring
-        error caught while nothing is running. Previously the runner found out by
+        Asked before dispatch, so a state the runner will need is a wiring error
+        caught while nothing is running. Previously the runner found out by
         catching `StateWriteRefused` at the moment it tried to park a ticket —
         after the GPU job behind it had already started.
+
+        **Intersected with the team's real workflow states (BRE-42).** Returning
+        the bare allowlist made this method answer a question about *this file*
+        while its docstring promised an answer about *this workspace*, so the
+        exact failure it exists to move earlier still happened at write time: a
+        team without a `Running Unattended` column passed the pre-dispatch check
+        and then refused the park. Two states in `_WRITABLE_STATES` are not
+        Linear defaults, so this is the ordinary case for a fresh team, not an
+        exotic one.
+
+        The state list is walked, cached, and shared with `_state_id`, so this
+        costs one query per process. It is not free, and being wrong was worse.
+        A walk that cannot complete raises rather than returning a prefix — a
+        short list here reads as "the team lacks that column", which would take
+        the runner down the same wrong branch by a quieter route.
         """
-        return _WRITABLE_STATES
+        return _WRITABLE_STATES & frozenset(self._known_states())
 
     def set_state(self, ticket_id: str, state: str) -> None:
         """Move an issue to one of the states this adapter may set.
@@ -532,18 +635,28 @@ class LinearTracker:
         state_id = self._state_id(state)
         self._call(_SET_STATE, {"issueId": ticket_id, "stateId": state_id})
 
-    def _state_id(self, name: str) -> str:
+    def _known_states(self) -> dict[str, str]:
+        """The team's workflow states, name -> id, fetched once per process.
+
+        Cached because both `writable_states` (pre-dispatch) and `_state_id`
+        (every park) ask, and the answer changes only when a human edits the
+        team's board.
+        """
         if self._state_ids is None:
             # Walked, not first-paged. A truncated state list turns the refusal
-            # below into a lie: it would report the team has no such state when
-            # the state exists and simply arrived on page two.
+            # in `_state_id` into a lie: it would report the team has no such
+            # state when the state exists and simply arrived on page two.
             nodes = self._walk(_STATES, {"teamKey": self._team}, path=("workflowStates",))
             self._state_ids = {node["name"]: node["id"] for node in nodes}
-        state_id = self._state_ids.get(name)
+        return self._state_ids
+
+    def _state_id(self, name: str) -> str:
+        known = self._known_states()
+        state_id = known.get(name)
         if state_id is None:
             raise StateWriteRefused(
                 f"team {self._team!r} has no workflow state named {name!r}. "
-                f"Known: {sorted(self._state_ids)}. Create it rather than letting the "
+                f"Known: {sorted(known)}. Create it rather than letting the "
                 "runner silently fail to move tickets."
             )
         return str(state_id)

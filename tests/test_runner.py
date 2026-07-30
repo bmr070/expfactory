@@ -35,6 +35,15 @@ from expfactory.verifier import Candidate, GateVerifier
 
 HUMANS = frozenset({"bmr070"})
 
+# Every state the runner ever asks an adapter to write. Named once so the
+# workflow-states fixture below and the allowlist assertions cannot drift apart.
+_RUNNER_STATES = (
+    STATE_IN_PROGRESS,
+    STATE_IN_REVIEW,
+    STATE_NEEDS_HUMAN,
+    STATE_RUNNING_UNATTENDED,
+)
+
 
 def _candidate(metric: float = 0.80, overlap: int = 0) -> Candidate:
     """The evidence an agent session returns. Not a verdict — the runner judges."""
@@ -1051,28 +1060,67 @@ def test_a_tracker_that_will_not_declare_its_states_is_refused():
         _runner(Silent([_ticket("BRE-1")]), FakeAgent())
 
 
+def _all_states_transport(names: tuple[str, ...] = _RUNNER_STATES):
+    """A transport that answers only the Linear workflow-states query.
+
+    `writable_states` on the Linear side is a *verified* answer since BRE-42, so
+    a transport is now part of the question rather than an intrusion into it.
+    Anything else still raises: the check must not quietly start reading issues.
+    """
+
+    class OnlyStates:
+        def get(self, path):
+            raise AssertionError("the GitHub adapter must declare states offline")
+
+        def post(self, path, body):
+            raise AssertionError("declaring states must not write")
+
+        def delete(self, path):
+            raise AssertionError("declaring states must not write")
+
+        def query(self, document, variables):
+            assert "workflowStates" in document, "only the state list may be read here"
+            return {
+                "data": {
+                    "workflowStates": {
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [{"id": f"st-{i}", "name": n} for i, n in enumerate(names)],
+                    }
+                }
+            }
+
+    return OnlyStates()
+
+
 def test_both_real_adapters_declare_the_unattended_state():
     """The whole of BRE-32 defect 2, asserted against the production adapters
     rather than the fake that made the unit tests pass while both of them
-    rejected the state."""
+    rejected the state.
+
+    The two adapters answer from different places and that asymmetry is the
+    point (BRE-42). GitHub states are labels *this repo provisions*, so the
+    mapping is complete by construction and the answer is offline. Linear states
+    are columns on a team board a human owns, so the allowlist alone would be a
+    claim about this file rather than about the workspace — the adapter asks.
+    """
     from expfactory.github_tracker import STATE_LABELS, GitHubTracker
     from expfactory.linear_tracker import LinearTracker
 
     class NoHttp:
         def get(self, path):
-            raise AssertionError("declaring states must not need a network")
+            raise AssertionError("declaring GitHub states must not need a network")
 
         def post(self, path, body):
-            raise AssertionError("declaring states must not need a network")
+            raise AssertionError("declaring GitHub states must not need a network")
 
         def delete(self, path):
-            raise AssertionError("declaring states must not need a network")
+            raise AssertionError("declaring GitHub states must not need a network")
 
-    class NoGraphQL:
-        def query(self, document, variables):
-            raise AssertionError("declaring states must not need a network")
-
-    for tracker in (GitHubTracker("o/r", NoHttp()), LinearTracker("BRE", NoGraphQL())):
+    trackers = (
+        GitHubTracker("o/r", NoHttp()),
+        LinearTracker("BRE", _all_states_transport()),
+    )
+    for tracker in trackers:
         assert STATE_RUNNING_UNATTENDED in tracker.writable_states()
         assert {STATE_IN_PROGRESS, STATE_IN_REVIEW, STATE_NEEDS_HUMAN} <= tracker.writable_states()
 
@@ -1080,9 +1128,27 @@ def test_both_real_adapters_declare_the_unattended_state():
     assert STATE_LABELS[STATE_RUNNING_UNATTENDED] == "state:running-unattended"
 
 
+def test_the_linear_adapter_will_not_claim_a_column_the_team_lacks():
+    """BRE-42. `writable_states` exists to move a wiring error before dispatch,
+    and answering from the constant meant the error still arrived at write time —
+    after the GPU job it was parking had started. Two of the four states are not
+    Linear defaults, so a fresh team is the ordinary case."""
+    from expfactory.linear_tracker import LinearTracker
+
+    tracker = LinearTracker("BRE", _all_states_transport((STATE_IN_PROGRESS, STATE_IN_REVIEW)))
+
+    assert STATE_RUNNING_UNATTENDED not in tracker.writable_states()
+    assert STATE_IN_PROGRESS in tracker.writable_states()
+
+
 def test_neither_adapter_declares_a_state_that_closes_a_ticket():
     """The allowlist grew by one state, not into "whatever the runner asks for".
-    The runner does not approve its own work."""
+    The runner does not approve its own work.
+
+    Note the Linear side is asked with *every* runner state plus `Done` present
+    on the board. Verifying against the team can only ever narrow the set, so a
+    board that offers Done is the case where a widened allowlist would show.
+    """
     from expfactory.github_tracker import GitHubTracker
     from expfactory.linear_tracker import LinearTracker
 
@@ -1096,10 +1162,8 @@ def test_neither_adapter_declares_a_state_that_closes_a_ticket():
         def delete(self, path):
             return None
 
-        def query(self, document, variables):
-            return {}
-
-    for tracker in (GitHubTracker("o/r", Nothing()), LinearTracker("BRE", Nothing())):
+    generous = _all_states_transport((*_RUNNER_STATES, "Done", LABEL_AGENT_READY))
+    for tracker in (GitHubTracker("o/r", Nothing()), LinearTracker("BRE", generous)):
         assert "Done" not in tracker.writable_states()
         assert LABEL_AGENT_READY not in tracker.writable_states()
 

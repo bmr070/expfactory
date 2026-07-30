@@ -53,11 +53,26 @@ the history that `label_actor`'s "most recent application wins" rule depends on.
 Order the adapter relies on is order the adapter establishes.
 
 Issues sort on `number`, which is monotonic in creation order and always
-present, so no timestamp parsing is involved. Timeline events sort on
-`created_at`, whose GitHub form is Z-suffixed UTC ISO-8601 and therefore sorts
-lexicographically exactly as it sorts chronologically. A `labeled` event with no
-`created_at` is refused rather than defaulted: it cannot be placed against the
-others, and a guess about where it belongs is a guess about who granted dispatch.
+present, so no timestamp parsing is involved.
+
+Timeline events sort on `created_at`, **parsed to an instant** rather than
+compared as text (BRE-42). The lexical sort that used to be here relied on every
+value being Z-suffixed UTC, which is true of what GitHub emits today and was
+never checked. A mixed-precision pair inverts, because `.` (0x2E) sorts below
+`Z` (0x5A):
+
+    '2026-07-01T00:00:03.500Z' < '2026-07-01T00:00:03Z'
+
+and an offset form would sort by wall clock rather than by instant. Both fail
+silently, as a misordering, in the value that decides who granted dispatch.
+
+Two refusals rather than guesses, for the same reason. A `labeled` event with no
+usable `created_at` cannot be placed against the others. And **a tie between
+applications by different accounts is refused**: GitHub timestamps are
+second-precision and Python's sort is stable, so two applications in the same
+second fell back to the order the server happened to send — verified as
+answering `'bot'` or `'bmr070'` depending on nothing but arrival, with half
+those attempts granting eligibility to the wrong one.
 
 ## Credentials
 
@@ -72,6 +87,7 @@ import contextlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -395,14 +411,61 @@ class GitHubTracker:
                     "application is the most recent is which account granted dispatch."
                 )
 
-        # `created_at` is Z-suffixed UTC ISO-8601, so it sorts lexicographically
-        # exactly as it sorts chronologically and needs no parsing. Sorting is
-        # load-bearing rather than belt-and-braces here: unlike the issues
-        # endpoint the timeline takes no sort parameter at all, so arrival order
-        # is entirely the server's to choose.
-        applications.sort(key=lambda event: str(event["created_at"]))
+        # Parsed to an instant rather than sorted as text (BRE-42). The old
+        # lexical sort relied on every value being Z-suffixed UTC, which is true
+        # of what GitHub emits today and is not something this adapter checked.
+        # A mixed-precision pair inverts, because `.` (0x2E) sorts below `Z`:
+        #
+        #     '2026-07-01T00:00:03.500Z' < '2026-07-01T00:00:03Z'
+        #
+        # and an offset form (`-04:00`) would sort by wall clock rather than by
+        # instant. Both fail *silently*, as a misordering, which is the worst
+        # available shape for the value that decides who granted dispatch.
+        instants: list[tuple[datetime, dict[str, Any]]] = []
+        for event in applications:
+            raw = str(event["created_at"])
+            try:
+                # `fromisoformat` handles the `Z` suffix from 3.11 onward.
+                when = datetime.fromisoformat(raw)
+            except ValueError as exc:
+                raise UnorderableEvent(
+                    f"a {label!r} application on issue {ticket_id} carries "
+                    f"created_at={raw!r}, which is not a timestamp this adapter can "
+                    "place against the others. Refused rather than guessed: where it "
+                    "belongs in the order is who granted dispatch."
+                ) from exc
+            if when.tzinfo is None:
+                raise UnorderableEvent(
+                    f"a {label!r} application on issue {ticket_id} carries "
+                    f"created_at={raw!r} with no timezone, so it names a wall clock "
+                    "rather than an instant and cannot be ordered against one."
+                )
+            instants.append((when, event))
 
-        login = (applications[-1].get("actor") or {}).get("login")
+        instants.sort(key=lambda pair: pair[0])
+
+        # **A tie is refused, not broken by arrival order (BRE-42).** GitHub
+        # timeline timestamps are second-precision and Python's sort is stable,
+        # so two applications in the same second fell back to the order the
+        # server happened to send — which the comment above already distrusts.
+        # Verified: the same pair of events answered `'bot'` or `'bmr070'`
+        # depending only on arrival, and half those attempts grant eligibility.
+        #
+        # Reachable by the attacker `runner.py` already assumes: a compromised
+        # agent with `issues: write` re-adding within the same second.
+        newest, newest_event = instants[-1]
+        contenders = [event for when, event in instants if when == newest]
+        actors = {(event.get("actor") or {}).get("login") for event in contenders}
+        if len(actors) > 1:
+            raise UnorderableEvent(
+                f"{len(contenders)} applications of {label!r} on issue {ticket_id} share "
+                f"the newest timestamp {newest.isoformat()} but name different accounts "
+                f"({sorted(str(a) for a in actors)}). Which one granted dispatch cannot be "
+                "determined from the timeline, and arrival order is the server's to "
+                "choose. Refused."
+            )
+
+        login = (newest_event.get("actor") or {}).get("login")
         # No fallback to an earlier application. An unattributable most-recent
         # grant is not a yes, and inheriting the previous actor's name would let
         # an anonymous re-application wear a human's attribution.
