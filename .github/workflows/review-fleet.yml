@@ -1,0 +1,86 @@
+name: review fleet
+
+# BRE-35, advisory half. Posts which reviewers a pull request draws, and why.
+#
+# ADVISORY BY CONSTRUCTION. This workflow is deliberately NOT in the required
+# checks list, and `review_fleet.main` always exits 0. An exit code is a gate,
+# and a reviewer that can fail a build is a reviewer that can block a merge —
+# the authority invariant 2 forbids and that
+# `docs/research/pr-review-and-merge-2026.md` found nobody upstream grants.
+#
+# The routing is deterministic and runs today. The LLM lenses attach where the
+# plan is posted and need an agent identity that is not the owner's (BRE-18).
+# Until then this reports what *would* be asked, which is the shadow mode BRE-35
+# requires before any judge is trusted with influence.
+#
+# Note what it does NOT do: it cannot approve, cannot merge, and cannot dismiss
+# a review. gh-aw's `submit-pull-request-review` defaults to COMMENT for the same
+# reason.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Read-only on contents. `pull-requests: write` is for the comment and nothing
+# else — no `checks: write`, so this cannot create a status anyone could mistake
+# for a gate.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # One report per PR. A stale plan from a superseded push is worse than none,
+  # because a reader cannot tell which diff it described.
+  group: review-fleet-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the merge base, and the router uses three-dot ranges.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Work out which reviewers this changeset draws
+        id: route
+        env:
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$BASE"
+          {
+            echo 'plan<<PLAN_EOF'
+            PYTHONPATH=src python -m expfactory.review_fleet --base "origin/$BASE"
+            echo 'PLAN_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post the routing plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          PLAN: ${{ steps.route.outputs.plan }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --repo "$REPO" --body "**Review fleet — routing plan**
+
+          \`\`\`
+          $PLAN
+          \`\`\`
+
+          Advisory. This workflow is not a required check and cannot fail a build,
+          approve, merge, or dismiss a review. The routing is a table in
+          \`src/expfactory/review_fleet.py\`, not a model call, because *which*
+          reviewers run has the same correct answer every time and an LLM
+          deciding what to skip is an LLM deciding what does not get checked.
+
+          The LLM lenses are not wired yet — they need an agent identity that is
+          not the owner's (BRE-18). Shadow mode until then: this records what
+          would be asked, so the judge's agreement can be measured before it is
+          trusted with any influence."
