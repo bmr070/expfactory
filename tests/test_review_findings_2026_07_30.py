@@ -13,13 +13,19 @@ session that was congratulating itself on verifying by breaking things.
 from __future__ import annotations
 
 import dataclasses
+import subprocess
+from pathlib import Path
 
 import pytest
 
 from expfactory.github_tracker import Page, PageWalkRefused, _next_path
 from expfactory.linear_tracker import LinearTracker
 from expfactory.linear_tracker import PageWalkRefused as LinearPageWalkRefused
-from expfactory.verifier import VerdictBundle
+from expfactory.prereg import Preregistration
+from expfactory.review_fleet import touches_protected
+from expfactory.substrate_guard import changed_paths, touched_protected
+from expfactory.substrate_guard import main as guard_main
+from expfactory.verifier import Candidate, GateVerifier, Ledger, VerdictBundle
 
 # --------------------------------------------------------------------------- #
 # Invariant 1 — `promoted` is derived, never settable
@@ -216,3 +222,235 @@ def test_an_unlocatable_connection_is_refused_not_treated_as_empty() -> None:
     tracker = LinearTracker("BRE", _TwoPages())
     with pytest.raises(LinearPageWalkRefused, match="could not be located"):
         tracker.label_actor("BRE-1", "agent-ready")
+
+
+# --------------------------------------------------------------------------- #
+# BRE-39 — the wall did not fire on a rename
+#
+# Driven through real git, like the rest of `test_substrate_guard.py`, because
+# the thing under test is partly "what does git actually print".
+# --------------------------------------------------------------------------- #
+
+
+def _git(repo: Path, *args: str) -> str:
+    out = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
+    return out.stdout
+
+
+def _repo_with_harness(tmp_path: Path) -> Path:
+    repo = tmp_path / "r"
+    (repo / "src" / "expfactory").mkdir(parents=True)
+    _git(repo.parent, "init", "-q", "-b", "main", str(repo))
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "t")
+    # Enough content that a rename is detected as a rename rather than an
+    # add/delete pair, which is the case the bypass relied on.
+    (repo / "src" / "expfactory" / "verifier.py").write_text(
+        "\n".join(f"line {n} of the verification substrate" for n in range(40)) + "\n"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base")
+    return repo
+
+
+def test_renaming_a_protected_module_still_trips_the_guard(tmp_path: Path, monkeypatch) -> None:
+    """`git mv gates_v1.py gates.py` used to produce a green required check that
+    positively asserted the substrate was untouched.
+
+    `git diff --name-only` prints only the *destination* of a detected rename, so
+    the protected name was never in the list the basename check reads. No admin
+    override, no timeline entry — and every other control here assumes the wall
+    holds, because `enforce_admins` is off and CODEOWNERS binds non-admins only.
+    """
+    repo = _repo_with_harness(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature")
+    src = repo / "src" / "expfactory" / "verifier.py"
+    dst = repo / "src" / "expfactory" / "verifier_impl.py"
+    _git(repo, "mv", str(src), str(dst))
+    # Gut it on the way, so this is not even a pure rename.
+    dst.write_text("\n".join(f"line {n} of the verification substrate" for n in range(18)) + "\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "moved and gutted")
+
+    monkeypatch.chdir(repo)
+    assert guard_main(["--base", "main"]) == 1, "a renamed protected module walked past the wall"
+
+
+def test_the_rename_source_is_reported_not_just_the_destination(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A file leaving the protected set is a change to the protected set."""
+    repo = _repo_with_harness(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _git(
+        repo,
+        "mv",
+        str(repo / "src" / "expfactory" / "verifier.py"),
+        str(repo / "src" / "expfactory" / "renamed.py"),
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "moved")
+
+    monkeypatch.chdir(repo)
+    paths = changed_paths("main")
+    assert "src/expfactory/verifier.py" in paths, f"rename source missing from {paths}"
+    assert "src/expfactory/renamed.py" in paths, f"rename destination missing from {paths}"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/expfactory/Verifier.py",  # case-insensitive filesystem: same file
+        "src\\expfactory\\verifier.py",  # a caller on Windows
+        "SRC/EXPFACTORY/GATES_V1.PY",
+    ],
+)
+def test_a_differently_spelled_protected_path_is_still_protected(path: str) -> None:
+    """The only net for these was a glob in `tests/`, whose basenames are not
+    protected — so the catch lived in the half a PR can weaken freely."""
+    assert touched_protected([path]) == [path]
+    assert touches_protected((path,)) is True
+
+
+# --------------------------------------------------------------------------- #
+# BRE-40 — three confirmed routes to a promoted fake result
+# --------------------------------------------------------------------------- #
+
+_LINEAGE = "exp-parent-1"
+
+
+def _runs(metric: float = 0.75, seeds: tuple[int, ...] = (0, 1, 2)) -> list[dict[str, object]]:
+    return [
+        dict(
+            seed=s,
+            val_metric=metric,
+            train_ids_hash="t",
+            eval_ids_hash="e",
+            overlap_count=0,
+            wall_seconds=0.0,
+        )
+        for s in seeds
+    ]
+
+
+def test_a_candidate_cannot_disown_the_lineage_its_prereg_declares(tmp_path: Path) -> None:
+    """G-08 was switched off by a field the agent writes.
+
+    Churn was counted from `candidate.parent_id` while the baseline came from
+    `record.parent_id`, and nothing reconciled them.
+    `non_promoting_prereg_count` returns 0 immediately for `None`, so filing
+    against a real parent (keeping rule 8 happy) and submitting with `None`
+    zeroed the only gate that sees across preregistrations.
+
+    Reproduced before the fix: eight shopped preregistrations under one parent,
+    and the eighth promoted.
+    """
+    store = Ledger(tmp_path / "ledger.jsonl")
+    prereg = Preregistration(
+        primary_metric="val_metric",
+        direction="maximize",
+        baseline_value=0.70,
+        minimum_effect=0.02,
+        seeds=(0, 1, 2),
+        parent_id=_LINEAGE,
+    )
+    store.append_prereg(prereg)
+    verifier = GateVerifier(require_prereg=True, prereg_store=store)
+
+    disowned = Candidate(
+        hypothesis="h",
+        config={},
+        code_hash="c",
+        runs=_runs(),
+        parent_id=None,  # the prereg says `_LINEAGE`
+        prereg_hash=prereg.hash,
+    )
+    with pytest.raises(ValueError, match="lineage"):
+        verifier.run(disowned)
+
+
+def test_declaring_one_seed_five_times_is_refused() -> None:
+    """The seed lottery, which the variance gates actively endorsed.
+
+    Rule 5 compares sorted tuples, so a declared multiset of duplicates was
+    honoured exactly, and nothing counted distinct seeds. Five runs of seed 7
+    give zero spread, which makes the noise band tiny and the dominance gap
+    exactly zero — so `seed_variance` reported "real" and
+    `no_single_seed_dominance` reported "balanced across seeds".
+    """
+    with pytest.raises(ValueError, match="duplicates"):
+        Preregistration(
+            primary_metric="val_metric",
+            direction="maximize",
+            baseline_value=0.50,
+            minimum_effect=0.0,
+            seeds=(7, 7, 7, 7, 7),
+            parent_id=_LINEAGE,
+        )
+
+
+def test_distinct_seeds_still_construct() -> None:
+    """A refusal that refused every seed set would pass the test above and be
+    useless."""
+    assert Preregistration(
+        primary_metric="val_metric",
+        direction="maximize",
+        baseline_value=0.50,
+        minimum_effect=0.0,
+        seeds=(0, 1, 2),
+        parent_id=_LINEAGE,
+    ).seeds == (0, 1, 2)
+
+
+def test_a_nan_parent_metric_cannot_launder_a_baseline(tmp_path: Path) -> None:
+    """BRE-28 closed the write boundary and left the read boundary open.
+
+    `get_verdict_metric` filtered NaN; `get_verdict_metrics` — the reader rules 6
+    and 8 actually consume — did not. A NaN parent metric made rule 8's
+    `abs(parent - declared) > tol` False, so the forged-baseline check reported
+    agreement with a comparison it never made, and every guardrail comparison
+    against NaN was False in both branches so none could fire.
+
+    The ledger is append-only, so a single such row was an unfalsifiable
+    baseline for its whole lineage, permanently.
+    """
+    store = Ledger(tmp_path / "ledger.jsonl")
+    store.append(
+        VerdictBundle(
+            exp_id=_LINEAGE,
+            promoted=True,
+            blocked_by=(),
+            config={},
+            code_hash="c",
+            seeds=(0, 1, 2),
+            gate_names=("no_leakage",),
+            mean_metric=0.70,
+            cost_usd=0.0,
+            artifact={},
+            metrics={"val_metric": float("nan"), "latency_ms": float("nan")},
+        )
+    )
+    # Absent, not poisoned. Rule 6 already handles "no recorded value on parent"
+    # and blocks; an unreadable row would instead jam the whole lineage.
+    assert store.get_verdict_metrics(_LINEAGE) == {}
+
+
+def test_a_finite_parent_metric_is_still_read(tmp_path: Path) -> None:
+    """The filter must not eat honest rows."""
+    store = Ledger(tmp_path / "ledger.jsonl")
+    store.append(
+        VerdictBundle(
+            exp_id=_LINEAGE,
+            promoted=True,
+            blocked_by=(),
+            config={},
+            code_hash="c",
+            seeds=(0, 1, 2),
+            gate_names=("no_leakage",),
+            mean_metric=0.70,
+            cost_usd=0.0,
+            artifact={},
+            metrics={"val_metric": 0.70, "latency_ms": 12.5},
+        )
+    )
+    assert store.get_verdict_metrics(_LINEAGE) == {"val_metric": 0.70, "latency_ms": 12.5}

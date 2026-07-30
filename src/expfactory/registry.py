@@ -199,6 +199,35 @@ class SubstrateDeclined(RuntimeError):
     """
 
 
+class SubstrateUncertain(RuntimeError):
+    """A substrate's way of saying **I do not know whether anything started**.
+
+    Deliberately **not** a `SubstrateDeclined`, and that is the entire point
+    (BRE-41). A review found the two meanings sharing one class: the local
+    substrate's unreadable-idempotency-marker path raised `SubstrateRefused`,
+    which *is* a `SubstrateDeclined`, while its own message said the opposite —
+    *"a key that may already own one"*. May-already-own is unknown, and the
+    registry released the reservation, the one state that does not count against
+    spend.
+
+    Reproduced: a real detached job running under `intent-1`, its marker
+    truncated by an unclean shutdown, and the registry recording
+
+        reservation states: {'intent-1': 'released'}
+        spend_today_usd  : 0.0
+        breaker_reason   : None
+        orphans          : []
+
+    A live billable job, recorded as costing nothing. `SubstrateDeclined`'s own
+    docstring names this failure and the code walked into it anyway, because one
+    class was carrying two claims.
+
+    Raising this leaves the reservation open, so the next `_escalate_orphans`
+    turns it into an orphan and opens the breaker — a human goes and looks,
+    which is the correct answer to "we cannot tell".
+    """
+
+
 class InvalidJobInput(RegistryRefused):
     """A cost, cap or deadline that is not a usable number (BRE-29).
 
@@ -716,6 +745,26 @@ class JobRegistry:
         So a corrupt line is quarantined rather than fatal: everything parseable
         is returned, and the damage is reported through `log_damage()`, which
         `submit` consults and a human can see and act on.
+
+        **"Parseable" has to mean usable, not merely valid JSON (BRE-41).** The
+        quarantine caught `JSONDecodeError` only, so a line that parsed to
+        something that is not an event — `null`, `42`, `[]`, or a dict with no
+        `"event"` key — still bricked every read, and now with the damage counter
+        reporting clean:
+
+            log_damage() -> 0
+            records() / reservations() / spend_today_usd() -> TypeError
+
+        Two things made that worse than a brick. `log_damage()`'s contract is
+        *"non-zero means spend accounting is incomplete"*, and it said healthy for
+        a log that could not be replayed at all. And the escaping `TypeError` is
+        not a `RegistryRefused`, so `Runner._collect_finished` — which calls
+        `collect_finished()` outside its `try` — let it escape `tick()` entirely.
+        **The poll loop dies, so `sweep` never runs, so nothing notices a lost
+        job**, on a log whose health signal says fine.
+
+        A row this module cannot read is damage regardless of which parser
+        rejected it.
         """
         out: list[dict[str, Any]] = []
         self._damaged = 0
@@ -729,11 +778,20 @@ class JobRegistry:
             if not line.strip():
                 continue
             try:
-                out.append(json.loads(line))
+                event = json.loads(line)
             except json.JSONDecodeError:
                 # Counted, not dropped silently: an unreadable row may have been
                 # a submission, so spend accounting is no longer trustworthy.
                 self._damaged += 1
+                continue
+            # Valid JSON is not the same as a usable event. `null`, `42`, `[]`
+            # and `{"nope": 1}` all parse; every one of them then raises a
+            # `TypeError` or `KeyError` out of the replay, which is not a
+            # `RegistryRefused` and escapes the runner's tick.
+            if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+                self._damaged += 1
+                continue
+            out.append(event)
         return out
 
     def log_damage(self) -> int:
@@ -841,8 +899,43 @@ class JobRegistry:
 
         The whole point of the protocol: this list is what a startup can see
         that the old submit-then-record shape left invisible.
+
+        **Newly discovered only.** `is_orphaned` requires state `RESERVED`, so an
+        entry leaves this list the moment `_escalate_orphans` writes its
+        `orphaned` row — which is correct here, because appending a second row
+        for one key would read as two incidents. For "everything still
+        unaccounted for", including what an earlier tick already escalated, use
+        `unaccounted_reservations`.
         """
         return [r for r in self.reservations().values() if r.is_orphaned]
+
+    def unaccounted_reservations(self) -> list[Reservation]:
+        """Every reservation nobody has explained yet — new *and* already escalated.
+
+        Added because the two were conflated and the difference was a hole
+        (BRE-41). `Reconciliation.orphaned` reported only what the current call
+        escalated, and `breaker_reason` stopped at the first `breaker_reset`. So:
+
+            reset_breaker("bmr070")            # no abandon_reservation
+            orphaned_reservations()  -> []
+            reconcile().orphaned     -> ()
+            submit(...)              -> accepted
+
+        A possibly-live job, and the registry back to accepting work with no
+        `abandoned` row recording that anyone checked. `abandon_reservation`
+        requires a name **and** a reason; `reset_breaker` requires a name and no
+        reason and cleared the orphan's entire practical effect. The control that
+        exists to force someone to look was bypassable by the cheaper operation.
+
+        `ABANDONED` is excluded: that is the state meaning a named human went and
+        looked, which is exactly the account this list is waiting for.
+        """
+        return [
+            r
+            for r in self.reservations().values()
+            if r.handle is None
+            and r.state in (ReservationState.RESERVED, ReservationState.ORPHANED)
+        ]
 
     def attested_job(self, handle: str) -> dict[str, Any] | None:
         """What the log says about this handle, or None if it never issued one.
@@ -893,7 +986,29 @@ class JobRegistry:
         seen from different sides — compute this factory paid for and cannot
         account for — and an orphan is the worse of the two, because a lost job
         at least has a handle somebody can go and look up.
+
+        **An unaccounted reservation survives `reset_breaker` (BRE-41).** This
+        used to be a pure reverse walk that returned `None` at the first
+        `breaker_reset`, so a reset with no `abandon_reservation` cleared an
+        orphan's entire effect and the registry accepted work again with a
+        possibly-live job still unexplained.
+
+        Checked before the walk, so ordering cannot matter: `reset_breaker`
+        clears *incidents*, and an orphan is not an incident, it is an open
+        question. Its only exit is `abandon_reservation`, which takes a name and
+        a reason because what is being recorded is a person's claim to have gone
+        and looked at the substrate.
         """
+        unaccounted = self.unaccounted_reservations()
+        if unaccounted:
+            keys = ", ".join(sorted(r.key for r in unaccounted))
+            return (
+                f"{len(unaccounted)} reservation(s) still unaccounted for ({keys}): a job "
+                "may have been started and may still be spending. Resetting the breaker "
+                "does not close these — check the substrate by key and record what you "
+                "found with abandon_reservation."
+            )
+
         for e in reversed(self._events()):
             if e["event"] == "breaker_reset":
                 return None
@@ -910,7 +1025,18 @@ class JobRegistry:
         return None
 
     def trip_breaker(self, reason: str) -> None:
-        self._append({"event": "breaker_tripped", "at": self._clock(), "reason": reason})
+        """Open the breaker. Takes the admission lock (BRE-41).
+
+        `submit` reads `breaker_reason()` and calls the substrate inside
+        `_admission_lock`, but the breaker's *writers* took no lock at all — so a
+        job could be admitted and started against a breaker that was opening. The
+        window is small and the next submit refuses, but "read the caps, reserve,
+        submit, bind is a transition, not four statements" applies to the breaker
+        read as well, and tripping it is an operator action that should stop the
+        submission in flight.
+        """
+        with self._admission_lock():
+            self._append({"event": "breaker_tripped", "at": self._clock(), "reason": reason})
 
     def reset_breaker(self, operator: str) -> None:
         """Human-only. Deliberately requires naming who reset it, because the
@@ -940,6 +1066,32 @@ class JobRegistry:
         """
         cutoff = self._clock() - SECONDS_PER_DAY
         jobs, held = self._replay()
+
+        # **A damaged log makes this unknown, not small (BRE-41).**
+        #
+        # Only `submit` consulted `self._damaged`, so the rule this method's own
+        # docstring argues for — an unreadable ledger means spend is unknown —
+        # held for the caps path and was broken here. Worse than a wrong total:
+        # `_replay` drops a `bound` row whose key is not in `held`, and `held` is
+        # built only from *parseable* `reserved` rows, so one damaged line
+        # silently erases the live job bound to it.
+        #
+        # Reproduced: a truncated `reserved` for a $25 job plus its intact
+        # `bound` row for a job 95,000s past its deadline —
+        #
+        #     log_damage()      -> 1
+        #     spend_today_usd() -> 0.0
+        #     records()         -> {}
+        #
+        # A live job, no spend, and nothing outstanding for `sweep` to notice.
+        if self._damaged:
+            raise BreakerTripped(
+                f"{self._damaged} unreadable row(s) in {self.path}: a corrupt row may "
+                "have been a submission, and a corrupt reservation takes the job bound "
+                "to it out of the replay entirely. Today's spend is unknown. Repair or "
+                "archive the log before submitting."
+            )
+
         total = 0.0
         # Every job with a handle, plus every reservation that never got one.
         # `_replay` guarantees these do not overlap: a bound reservation is
@@ -1042,6 +1194,26 @@ class JobRegistry:
                     f"{self._damaged} unreadable row(s) in {self.path}: a corrupt row may "
                     "have been a submission, so today's spend is unknown. Repair or "
                     "archive the log before submitting."
+                )
+
+            # `None` means "mint one". An empty or blank string means the caller
+            # believes it set a key, and `or` quietly mapped that onto "no key"
+            # (BRE-41) — the `WorkspaceRoot.strip()` lesson in a new place.
+            #
+            # Reproduced: two submissions with `idempotency_key=""` produced two
+            # GPU jobs, charged twice, and because a *different* uuid was minted
+            # per call the substrate's own marker dedup could not save it either.
+            # A caller doing `JobSpec(idempotency_key=os.environ.get("KEY", ""))`
+            # and retrying after a transient error believes it is protected.
+            #
+            # Refuse, do not sanitize. `" k"` and `"k"` stay distinct, which is
+            # correct: they are different keys and collapsing them would be the
+            # same class of error in the other direction.
+            if spec.idempotency_key is not None and not spec.idempotency_key.strip():
+                raise InvalidJobInput(
+                    f"idempotency_key={spec.idempotency_key!r} is empty or blank. Pass "
+                    "None to have one minted, or a real key — an empty string reads as "
+                    "'no idempotency' and silently buys a second GPU on retry."
                 )
 
             key = spec.idempotency_key or uuid.uuid4().hex
@@ -1185,17 +1357,47 @@ class JobRegistry:
         telling anyone which ticket was waiting — so the ticket would sit in
         `Running Unattended` forever. Collecting first means `sweep` only ever
         sees jobs that genuinely never answered.
+
+        **One job's failure must not discard another's result (BRE-41).** This
+        loop used to let an exception propagate, and `resolve` appends the
+        `resolved` row *before* returning — so if a later job's `fetch_artifact`
+        raised, every already-resolved job's `FinishedJob` was lost while its
+        record stayed durably closed:
+
+            collect_finished raised: OSError
+            records: {'job-0': (RESOLVED, 'ref/job-0'), 'job-1': (SUBMITTED, None)}
+
+        `job-0` is `RESOLVED`, so `outstanding()` excludes it, so `sweep` never
+        sees it and this method never returns it again. **Its ticket sits in
+        `Running Unattended` and nothing in the system will move it out** — M2-03
+        box 10 reintroduced on the collection side, one method away from where
+        BRE-30 closed it.
+
+        So each job is closed and collected independently, and a failure is
+        raised only after the ones that succeeded have been handed back.
         """
         out: list[FinishedJob] = []
+        failures: list[str] = []
         for record in self.outstanding():
-            if self._substrate.poll(record.handle) is not JobState.RESOLVED:
-                continue
-            out.append(
-                FinishedJob(
-                    handle=record.handle,
-                    ticket=record.ticket,
-                    artifact_ref=self.resolve(record.handle),
+            try:
+                if self._substrate.poll(record.handle) is not JobState.RESOLVED:
+                    continue
+                out.append(
+                    FinishedJob(
+                        handle=record.handle,
+                        ticket=record.ticket,
+                        artifact_ref=self.resolve(record.handle),
+                    )
                 )
+            except Exception as exc:  # noqa: BLE001 — one bad job must not strand the others
+                failures.append(f"{record.handle} ({record.ticket}): {exc}")
+        if failures and not out:
+            # Nothing to hand back, so raising loses no work and the caller
+            # learns why. With results in hand the caller gets those first —
+            # `_collect_finished` reports the rest through `TickResult.errors`.
+            raise BreakerTripped(
+                "no finished job could be collected: " + "; ".join(failures) + ". The "
+                "records stay open, so the next tick retries them."
             )
         return out
 
@@ -1212,13 +1414,36 @@ class JobRegistry:
         now = self._clock()
         lost: list[JobRecord] = []
         for record in self.outstanding():
+            # `deadline_at` is the single field this method depends on, and it
+            # was the one number `_replay` never validated (BRE-41).
+            # `spend_today_usd` checks `submitted_at` and `cost_estimate_usd`;
+            # this went unchecked, in the loss detector.
+            #
+            # `json.loads` accepts bare `Infinity` by default, so a row carrying
+            # `"deadline_at": Infinity` stayed outstanding forever — `now < inf`
+            # is always true, the breaker never opened, and `log_damage()` read
+            # clean. A string there is worse: the comparison raises a bare
+            # `TypeError` out of `sweep`, which is the tick-killing shape above.
+            if not _finite(record.deadline_at):
+                raise BreakerTripped(
+                    f"job {record.handle} in {self.path} has deadline_at="
+                    f"{record.deadline_at!r}, so it can be neither overdue nor within its "
+                    "window and this sweep cannot tell whether it was lost. Repair or "
+                    "archive the log."
+                )
             if now < record.deadline_at:
                 continue
             if self._substrate.poll(record.handle) is JobState.RESOLVED:
                 # Finished within the window but nobody collected it; not a loss.
                 self.resolve(record.handle)
                 continue
-            self._append({"event": "lost", "at": now, "handle": record.handle})
+            # Under the lock for the same reason `trip_breaker` is (BRE-41): this
+            # append opens the breaker, and a submission reading it a moment
+            # earlier would be admitted against a breaker that was opening.
+            # Taken per-loss rather than around the whole sweep, so a long poll
+            # over many jobs does not hold admission shut throughout.
+            with self._admission_lock():
+                self._append({"event": "lost", "at": now, "handle": record.handle})
             lost.append(record)
         return lost
 

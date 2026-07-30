@@ -17,23 +17,28 @@ write ordering rather than the ordering itself.
 
 from __future__ import annotations
 
+import json
 import threading
 from pathlib import Path
 
 import pytest
 
+from expfactory.local_substrate import SubstrateRefused
 from expfactory.registry import (
     SECONDS_PER_HOUR,
     BreakerTripped,
     CompletionRecord,
+    InvalidJobInput,
     JobRegistry,
     JobSpec,
     JobState,
     RateCard,
     RegistryRefused,
     ReservationConflict,
+    ReservationState,
     SingleWriterTimeout,
     SubstrateDeclined,
+    SubstrateUncertain,
 )
 
 HOUR = SECONDS_PER_HOUR
@@ -249,7 +254,30 @@ def test_abandoning_an_orphan_needs_a_name_and_still_charges(tmp_path: Path):
     key = reg.reconcile().orphaned[0].key
     reg.abandon_reservation(key, operator="bmr070", reason="checked the console, nothing running")
 
-    assert reg.reconcile().orphaned == (), "an abandoned orphan must not re-escalate"
+    # **This test used to be vacuous, and a review proved it (BRE-41).**
+    #
+    # It asserted `reconcile().orphaned == ()` and `spend == 25.0`. Deleting the
+    # `abandon_reservation` call above left both true and the test passing:
+    # `orphaned` is empty after ANY first escalation, and an orphan is charged
+    # whether abandoned or not. Two assertions, neither of which could fail.
+    #
+    # That is the `assert ... or True` family this repo already warns about,
+    # written in the session that added the warning's newest entry. The fix is
+    # to assert the thing that is only true *because* the call happened.
+    assert reg.reservations()[key].state is ReservationState.ABANDONED
+
+    # And the operator's name is the point of requiring one: what is being
+    # recorded is a person's claim to have gone and looked at the substrate.
+    log = (tmp_path / "jobs.jsonl").read_text(encoding="utf-8")
+    abandoned = [
+        json.loads(line)
+        for line in log.splitlines()
+        if line.strip() and json.loads(line).get("event") == "abandoned"
+    ]
+    assert len(abandoned) == 1
+    assert abandoned[0]["operator"] == "bmr070"
+    assert "console" in abandoned[0]["reason"]
+
     assert reg.spend_today_usd() == pytest.approx(25.0), "abandoning is not a refund"
 
 
@@ -387,3 +415,250 @@ def test_sweep_still_notices_a_lost_job(tmp_path: Path):
 
     assert [r.ticket for r in lost] == ["BRE-1"]
     assert reg.breaker_reason() is not None
+
+
+# --------------------------------------------------------------------------- #
+# BRE-41 — two meanings sharing one class, and a damaged log answering 0.0
+# --------------------------------------------------------------------------- #
+
+
+def test_uncertain_is_not_declined() -> None:
+    """The type distinction is the whole fix.
+
+    `SubstrateRefused` is a `SubstrateDeclined` — the registry's name for
+    "nothing was started" — and the unreadable-marker path raised it while its
+    own message said "may already own one". The registry believed the type.
+
+    If `SubstrateUncertain` ever becomes a `SubstrateDeclined`, the live-job-as-
+    released bug returns silently, so this pins the hierarchy rather than any
+    behaviour.
+    """
+    assert not issubclass(SubstrateUncertain, SubstrateDeclined)
+    assert issubclass(SubstrateRefused, SubstrateDeclined), (
+        "a preflight refusal really did start nothing; that one must stay declined"
+    )
+
+
+class _UncertainSubstrate(FakeSubstrate):
+    """Cannot tell whether the job started. The unclean-shutdown case."""
+
+    def submit(self, spec: JobSpec) -> str:
+        raise SubstrateUncertain("marker unreadable; this key may already own a run")
+
+
+def test_an_uncertain_submission_stays_open_for_a_human(tmp_path: Path) -> None:
+    """Reproduced before the fix as a live job recorded at zero cost:
+
+        reservation states: {'intent-1': 'released'}
+        spend_today_usd  : 0.0
+        breaker_reason   : None
+
+    `released` is the one state that does not count against spend. The
+    reservation must instead stay open, so the next escalation orphans it and
+    the breaker opens.
+    """
+    sub, clock = _priced(_UncertainSubstrate(), 25.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    with pytest.raises(SubstrateUncertain):
+        reg.submit(_spec("BRE-1", key="intent-1"), deadline_s=HOUR)
+
+    reservation = reg.reservations()["intent-1"]
+    assert reservation.is_orphaned, f"uncertain outcome was resolved to {reservation.state!r}"
+    assert reg.spend_today_usd() == pytest.approx(25.0), "unknown spend was recorded as zero"
+
+    fresh = _registry(tmp_path, FakeSubstrate(), clock)
+    assert len(fresh.reconcile().orphaned) == 1
+    assert fresh.breaker_reason() is not None
+
+
+def test_a_declined_submission_still_releases(tmp_path: Path) -> None:
+    """The distinction must stay a distinction. A substrate that states it
+    started nothing should not open the breaker, or the everyday case — one
+    card, a second job asking for it — trips it every time."""
+    sub, clock = _priced(DecliningSubstrate(), 25.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    with pytest.raises(SubstrateDeclined):
+        reg.submit(_spec("BRE-1", key="intent-2"), deadline_s=HOUR)
+
+    assert reg.spend_today_usd() == pytest.approx(0.0)
+    assert reg.breaker_reason() is None
+
+
+def test_a_damaged_log_makes_spend_unknown_not_zero(tmp_path: Path) -> None:
+    """`_replay` drops a `bound` row whose key is not in `held`, and `held` is
+    built only from *parseable* `reserved` rows — so one damaged line silently
+    erases the live job bound to it.
+
+    Reproduced: `log_damage() -> 1`, `spend_today_usd() -> 0.0`, `records() ->
+    {}`, for a job 95,000s past its deadline. A live job, no spend, and nothing
+    for `sweep` to notice.
+    """
+    sub, clock = _priced(FakeSubstrate(), 25.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec("BRE-1"), deadline_s=HOUR)
+    assert reg.spend_today_usd() == pytest.approx(25.0)
+
+    # A truncated line, as an unclean shutdown leaves.
+    log = tmp_path / "jobs.jsonl"
+    log.write_text(log.read_text(encoding="utf-8") + '{"event": "reserved", "at": 10\n', "utf-8")
+
+    reopened = _registry(tmp_path, FakeSubstrate(), clock)
+    assert reopened.log_damage() == 1
+    with pytest.raises(BreakerTripped, match="unknown"):
+        reopened.spend_today_usd()
+
+
+# ---------------------------------------------------------------------------
+# BRE-41 — the remaining fail-opens
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("junk", ["null", "42", "[]", '{"nope": 1}', '"a string"'])
+def test_valid_json_that_is_not_an_event_is_damage(tmp_path: Path, junk: str):
+    """The quarantine caught `JSONDecodeError` only.
+
+    Every value here parses fine and then raises a `TypeError` or `KeyError` out
+    of the replay — which is not a `RegistryRefused`, so callers guarding on that
+    miss it, and it escaped the runner's tick entirely. Worse, `log_damage()`
+    reported **0** for a log that could not be replayed at all, and its contract
+    is "non-zero means spend accounting is incomplete".
+    """
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec(), deadline_s=HOUR)
+
+    log = tmp_path / "jobs.jsonl"
+    log.write_text(log.read_text(encoding="utf-8") + junk + "\n", encoding="utf-8")
+
+    reopened = _registry(tmp_path, FakeSubstrate(), clock)
+    assert reopened.log_damage() == 1, f"{junk!r} was not counted as damage"
+    # And the reads no longer explode; they refuse, which is a state callers handle.
+    with pytest.raises(BreakerTripped):
+        reopened.spend_today_usd()
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_a_blank_idempotency_key_is_refused(tmp_path: Path, blank: str):
+    """`key = spec.idempotency_key or uuid4()` mapped `""` onto "no key".
+
+    Two submissions with `""` produced two GPU jobs, charged twice, and because
+    a *different* uuid was minted per call the substrate's own marker dedup could
+    not save it either. A caller reading the key out of an unset environment
+    variable believes it is protected.
+    """
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    with pytest.raises(InvalidJobInput, match="empty or blank"):
+        reg.submit(_spec("BRE-1", key=blank), deadline_s=HOUR)
+    assert sub.submitted == [], "a refused submission must not have started anything"
+
+
+def test_a_real_key_with_leading_space_stays_distinct(tmp_path: Path):
+    """Refuse, do not sanitize. `" k"` and `"k"` are different keys and
+    collapsing them would be the same error in the other direction."""
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec("BRE-1", key=" k"), deadline_s=HOUR)
+    reg.submit(_spec("BRE-2", key="k"), deadline_s=HOUR)
+    assert len(sub.submitted) == 2
+
+
+def test_an_uncomparable_deadline_refuses_rather_than_never_expiring(tmp_path: Path):
+    """`deadline_at` is the only field `sweep` reads and the only one `_replay`
+    never validated.
+
+    `json.loads` accepts bare `Infinity`, so a row carrying it stayed outstanding
+    forever: `now < inf` is always true, the breaker never opened, and
+    `log_damage()` read clean.
+    """
+    sub, clock = _priced(FakeSubstrate(), 10.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    reg.submit(_spec(), deadline_s=HOUR)
+
+    log = tmp_path / "jobs.jsonl"
+    poisoned = log.read_text(encoding="utf-8").replace(
+        f'"deadline_at": {1000.0 + HOUR}', '"deadline_at": Infinity'
+    )
+    log.write_text(poisoned, encoding="utf-8")
+
+    reopened = _registry(tmp_path, FakeSubstrate(), clock)
+    reopened._clock = _Clock(10**12)  # type: ignore[assignment]
+    with pytest.raises(BreakerTripped, match="deadline_at"):
+        reopened.sweep()
+
+
+def test_resetting_the_breaker_does_not_forget_an_orphan(tmp_path: Path):
+    """`reset_breaker` was the cheap way past the control that forces a look.
+
+    `breaker_reason` walked backwards and returned None at the first
+    `breaker_reset`, so a reset with no `abandon_reservation` cleared an
+    orphan's entire effect:
+
+        after reset, orphaned_reservations(): []
+        after reset, reconcile().orphaned:    ()
+        submit after reset succeeded
+
+    A possibly-live job, and the registry accepting work again with no
+    `abandoned` row saying anyone checked. `abandon_reservation` needs a name
+    AND a reason; `reset_breaker` needs a name and no reason.
+    """
+    sub, clock = _priced(DyingSubstrate(), 25.0), _Clock()
+    with pytest.raises(ProcessDied):
+        _registry(tmp_path, sub, clock).submit(_spec(), deadline_s=HOUR)
+
+    reg = _registry(tmp_path, FakeSubstrate(), clock)
+    reg.reconcile()
+    reg.reset_breaker(operator="bmr070")
+
+    assert reg.breaker_reason() is not None, "a reset forgot an unexplained reservation"
+    assert len(reg.unaccounted_reservations()) == 1
+    with pytest.raises(BreakerTripped):
+        reg.submit(_spec("BRE-2"), deadline_s=HOUR)
+
+
+def test_abandoning_is_what_actually_closes_it(tmp_path: Path):
+    """The exit has to work, or the fix above is a jam rather than a control."""
+    sub, clock = _priced(DyingSubstrate(), 25.0), _Clock()
+    with pytest.raises(ProcessDied):
+        _registry(tmp_path, sub, clock).submit(_spec(), deadline_s=HOUR)
+
+    reg = _registry(tmp_path, _priced(FakeSubstrate(), 1.0), clock)
+    key = reg.reconcile().orphaned[0].key
+    reg.abandon_reservation(key, operator="bmr070", reason="checked, nothing running")
+    reg.reset_breaker(operator="bmr070")
+
+    assert reg.unaccounted_reservations() == []
+    assert reg.breaker_reason() is None
+    reg.submit(_spec("BRE-2"), deadline_s=HOUR)  # accepts work again
+
+
+class _OneBadArtifact(FakeSubstrate):
+    """Every job finishes; fetching the second one's artifact fails."""
+
+    def fetch_artifact(self, handle: str) -> str:
+        if handle == "job-1":
+            raise OSError("artifact store unreachable")
+        return super().fetch_artifact(handle)
+
+
+def test_one_unreadable_artifact_does_not_strand_the_others(tmp_path: Path):
+    """`resolve` appends the `resolved` row BEFORE returning, so a later failure
+    used to discard every already-collected result while its record stayed
+    durably closed — and `outstanding()` then excluded it, so `sweep` never saw
+    it and this method never returned it again. Its ticket would sit in
+    `Running Unattended` with nothing able to move it out.
+    """
+    sub, clock = _priced(_OneBadArtifact(), 1.0), _Clock()
+    reg = _registry(tmp_path, sub, clock)
+    for t in ("BRE-1", "BRE-2", "BRE-3"):
+        reg.submit(_spec(t), deadline_s=HOUR)
+    for h in ("job-0", "job-1", "job-2"):
+        sub.status[h] = JobState.RESOLVED
+
+    collected = reg.collect_finished()
+
+    tickets = sorted(j.ticket for j in collected)
+    assert tickets == ["BRE-1", "BRE-3"], f"a readable job was discarded: {tickets}"
+    # And the one that failed is still open, so the next tick retries it rather
+    # than losing it.
+    assert [r.handle for r in reg.outstanding()] == ["job-1"]
