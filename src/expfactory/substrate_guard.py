@@ -35,7 +35,12 @@ import subprocess
 import sys
 from collections.abc import Sequence
 
-from expfactory.gates_v1 import _HARNESS_PATHS, DiffEvidence, gate_no_test_tampering
+from expfactory.gates_v1 import (
+    _HARNESS_BASENAMES,
+    DiffEvidence,
+    _basename,
+    gate_no_test_tampering,
+)
 
 
 def changed_paths(base: str, head: str = "HEAD") -> list[str]:
@@ -43,16 +48,57 @@ def changed_paths(base: str, head: str = "HEAD") -> list[str]:
 
     Three-dot so a stale branch does not report the base's own progress as this
     pull request's changes.
+
+    **Both sides of a rename, and this is the whole point (BRE-39).** With
+    `--name-only`, git prints only the *destination* of a detected rename. Every
+    check downstream matches the basename of what git printed against
+    `_HARNESS_PATHS`, so the pre-rename name was never in the list — and
+
+        git mv src/expfactory/gates_v1.py src/expfactory/gates.py
+
+    carrying any edit you like inside the moved file produced a **green required
+    check that positively asserted the substrate was untouched.** Reproduced
+    against the real guard at 57% similarity, so not even a pure rename:
+
+        $ git diff --name-status master...feat
+        R057    src/expfactory/verifier.py  src/expfactory/verifier_impl.py
+        $ git diff --name-only master...feat
+        src/expfactory/verifier_impl.py
+        $ python -m expfactory.substrate_guard --base master --head feat
+        substrate untouched                                        EXIT=0
+
+    No admin override, no timeline entry. That is the one failure mode this
+    design has no second line for: `enforce_admins` is off, CODEOWNERS binds
+    non-admins only, and the guard is the control that does not care who authored
+    the commit.
+
+    So: `--name-status -M`, and **a rename contributes both paths**. A file that
+    leaves the protected set is a change to the protected set.
     """
     out = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}...{head}"],
+        # -z: NUL-delimited, because a path may legitimately contain whitespace
+        # and a rename record is three NUL-separated fields rather than a line.
+        ["git", "diff", "--name-status", "-M", "-z", f"{base}...{head}"],
         capture_output=True,
         text=True,
         check=True,
         # 0 off Windows; suppresses a console flash on it.
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+    fields = [f for f in out.stdout.split("\0") if f]
+    paths: list[str] = []
+    i = 0
+    while i < len(fields):
+        status = fields[i]
+        # R100 / C075 carry a similarity score, and are followed by TWO paths.
+        # Everything else (A, M, D, T, U) is followed by one.
+        if status[:1] in ("R", "C"):
+            paths.extend(fields[i + 1 : i + 3])
+            i += 3
+        else:
+            paths.append(fields[i + 1])
+            i += 2
+    return paths
 
 
 def diff_evidence(base: str, head: str = "HEAD") -> DiffEvidence:
@@ -74,8 +120,12 @@ def touched_protected(paths: Sequence[str]) -> list[str]:
     Recomputed from `_HARNESS_PATHS` rather than parsed back out of the gate's
     prose detail. Parse, do not grep — the message is for humans and its wording
     must stay free to change without breaking anything that reads it.
+
+    Uses the gate's own `_basename`/`_HARNESS_BASENAMES`, so this and the verdict
+    cannot disagree about what counts as protected (BRE-39). They did: this
+    matched case-sensitively on forward slashes only.
     """
-    return [p for p in paths if p.rsplit("/", 1)[-1] in _HARNESS_PATHS]
+    return [p for p in paths if _basename(p) in _HARNESS_BASENAMES]
 
 
 def protected_diffstat(base: str, head: str, paths: Sequence[str]) -> list[tuple[str, int, int]]:
