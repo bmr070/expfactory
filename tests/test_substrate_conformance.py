@@ -19,6 +19,7 @@ GPU exists — is deliberately absent.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import math
 import time
@@ -34,6 +35,7 @@ from expfactory.local_substrate import (
 )
 from expfactory.registry import (
     SECONDS_PER_HOUR,
+    CompletionRecord,
     ComputeSubstrate,
     CostCapExceeded,
     InvalidJobInput,
@@ -68,9 +70,12 @@ class FakeRemoteSubstrate:
         self.root.mkdir(parents=True, exist_ok=True)
         self._ids = itertools.count()
         self._done: set[str] = set()
+        self._commands: dict[str, tuple[str, ...]] = {}
 
     def submit(self, spec: JobSpec) -> str:
-        return f"remote-{spec.ticket}-{next(self._ids)}"
+        handle = f"remote-{spec.ticket}-{next(self._ids)}"
+        self._commands[handle] = spec.command
+        return handle
 
     def rate_card(self) -> RateCard:
         return PerSecondRateCard()
@@ -86,6 +91,24 @@ class FakeRemoteSubstrate:
         if handle not in self._done:
             raise SubstrateRefused(f"{handle} not finished")
         return f"s3://bucket/{handle}/result.json"
+
+    def completion(self, handle: str) -> CompletionRecord | None:
+        """What the provider says it ran (BRE-31).
+
+        Built from what `submit` was given rather than echoing a caller's claim,
+        because a fake that agrees with whatever it is told would make the
+        conformance suite prove nothing about the field G-10 relies on.
+        """
+        if handle not in self._done:
+            return None
+        return CompletionRecord(
+            handle=handle,
+            command=self._commands[handle],
+            exit_code=0,
+            wall_seconds=1.0,
+            artifact_sha256=hashlib.sha256(handle.encode()).hexdigest(),
+            source_revision="deadbeef",
+        )
 
     # test-only hook standing in for the provider finishing the work
     def finish(self, handle: str) -> None:
