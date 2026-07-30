@@ -108,6 +108,25 @@ _HARNESS_PATHS = (
     "review_fleet.py",
 )
 
+# Casefolded, so the membership test cannot be dodged by capitalisation. Derived
+# rather than hand-maintained: a second list is a second thing to forget.
+_HARNESS_BASENAMES = frozenset(name.casefold() for name in _HARNESS_PATHS)
+
+
+def _basename(path: str) -> str:
+    """The final component of `path`, normalised for comparison.
+
+    Both separators, because these strings arrive from git (forward slashes) and
+    from callers on Windows (backslashes), and a `\\` path silently missed the
+    protected set. Casefolded for the same reason the set above is: on a
+    case-insensitive filesystem `Verifier.py` and `verifier.py` are one file, and
+    the check must agree with the filesystem rather than with the string.
+
+    Not a sanitizer — nothing is repaired or passed through. It normalises the
+    *comparison* and the original path is what gets reported.
+    """
+    return path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+
 # Modules in this package that are deliberately NOT verification substrate.
 #
 # This package IS the verification layer, so the default is "protected" and the
@@ -149,8 +168,14 @@ def gate_no_test_tampering(diff: DiffEvidence) -> GateResult:
     reasons: list[str] = []
 
     # 1. editing the verification substrate itself
+    #
+    # Basename matched case-insensitively and across both separators (BRE-39).
+    # `Verifier.py` and `src\expfactory\verifier.py` both missed the protected
+    # set, and on a case-insensitive filesystem the first is the same file. The
+    # only remaining net for those was a glob in `tests/`, whose basenames are
+    # not protected — so the catch lived in the half a PR can weaken freely.
     for path in diff.touched_paths:
-        if path.rsplit("/", 1)[-1] in _HARNESS_PATHS:
+        if _basename(path) in _HARNESS_BASENAMES:
             reasons.append(f"edits the harness ({path})")
 
     # 2. removed assertions (from any test file)

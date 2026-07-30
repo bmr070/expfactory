@@ -55,7 +55,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from expfactory.gates_v1 import _HARNESS_PATHS
+from expfactory.gates_v1 import _HARNESS_BASENAMES, _basename
 
 
 @dataclass(frozen=True)
@@ -162,8 +162,15 @@ def touches_protected(paths: tuple[str, ...]) -> bool:
     Same basename rule the tamper gate and `substrate_guard` use, read from the
     same constant, so the three cannot drift into disagreeing about what counts
     as the substrate.
+
+    They had drifted anyway, because "same rule" was three copies of one
+    expression rather than one function (BRE-39). All three matched
+    case-sensitively on forward slashes only, so a renamed or differently-cased
+    protected module dropped the adversarial lens here at the same moment it
+    stopped tripping the guard — the two controls failing together, for one
+    reason, which is exactly what having two is supposed to prevent.
     """
-    return any(p.rsplit("/", 1)[-1] in _HARNESS_PATHS for p in paths)
+    return any(_basename(p) in _HARNESS_BASENAMES for p in paths)
 
 
 def _matches(path: str, pattern: str) -> bool:
