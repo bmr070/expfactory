@@ -115,7 +115,7 @@ class FakeHttp:
                     f'<https://api.github.com{key}?page={len(pages)}>; rel="last"'
                 )
             return Page(body, headers)
-        return Page([])
+        return Page([], {})
 
     def post(self, path: str, body: dict):
         self.posts.append((path, body))
@@ -316,7 +316,7 @@ def test_a_next_link_pointing_at_another_host_stays_on_this_one():
             self.gets.append(path)
             if len(self.gets) == 1:
                 return Page([], {"Link": '<https://evil.example/steal?x=1>; rel="next"'})
-            return Page([])
+            return Page([], {})
 
     http = Redirects()
     http.gets.clear()
@@ -338,7 +338,7 @@ def test_the_link_header_is_found_whatever_its_case():
                     [_labeled("bmr070", at="2026-07-01T00:00:00Z")],
                     {"link": f'<https://api.github.com/repos/{REPO}/issues/1/x>; rel="next"'},
                 )
-            return Page([_labeled("expfactory-agent[bot]", at="2026-07-02T00:00:00Z")])
+            return Page([_labeled("expfactory-agent[bot]", at="2026-07-02T00:00:00Z")], {})
 
     http = LowerCase()
     http.gets.clear()
@@ -357,7 +357,7 @@ def test_a_link_url_containing_a_comma_is_parsed_whole():
                     [],
                     {"Link": '<https://api.github.com/i?labels=a,b&page=2>; rel="next"'},
                 )
-            return Page([])
+            return Page([], {})
 
     http = Comma()
     http.gets.clear()
@@ -372,7 +372,7 @@ def test_a_body_that_is_not_a_collection_is_refused():
 
     class Envelope(FakeHttp):
         def get(self, path: str) -> Page:
-            return Page({"message": "Bad credentials"})
+            return Page({"message": "Bad credentials"}, {})
 
     with pytest.raises(PageWalkRefused, match="not a JSON array"):
         GitHubTracker(REPO, Envelope()).open_tickets()

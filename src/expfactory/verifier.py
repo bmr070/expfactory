@@ -275,6 +275,37 @@ class VerdictBundle:
         for name in ("config", "artifact", "metrics"):
             object.__setattr__(self, name, dict(getattr(self, name)))
 
+        # **Invariant 1, made structural rather than conventional.**
+        #
+        # "`promoted` is derived, never settable. If a caller can set it, the
+        # layer is theatre." Both named constructors derive it correctly, and
+        # `frozen=True` stops mutation *after* construction — but neither makes
+        # the field derived. A review demonstrated three ways round it:
+        #
+        #     VerdictBundle.from_dict({... "promoted": True,
+        #                              "blocked_by": ["preregistration"] ...})
+        #     dataclasses.replace(bundle, promoted=True)
+        #     VerdictBundle(promoted=True, blocked_by=("tamper",), ...)
+        #
+        # All three constructed, and the first re-serialised in that state. That
+        # matters most at the seam this module's docstring anticipates: once
+        # bundles arrive as JSON from another process, `from_json` is the trust
+        # boundary and `promoted` is a field the far side writes — invariant 9
+        # inverted.
+        #
+        # One equality closes constructor, `replace`, and dict round-trip at
+        # once, and costs nothing because every honest caller already satisfies
+        # it. Raise rather than correct: a caller who disagrees with the gates
+        # about whether this promoted has a bug worth surfacing, and silently
+        # overwriting their value would hide it.
+        if self.promoted != (not self.blocked_by):
+            raise ValueError(
+                f"promoted={self.promoted!r} contradicts blocked_by={self.blocked_by!r}. "
+                "`promoted` is derived from the gate results and is never set: a bundle "
+                "is promoted exactly when nothing blocked it. Refusing to construct a "
+                "verdict that claims otherwise (invariant 1)."
+            )
+
     # -- named constructors: one per lane, so neither verifier hand-rolls the shape
 
     @classmethod

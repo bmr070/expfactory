@@ -320,7 +320,39 @@ class LinearTracker:
 
             connection: Any = data
             for key in path:
-                connection = (connection or {}).get(key) or {}
+                if not isinstance(connection, dict) or key not in connection:
+                    # **The fail-open a review found, and the one this module's
+                    # docstring already claimed was closed.**
+                    #
+                    # This used to be `(connection or {}).get(key) or {}`, which
+                    # degraded an unlocatable connection to an empty dict. Then
+                    # `nodes` got nothing, `pageInfo` was `{}`, `hasNextPage` was
+                    # falsy, and the loop *returned the pages it already had*.
+                    #
+                    # Reproduced: page one of an issue's history carrying a
+                    # human's `agent-ready` application with `hasNextPage: true`,
+                    # page two arriving as `{"data": {"issue": null}}` with no
+                    # `errors` key so `_call` does not raise. `label_actor`
+                    # answered `'Brett R'` for a ticket whose most recent grant
+                    # was a bot's — a superseded grant read as current, which is
+                    # precisely the authorization-on-partial-data failure the
+                    # pagination work exists to remove.
+                    #
+                    # Cannot-locate is not empty. The GitHub adapter already
+                    # refuses the equivalent shape (a non-list body); this is the
+                    # same refusal, and its absence here was the asymmetry.
+                    raise PageWalkRefused(
+                        f"{'.'.join(path)} could not be located in the response on page "
+                        f"{pages} (stopped at {key!r}). A connection that cannot be found "
+                        "is not an empty connection, and returning what was collected so "
+                        "far would answer an authorization question from a prefix."
+                    )
+                connection = connection[key]
+            if connection is None:
+                raise PageWalkRefused(
+                    f"{'.'.join(path)} was null on page {pages}. Null is not empty, and "
+                    "a partial list is not a list."
+                )
             nodes.extend(connection.get("nodes") or [])
 
             info = connection.get("pageInfo") or {}
@@ -329,6 +361,18 @@ class LinearTracker:
                 # not claim there is more is taken at its word — there is no
                 # third answer available, and assuming truncation would make
                 # every read fail on a server that omits the field.
+                #
+                # A review argued this should refuse, since `hasNextPage` is
+                # `Boolean!` in Linear's schema and a conforming server always
+                # sends it, so the tolerance protects an impossible case. That is
+                # a fair argument and it is NOT taken here: the behaviour is
+                # deliberate, `test_a_response_with_no_pageinfo_is_taken_at_its_word`
+                # encodes it, and overturning a recorded decision belongs in a
+                # ticket rather than in a security patch. Filed.
+                #
+                # The reachable half of that finding — a connection that cannot
+                # be *located* at all — is refused above, and that is the one
+                # that produced a live fail-open.
                 return nodes
 
             next_cursor = info.get("endCursor")
