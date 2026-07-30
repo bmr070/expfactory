@@ -59,7 +59,7 @@ def _adjudicating_verifier():
     from expfactory.verifier import GateVerifier
 
     class _V:
-        def run(self, candidate):
+        def run(self, candidate, ticket=None):
             bundle = GateVerifier(id_factory=lambda: "e1").run(candidate)
             return dataclasses.replace(
                 bundle, gate_names=(*bundle.gate_names, *sorted(REQUIRED_EMPIRICAL_GATES))

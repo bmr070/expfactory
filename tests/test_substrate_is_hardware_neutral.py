@@ -27,7 +27,7 @@ import pytest
 from expfactory import registry
 from expfactory.registry import ComputeSubstrate
 
-_SEAM_METHODS = ("submit", "poll", "fetch_artifact", "rate_card")
+_SEAM_METHODS = ("submit", "poll", "fetch_artifact", "rate_card", "completion")
 
 # Words that name a device rather than a job. `image` and `command` are fine:
 # they describe what to run, not what silicon runs it.
@@ -54,11 +54,16 @@ def _seam_ast() -> ast.ClassDef:
     raise AssertionError("ComputeSubstrate is gone from registry.py")
 
 
-def test_the_seam_still_has_exactly_the_four_methods() -> None:
-    """Pinned so a fifth method is a deliberate act, not a drift.
+def test_the_seam_still_has_exactly_the_expected_methods() -> None:
+    """Pinned so an added method is a deliberate act, not a drift.
 
     Anything added here is something every future substrate must implement,
     including ones with no accelerator at all.
+
+    It has earned its keep once already: BRE-31 added `completion`, this test
+    failed, and the addition got argued for rather than noticed later. That is
+    the whole intent — not "never change the seam", but "changing it is a
+    decision somebody made on purpose."
     """
     defined = tuple(
         n.name

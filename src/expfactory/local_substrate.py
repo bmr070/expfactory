@@ -70,6 +70,7 @@ from typing import Any
 from expfactory.registry import (
     SECONDS_PER_HOUR,
     Clock,
+    CompletionRecord,
     JobSpec,
     JobState,
     RateCard,
@@ -502,6 +503,50 @@ class LocalGpuSubstrate:
             raise SubstrateRefused(f"job {handle} has not produced {_DONE} yet")
         return str(done)
 
+    def completion(self, handle: str) -> CompletionRecord | None:
+        """What this substrate actually ran, read back off disk (BRE-31).
+
+        The wrapper writes `done.json` in the job's own directory as its last act,
+        and the command recorded there is the list it invoked -- not the list
+        somebody says it was asked to invoke. That difference is the point: G-10
+        compares this against the command the registry recorded at submission, so
+        a job that ran something other than the evaluation is caught even though
+        its handle, its exit code and its artifact are all genuine.
+
+        `artifact_sha256` is computed here, at resolution, over the exact bytes
+        `fetch_artifact` points at. The registry writes it to its append-only log,
+        so editing the artifact afterwards no longer matches what was recorded.
+
+        Returns `None` when the job has not finished or the record is unreadable.
+        Honest silence: G-10 names an unchecked field rather than reading absence
+        as agreement.
+        """
+        done = self._dir(handle) / _DONE
+        if not done.exists():
+            return None
+        raw = done.read_bytes()
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            # A truncated or corrupt record says nothing trustworthy. Refusing to
+            # guess is the same fail-closed direction as an unreadable ledger
+            # meaning spend is unknown rather than zero.
+            return None
+        command = payload.get("command")
+        if not isinstance(command, list) or payload.get("exit_code") is None:
+            return None
+        return CompletionRecord(
+            handle=handle,
+            command=tuple(str(part) for part in command),
+            exit_code=int(payload["exit_code"]),
+            wall_seconds=float(payload.get("wall_seconds", 0.0)),
+            artifact_sha256=hashlib.sha256(raw).hexdigest(),
+            # This substrate runs whatever is on disk and has no build step, so
+            # it cannot honestly claim a revision. Left `None` rather than filled
+            # with the runner's own HEAD, which would attest to the wrong thing.
+            source_revision=None,
+        )
+
     def rate_card(self) -> RateCard:
         """`ComputeSubstrate` — this box quotes its own price (BRE-29).
 
@@ -676,6 +721,7 @@ finally:
     with open("done.json", "w", encoding="utf-8") as f:
         json.dump(
             {
+                "command": command,
                 "exit_code": exit_code,
                 "error": error,
                 "started_at": started,

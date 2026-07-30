@@ -373,6 +373,61 @@ class RunAttestation:
 
 
 @dataclass(frozen=True)
+class CompletionRecord:
+    """What the substrate says actually ran, asked of it by the registry (BRE-31).
+
+    The counterpart to `RunAttestation`, and the whole point is who writes it. A
+    `RunAttestation` arrives on a `Candidate` an agent assembled; this is fetched
+    from the substrate by `resolve()` and appended to the registry's own log. The
+    gate compares the two, so the candidate stops being the source of the
+    evidence it is judged on and becomes a **request to locate** it.
+
+    Before this, `attested_job()` returned only handle, ticket, state, time and
+    artifact reference. G-10 already knew how to compare a digest and an exit
+    code, and every one of those comparisons read `record.get(...) is None` and
+    passed **vacuously**. The checks were written; they were starved.
+
+    `command` is the field the review did not ask for and the one that closes the
+    remaining hole. A candidate could cite a genuine handle, for a genuine job,
+    whose command never ran the evaluation at all — attested and worthless. TRL's
+    `opencode` reward names the same failure from the RL side and pays -0.1 for
+    it: *"never ran its code, kills blind-write / prose-dump / give-up."*
+    """
+
+    handle: str
+    command: tuple[str, ...]
+    exit_code: int
+    wall_seconds: float
+    artifact_sha256: str
+    # The immutable revision the job was built from. `None` when the substrate
+    # cannot say, which is honest rather than blank: G-10 reports what went
+    # unchecked instead of implying it checked.
+    source_revision: str | None = None
+
+
+def _completion_from_event(event: dict[str, Any]) -> CompletionRecord | None:
+    """Rebuild the completion the substrate reported, or `None` if it reported none.
+
+    Partial rows return `None` rather than a record with holes in it. A
+    half-populated completion would let G-10 compare the fields that happen to be
+    present and silently skip the rest, which is the vacuous-check failure this
+    whole ticket exists to remove — in a subtler form, because it would look like
+    a check ran.
+    """
+    required = ("completion_command", "exit_code", "wall_seconds", "artifact_sha256")
+    if any(event.get(k) is None for k in required):
+        return None
+    return CompletionRecord(
+        handle=str(event["handle"]),
+        command=tuple(event["completion_command"]),
+        exit_code=int(event["exit_code"]),
+        wall_seconds=float(event["wall_seconds"]),
+        artifact_sha256=str(event["artifact_sha256"]),
+        source_revision=event.get("source_revision"),
+    )
+
+
+@dataclass(frozen=True)
 class JobRecord:
     handle: str
     ticket: str
@@ -383,6 +438,12 @@ class JobRecord:
     # A *reference* to where the artifact landed, never the artifact's contents
     # and never a verdict. See the module docstring.
     artifact_ref: str | None = None
+    # What the registry ASKED the substrate to run, captured at reservation from
+    # `JobSpec.command`. Kept separate from the completion's `command`, which is
+    # what the substrate says it RAN, precisely so the two can be compared. One
+    # field holding both would make the check impossible to write.
+    requested_command: tuple[str, ...] | None = None
+    completion: CompletionRecord | None = None
 
     @property
     def is_open(self) -> bool:
@@ -409,6 +470,11 @@ class Reservation:
     cost_estimate_usd: float
     handle: str | None = None
     state: ReservationState = ReservationState.RESERVED
+    # Captured here rather than at binding because this row is written *before*
+    # the substrate is touched (BRE-30). What was asked for is therefore durable
+    # even when the process dies before anything answered, which is the same
+    # reason the price is on this row.
+    requested_command: tuple[str, ...] | None = None
 
     @property
     def is_orphaned(self) -> bool:
@@ -513,6 +579,20 @@ class ComputeSubstrate(Protocol):
     def poll(self, handle: str) -> JobState: ...
     def fetch_artifact(self, handle: str) -> str: ...
     def rate_card(self) -> RateCard: ...
+
+    def completion(self, handle: str) -> CompletionRecord | None:
+        """What actually ran, asked of the substrate rather than the candidate.
+
+        The fifth method, added by BRE-31 deliberately: every substrate must be
+        able to say what it executed, because a substrate that cannot is a
+        substrate whose jobs can only be taken on the agent's word.
+
+        `None` means the substrate genuinely cannot say — not that nothing ran.
+        G-10 reports that as unchecked rather than treating it as agreement,
+        which is the same fail-closed direction as an unreadable ledger meaning
+        spend is unknown rather than zero.
+        """
+        ...
 
 
 class JobRegistry:
@@ -690,6 +770,7 @@ class JobRegistry:
                     reserved_at=e["at"],
                     deadline_at=e["deadline_at"],
                     cost_estimate_usd=e["cost_estimate_usd"],
+                    requested_command=tuple(e["command"]) if e.get("command") else None,
                 )
             elif kind == "bound" and e["key"] in held:
                 held[e["key"]] = replace(
@@ -706,6 +787,7 @@ class JobRegistry:
                     deadline_at=prior.deadline_at,
                     cost_estimate_usd=prior.cost_estimate_usd,
                     state=JobState.SUBMITTED,
+                    requested_command=prior.requested_command,
                 )
             elif kind in ("released", "orphaned", "abandoned") and e["key"] in held:
                 held[e["key"]] = replace(held[e["key"]], state=ReservationState(kind))
@@ -729,6 +811,8 @@ class JobRegistry:
                     cost_estimate_usd=prior_job.cost_estimate_usd,
                     state=JobState.RESOLVED if kind == "resolved" else JobState.LOST,
                     artifact_ref=e.get("artifact_ref"),
+                    requested_command=prior_job.requested_command,
+                    completion=_completion_from_event(e),
                 )
         return jobs, held
 
@@ -774,13 +858,28 @@ class JobRegistry:
         record = self.records().get(handle)
         if record is None:
             return None
-        return {
+        out: dict[str, Any] = {
             "handle": record.handle,
             "ticket": record.ticket,
             "state": str(record.state),
             "submitted_at": record.submitted_at,
             "artifact_ref": record.artifact_ref,
+            "requested_command": record.requested_command,
         }
+        # BRE-31: these are the keys G-10 was already reading and never finding.
+        # Absent while the job is open or when the substrate could not say --
+        # the gate distinguishes absent from mismatched, and says which.
+        if record.completion is not None:
+            out.update(
+                {
+                    "completion_command": record.completion.command,
+                    "exit_code": record.completion.exit_code,
+                    "wall_seconds": record.completion.wall_seconds,
+                    "artifact_sha256": record.completion.artifact_sha256,
+                    "source_revision": record.completion.source_revision,
+                }
+            )
+        return out
 
     def outstanding(self) -> list[JobRecord]:
         return [r for r in self.records().values() if r.is_open]
@@ -996,6 +1095,10 @@ class JobRegistry:
                     "ticket": spec.ticket,
                     "deadline_at": record.deadline_at,
                     "cost_estimate_usd": cost_estimate_usd,
+                    # What we ASKED to run. Durable before the substrate is
+                    # touched, so BRE-31 can later compare it against what the
+                    # substrate says it actually ran.
+                    "command": list(spec.command),
                 }
             )
 
@@ -1045,14 +1148,28 @@ class JobRegistry:
         by the gates, and recorded by the ledger.
         """
         artifact_ref = self._substrate.fetch_artifact(handle)
-        self._append(
-            {
-                "event": "resolved",
-                "at": self._clock(),
-                "handle": handle,
-                "artifact_ref": artifact_ref,
-            }
-        )
+        event: dict[str, Any] = {
+            "event": "resolved",
+            "at": self._clock(),
+            "handle": handle,
+            "artifact_ref": artifact_ref,
+        }
+        # BRE-31. Asked of the substrate, written by the registry, so the
+        # candidate stops being the source of the evidence it is judged on.
+        # A substrate that cannot answer leaves these absent, and G-10 reports
+        # that as unchecked rather than as agreement.
+        done = self._substrate.completion(handle)
+        if done is not None:
+            event.update(
+                {
+                    "completion_command": list(done.command),
+                    "exit_code": done.exit_code,
+                    "wall_seconds": done.wall_seconds,
+                    "artifact_sha256": done.artifact_sha256,
+                    "source_revision": done.source_revision,
+                }
+            )
+        self._append(event)
         return artifact_ref
 
     def collect_finished(self) -> list[FinishedJob]:
