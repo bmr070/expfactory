@@ -199,6 +199,35 @@ class SubstrateDeclined(RuntimeError):
     """
 
 
+class SubstrateUncertain(RuntimeError):
+    """A substrate's way of saying **I do not know whether anything started**.
+
+    Deliberately **not** a `SubstrateDeclined`, and that is the entire point
+    (BRE-41). A review found the two meanings sharing one class: the local
+    substrate's unreadable-idempotency-marker path raised `SubstrateRefused`,
+    which *is* a `SubstrateDeclined`, while its own message said the opposite —
+    *"a key that may already own one"*. May-already-own is unknown, and the
+    registry released the reservation, the one state that does not count against
+    spend.
+
+    Reproduced: a real detached job running under `intent-1`, its marker
+    truncated by an unclean shutdown, and the registry recording
+
+        reservation states: {'intent-1': 'released'}
+        spend_today_usd  : 0.0
+        breaker_reason   : None
+        orphans          : []
+
+    A live billable job, recorded as costing nothing. `SubstrateDeclined`'s own
+    docstring names this failure and the code walked into it anyway, because one
+    class was carrying two claims.
+
+    Raising this leaves the reservation open, so the next `_escalate_orphans`
+    turns it into an orphan and opens the breaker — a human goes and looks,
+    which is the correct answer to "we cannot tell".
+    """
+
+
 class InvalidJobInput(RegistryRefused):
     """A cost, cap or deadline that is not a usable number (BRE-29).
 
@@ -940,6 +969,32 @@ class JobRegistry:
         """
         cutoff = self._clock() - SECONDS_PER_DAY
         jobs, held = self._replay()
+
+        # **A damaged log makes this unknown, not small (BRE-41).**
+        #
+        # Only `submit` consulted `self._damaged`, so the rule this method's own
+        # docstring argues for — an unreadable ledger means spend is unknown —
+        # held for the caps path and was broken here. Worse than a wrong total:
+        # `_replay` drops a `bound` row whose key is not in `held`, and `held` is
+        # built only from *parseable* `reserved` rows, so one damaged line
+        # silently erases the live job bound to it.
+        #
+        # Reproduced: a truncated `reserved` for a $25 job plus its intact
+        # `bound` row for a job 95,000s past its deadline —
+        #
+        #     log_damage()      -> 1
+        #     spend_today_usd() -> 0.0
+        #     records()         -> {}
+        #
+        # A live job, no spend, and nothing outstanding for `sweep` to notice.
+        if self._damaged:
+            raise BreakerTripped(
+                f"{self._damaged} unreadable row(s) in {self.path}: a corrupt row may "
+                "have been a submission, and a corrupt reservation takes the job bound "
+                "to it out of the replay entirely. Today's spend is unknown. Repair or "
+                "archive the log before submitting."
+            )
+
         total = 0.0
         # Every job with a handle, plus every reservation that never got one.
         # `_replay` guarantees these do not overlap: a bound reservation is
