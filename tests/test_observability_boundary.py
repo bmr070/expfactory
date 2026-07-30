@@ -53,6 +53,18 @@ OBSERVABILITY = frozenset(
         "neptune",
         "langsmith",
         "clearml",
+        # M2-09 additions. Trackio is the picked tracker and is listed for the
+        # same reason as the rest — being the chosen one does not make it a
+        # thing a gate may read from.
+        "trackio",
+        # Provenance stores, not dashboards, and the failure mode differs. A
+        # gate reading `dvc` or `huggingface_hub` would be resolving *what ran*
+        # from an external store, when the ledger's `code_hash`,
+        # `train_ids_hash` and `eval_ids_hash` already answer it exactly. M2-09
+        # declined both partly on the grounds that this import is never needed;
+        # that argument is worth nothing if the import is possible.
+        "dvc",
+        "huggingface_hub",
     }
 )
 
