@@ -127,6 +127,7 @@ def _basename(path: str) -> str:
     """
     return path.replace("\\", "/").rsplit("/", 1)[-1].casefold()
 
+
 # Modules in this package that are deliberately NOT verification substrate.
 #
 # This package IS the verification layer, so the default is "protected" and the
