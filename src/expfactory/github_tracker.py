@@ -71,7 +71,7 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import urlsplit
 
@@ -159,10 +159,17 @@ class Page:
     `Link` header, so a transport handing back nothing but parsed JSON makes
     truncation *structurally invisible* to this adapter — which is how both reads
     here came to be one page deep without anyone deciding they should be.
+
+    **`headers` is required.** It defaulted to `{}` and a review pointed out that
+    the default preserved exactly the omission this type was introduced to make
+    impossible: `return Page(json.loads(body))` type-checks, satisfies
+    `HttpTransport`, produces no error, and silently makes every read one page
+    deep. A transport that forgets the headers must fail where it is written, not
+    launder a truncated grant months later.
     """
 
     body: Any
-    headers: Mapping[str, str] = field(default_factory=dict)
+    headers: Mapping[str, str]
 
 
 @runtime_checkable
@@ -187,15 +194,55 @@ def _next_path(headers: Mapping[str, str]) -> str | None:
     here. The host is dropped rather than followed, so a `Link` rewritten by a
     proxy cannot redirect an authenticated read (and the token bound to it) at
     somewhere else.
+
+    **Dropping the host is not enough, and an earlier version of this got it
+    wrong.** A review found `https://api.github.com//evil.example/steal` passes a
+    netloc check — `urlsplit` reads the netloc as `api.github.com` and the *path*
+    as `//evil.example/steal`. That path is protocol-relative, so any transport
+    composing it with `urljoin` or an `httpx` `base_url` sends the request, and
+    the `Authorization` header bound to it, to `evil.example`. Verified: it
+    resolved to `https://evil.example/steal?x=1`.
+
+    So the path is refused rather than trimmed, per the standing rule that every
+    sanitizer is lossy. A next link that is not a plain absolute path on the
+    expected host is not a link this walk follows.
+
+    `rel` is a token *set* per RFC 8288, so `rel="next last"` is legal and is the
+    last page's link. Matching it exactly meant the walk read that as "no next
+    page" and returned a prefix — a silent truncation, which is the failure this
+    module exists to prevent.
     """
     raw = next((value for name, value in headers.items() if name.lower() == "link"), None)
     if not raw:
         return None
     for url, rel in _LINK_ENTRY.findall(raw):
-        if rel.strip() != "next":
+        # Token set, not a single value. `rel="next last"` is the legal form on a
+        # final page and must still be followed.
+        if "next" not in rel.split():
             continue
         split = urlsplit(str(url).strip())
-        return split.path + (f"?{split.query}" if split.query else "")
+        path = split.path
+        if not path.startswith("/") or path.startswith("//"):
+            # `//host/x` is protocol-relative and re-acquires an authority the
+            # netloc check never saw. Refuse; do not strip a leading slash and
+            # hope.
+            raise PageWalkRefused(
+                f"the Link header's next target has a path this walk will not follow: "
+                f"{path!r}. A protocol-relative or non-absolute path can re-acquire a "
+                "host, which would send an authenticated read somewhere other than the "
+                "API. Refused rather than rewritten."
+            )
+        if ".." in path.split("/"):
+            # Stays on-host, so no token leaks, but it can aim page two of one
+            # issue's timeline at another issue's — and the walked history would
+            # then be two issues merged, which is an authorization answer about
+            # the wrong ticket.
+            raise PageWalkRefused(
+                f"the Link header's next target traverses upward: {path!r}. It would "
+                "resolve to a different collection than the one being walked, and a "
+                "history assembled from two issues answers about neither."
+            )
+        return path + (f"?{split.query}" if split.query else "")
     return None
 
 
