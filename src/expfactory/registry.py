@@ -745,6 +745,26 @@ class JobRegistry:
         So a corrupt line is quarantined rather than fatal: everything parseable
         is returned, and the damage is reported through `log_damage()`, which
         `submit` consults and a human can see and act on.
+
+        **"Parseable" has to mean usable, not merely valid JSON (BRE-41).** The
+        quarantine caught `JSONDecodeError` only, so a line that parsed to
+        something that is not an event — `null`, `42`, `[]`, or a dict with no
+        `"event"` key — still bricked every read, and now with the damage counter
+        reporting clean:
+
+            log_damage() -> 0
+            records() / reservations() / spend_today_usd() -> TypeError
+
+        Two things made that worse than a brick. `log_damage()`'s contract is
+        *"non-zero means spend accounting is incomplete"*, and it said healthy for
+        a log that could not be replayed at all. And the escaping `TypeError` is
+        not a `RegistryRefused`, so `Runner._collect_finished` — which calls
+        `collect_finished()` outside its `try` — let it escape `tick()` entirely.
+        **The poll loop dies, so `sweep` never runs, so nothing notices a lost
+        job**, on a log whose health signal says fine.
+
+        A row this module cannot read is damage regardless of which parser
+        rejected it.
         """
         out: list[dict[str, Any]] = []
         self._damaged = 0
@@ -758,11 +778,20 @@ class JobRegistry:
             if not line.strip():
                 continue
             try:
-                out.append(json.loads(line))
+                event = json.loads(line)
             except json.JSONDecodeError:
                 # Counted, not dropped silently: an unreadable row may have been
                 # a submission, so spend accounting is no longer trustworthy.
                 self._damaged += 1
+                continue
+            # Valid JSON is not the same as a usable event. `null`, `42`, `[]`
+            # and `{"nope": 1}` all parse; every one of them then raises a
+            # `TypeError` or `KeyError` out of the replay, which is not a
+            # `RegistryRefused` and escapes the runner's tick.
+            if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+                self._damaged += 1
+                continue
+            out.append(event)
         return out
 
     def log_damage(self) -> int:
@@ -1099,6 +1128,26 @@ class JobRegistry:
                     "archive the log before submitting."
                 )
 
+            # `None` means "mint one". An empty or blank string means the caller
+            # believes it set a key, and `or` quietly mapped that onto "no key"
+            # (BRE-41) — the `WorkspaceRoot.strip()` lesson in a new place.
+            #
+            # Reproduced: two submissions with `idempotency_key=""` produced two
+            # GPU jobs, charged twice, and because a *different* uuid was minted
+            # per call the substrate's own marker dedup could not save it either.
+            # A caller doing `JobSpec(idempotency_key=os.environ.get("KEY", ""))`
+            # and retrying after a transient error believes it is protected.
+            #
+            # Refuse, do not sanitize. `" k"` and `"k"` stay distinct, which is
+            # correct: they are different keys and collapsing them would be the
+            # same class of error in the other direction.
+            if spec.idempotency_key is not None and not spec.idempotency_key.strip():
+                raise InvalidJobInput(
+                    f"idempotency_key={spec.idempotency_key!r} is empty or blank. Pass "
+                    "None to have one minted, or a real key — an empty string reads as "
+                    "'no idempotency' and silently buys a second GPU on retry."
+                )
+
             key = spec.idempotency_key or uuid.uuid4().hex
             # Carried on the spec so the *provider* sees it. A substrate that can
             # deduplicate on it cannot turn one intent into two jobs even if this
@@ -1267,6 +1316,23 @@ class JobRegistry:
         now = self._clock()
         lost: list[JobRecord] = []
         for record in self.outstanding():
+            # `deadline_at` is the single field this method depends on, and it
+            # was the one number `_replay` never validated (BRE-41).
+            # `spend_today_usd` checks `submitted_at` and `cost_estimate_usd`;
+            # this went unchecked, in the loss detector.
+            #
+            # `json.loads` accepts bare `Infinity` by default, so a row carrying
+            # `"deadline_at": Infinity` stayed outstanding forever — `now < inf`
+            # is always true, the breaker never opened, and `log_damage()` read
+            # clean. A string there is worse: the comparison raises a bare
+            # `TypeError` out of `sweep`, which is the tick-killing shape above.
+            if not _finite(record.deadline_at):
+                raise BreakerTripped(
+                    f"job {record.handle} in {self.path} has deadline_at="
+                    f"{record.deadline_at!r}, so it can be neither overdue nor within its "
+                    "window and this sweep cannot tell whether it was lost. Repair or "
+                    "archive the log."
+                )
             if now < record.deadline_at:
                 continue
             if self._substrate.poll(record.handle) is JobState.RESOLVED:

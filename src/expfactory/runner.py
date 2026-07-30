@@ -329,6 +329,15 @@ class TickResult:
     # Detached this tick: the agent submitted a job and its session ended. Not a
     # result and not a failure -- the ticket now waits on the substrate.
     submitted: dict[str, str] = field(default_factory=dict)
+    # Infrastructure that could not answer this tick, named rather than raised
+    # (BRE-41). Not keyed by ticket, because the whole point is that we do not
+    # know which tickets are affected: a registry that cannot replay its log
+    # cannot tell us whose jobs finished.
+    #
+    # Separate from `failed` and `refused`, which are both statements about a
+    # ticket. This is a statement about the runner's own footing, and a tick that
+    # reports one is a tick whose silence about everything else means less.
+    errors: list[str] = field(default_factory=list)
     # Finished jobs turned back into verdicts this tick.
     collected: dict[str, str] = field(default_factory=dict)
 
@@ -615,8 +624,30 @@ class Runner:
         if self._jobs is None or self._collector is None:
             return set()
 
+        # **The registry call belongs inside the guard, not beside it (BRE-41).**
+        #
+        # `collect_finished()` sat outside the per-job `try` below, so anything it
+        # raised escaped `tick()` entirely — and the registry can raise on a
+        # damaged log, which is a state it is *designed* to reach. The
+        # consequence is the one the whole detach model exists to prevent: the
+        # poll loop dies, so `sweep` never runs in that tick, so nothing notices
+        # a lost job.
+        #
+        # Caught here and reported rather than swallowed. A registry that cannot
+        # answer is a condition for a human, not a reason to stop polling: the
+        # next tick still sweeps, and the breaker still refuses new work.
+        try:
+            finished = self._jobs.collect_finished()
+        except Exception as exc:  # noqa: BLE001 — a registry that cannot answer must not kill the loop
+            result.errors.append(
+                f"the job registry could not report finished jobs: {exc}. Tickets parked "
+                "in Running Unattended stay parked until this is repaired; the sweep in "
+                "this tick still ran."
+            )
+            return set()
+
         done: set[str] = set()
-        for job in self._jobs.collect_finished():
+        for job in finished:
             try:
                 candidate = self._collector.collect(job.ticket, job.handle, job.artifact_ref)
             except Exception as exc:  # noqa: BLE001 — an artifact we cannot read is not a result
