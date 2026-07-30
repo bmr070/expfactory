@@ -126,10 +126,18 @@ def _entry(
     bot: str | None = None,
     label_id: str = "lab-1",
     at: str = "2026-07-01T00:00:00Z",
+    display: str = "Brett R",
 ) -> dict[str, Any]:
+    """`actor` is the account **id**, which is what `label_actor` returns.
+
+    `display` is deliberately a *different* string and defaults to the same value
+    for every actor. Any test that passes by matching a display name is therefore
+    a test that would pass for an impostor (BRE-42), and this helper is the reason
+    such a test cannot be written by accident.
+    """
     entry: dict[str, Any] = {"addedLabelIds": [label_id], "createdAt": at}
     if actor:
-        entry["actor"] = {"name": actor, "displayName": actor}
+        entry["actor"] = {"id": actor, "name": display, "displayName": display}
     if bot:
         entry["botActor"] = {"name": bot}
     return entry
@@ -175,10 +183,10 @@ def test_the_transport_is_the_only_thing_that_holds_a_credential():
 
 
 def test_a_human_who_applied_the_label_is_named():
-    transport = FakeGraphQL(labels=_LABELS_OK, history=_history(actor="Brett R"))
+    transport = FakeGraphQL(labels=_LABELS_OK, history=_history(actor="usr-brett"))
     tracker = LinearTracker(TEAM, transport)
 
-    assert tracker.label_actor(ISSUE, "agent-ready") == "Brett R"
+    assert tracker.label_actor(ISSUE, "agent-ready") == "usr-brett"
 
 
 def test_a_bot_actor_returns_none_rather_than_a_name():
@@ -254,7 +262,7 @@ def test_a_history_entry_on_the_second_page_is_found():
                 "data": {
                     "issue": {
                         "history": _conn(
-                            [_entry(actor="Brett R", at="2026-07-01T00:00:00Z")],
+                            [_entry(actor="usr-brett", at="2026-07-01T00:00:00Z")],
                             next_cursor="cur-2",
                         )
                     }
@@ -279,8 +287,8 @@ def test_a_history_entry_on_the_second_page_is_found():
 def test_the_truncated_read_would_have_said_something_else():
     """The positive control. Without it, a walk that returned only the last page
     would satisfy the test above just as well."""
-    transport = FakeGraphQL(labels=_LABELS_OK, history=_history(actor="Brett R"))
-    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "Brett R"
+    transport = FakeGraphQL(labels=_LABELS_OK, history=_history(actor="usr-brett"))
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "usr-brett"
 
 
 def test_the_cursor_from_one_page_is_sent_with_the_next():
@@ -399,9 +407,9 @@ def test_every_connection_is_walked_not_just_the_issue_list():
             {"data": {"issue": {"labels": _conn([{"id": "x", "name": "other"}], next_cursor="c")}}},
             {"data": {"issue": {"labels": _conn([{"id": "lab-1", "name": "agent-ready"}])}}},
         ],
-        history=_history(actor="Brett R"),
+        history=_history(actor="usr-brett"),
     )
-    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "Brett R"
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "usr-brett"
 
 
 def test_a_workflow_state_on_the_second_page_is_reachable():
@@ -464,7 +472,7 @@ def test_history_arriving_in_the_wrong_order_is_corrected():
                     [
                         # The later entry arrives first. Server order is wrong.
                         _entry(bot="a-bot", at="2026-07-09T00:00:00Z"),
-                        _entry(actor="Brett R", at="2026-07-02T00:00:00Z"),
+                        _entry(actor="usr-brett", at="2026-07-02T00:00:00Z"),
                     ]
                 )
             }
@@ -492,7 +500,7 @@ def test_ordering_is_established_across_a_page_boundary_too():
             {
                 "data": {
                     "issue": {
-                        "history": _conn([_entry(actor="Brett R", at="2026-07-02T00:00:00Z")])
+                        "history": _conn([_entry(actor="usr-brett", at="2026-07-02T00:00:00Z")])
                     }
                 }
             },
@@ -523,7 +531,7 @@ def test_tickets_come_back_oldest_first():
 def test_a_history_entry_with_no_timestamp_is_refused_not_placed():
     """It cannot be ordered against the others, and a guess about where it
     belongs is a guess about who granted dispatch."""
-    entry = _entry(actor="Brett R")
+    entry = _entry(actor="usr-brett")
     del entry["createdAt"]
     transport = FakeGraphQL(
         labels=_LABELS_OK, history={"data": {"issue": {"history": _conn([entry])}}}
@@ -539,9 +547,9 @@ def test_an_unrelated_history_entry_missing_a_timestamp_does_not_refuse_the_chec
     other = {"addedLabelIds": ["lab-99"]}
     transport = FakeGraphQL(
         labels=_LABELS_OK,
-        history={"data": {"issue": {"history": _conn([other, _entry(actor="Brett R")])}}},
+        history={"data": {"issue": {"history": _conn([other, _entry(actor="usr-brett")])}}},
     )
-    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "Brett R"
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "usr-brett"
 
 
 # --------------------------------------------------------------------------- #
@@ -615,11 +623,60 @@ def test_the_unattended_state_is_writable():
     mutates no labels at all, so `agent-ready` stays unwritable by construction
     rather than by exclusion.
     """
-    tracker = LinearTracker(TEAM, FakeGraphQL())
+    tracker = LinearTracker(TEAM, FakeGraphQL(workflowStates=_STATES_OK))
 
     assert STATE_RUNNING_UNATTENDED in tracker.writable_states()
     assert "Done" not in tracker.writable_states()
     assert "agent-ready" not in tracker.writable_states()
+
+
+def test_writable_states_omits_a_state_the_team_does_not_have():
+    """BRE-42. This method's whole job is to move a wiring error before dispatch,
+    and it was answering from the allowlist constant alone — a question about
+    this file, when its docstring promised one about the workspace.
+
+    So a team without a `Running Unattended` column passed the pre-dispatch check
+    and then refused the park, which is the failure the method exists to prevent,
+    arriving at exactly the moment it was meant to be prevented from arriving.
+    Two of the four states are not Linear defaults, so this is the ordinary case
+    for a fresh team.
+    """
+    partial = {
+        "data": {
+            "workflowStates": _conn(
+                [
+                    {"id": "st-1", "name": STATE_IN_PROGRESS},
+                    {"id": "st-2", "name": STATE_IN_REVIEW},
+                ]
+            )
+        }
+    }
+    writable = LinearTracker(TEAM, FakeGraphQL(workflowStates=partial)).writable_states()
+
+    assert STATE_IN_PROGRESS in writable
+    assert STATE_RUNNING_UNATTENDED not in writable
+    assert STATE_NEEDS_HUMAN not in writable
+
+
+def test_writable_states_refuses_rather_than_reporting_a_short_list():
+    """A walk that cannot complete must not answer. A truncated state list is
+    indistinguishable from "the team lacks that column", and that reading sends
+    the runner down the same wrong branch by a quieter route."""
+    with pytest.raises(PageWalkRefused):
+        LinearTracker(TEAM, FakeGraphQL()).writable_states()
+
+
+def test_writable_states_costs_one_query_however_often_it_is_asked():
+    """Shared cache with `_state_id`. Pre-dispatch is a hot path and the answer
+    changes only when a human edits the team's board."""
+    transport = FakeGraphQL(workflowStates=_STATES_OK, issueUpdate={"data": {"ok": True}})
+    tracker = LinearTracker(TEAM, transport)
+
+    tracker.writable_states()
+    tracker.writable_states()
+    tracker.set_state(ISSUE, STATE_IN_PROGRESS)
+
+    assert len(transport.variables_for("workflowStates")) == 1
 
 
 def test_the_adapter_refuses_to_move_a_ticket_to_done():
@@ -683,3 +740,154 @@ def test_a_comment_is_posted_against_the_uuid():
     (_, variables) = next((d, v) for d, v in transport.calls if "commentCreate" in d)
     assert variables["issueId"] == ISSUE
     assert variables["body"] == "proof of work"
+
+
+# --------------------------------------------------------------------------- #
+# BRE-42 — identity is an id, and order is an instant
+# --------------------------------------------------------------------------- #
+
+
+def test_the_actor_is_reported_by_id_not_by_display_name():
+    """`displayName` and `name` are both self-editable by any workspace member.
+
+    Matching the runner's allowlist on either meant anyone who could file a
+    ticket could rename themselves into the allowlist and grant their own
+    dispatch — invariant 7 defeated by a settings page. `User.id` is a
+    server-assigned UUID nothing in the product can change.
+    """
+    impostor = _entry(actor="usr-impostor", display="Brett R")
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={"data": {"issue": {"history": _conn([impostor])}}},
+    )
+
+    actor = LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready")
+
+    assert actor == "usr-impostor"
+    assert actor != "Brett R"
+
+
+def test_an_actor_with_no_id_is_unattributable():
+    """No id is no identity. Falling back to the display name would reintroduce
+    the impostor path through the error case."""
+    nameless = {
+        "addedLabelIds": ["lab-1"],
+        "createdAt": "2026-07-01T00:00:00Z",
+        "actor": {"name": "Brett R", "displayName": "Brett R"},
+    }
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={"data": {"issue": {"history": _conn([nameless])}}},
+    )
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") is None
+
+
+def test_two_applications_at_the_same_instant_by_different_parties_are_refused():
+    """Python's sort is stable, so a tie fell back to the order the server sent
+    — the order this adapter's own docstring says it cannot trust."""
+    same = "2026-07-01T00:00:03.000Z"
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={
+            "data": {
+                "issue": {
+                    "history": _conn(
+                        [
+                            _entry(actor="usr-brett", at=same),
+                            _entry(bot="expfactory-agent", at=same),
+                        ]
+                    )
+                }
+            }
+        },
+    )
+    with pytest.raises(UnorderableEntry, match="share the"):
+        LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready")
+
+
+def test_the_same_party_twice_at_one_instant_is_not_a_tie():
+    """Only ambiguous when the parties differ. One account re-adding twice in a
+    millisecond answers the same either way, and refusing it would be friction
+    with no safety in it."""
+    same = "2026-07-01T00:00:03.000Z"
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={
+            "data": {
+                "issue": {
+                    "history": _conn(
+                        [_entry(actor="usr-brett", at=same), _entry(actor="usr-brett", at=same)]
+                    )
+                }
+            }
+        },
+    )
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "usr-brett"
+
+
+def test_mixed_precision_timestamps_order_by_instant_not_text():
+    """`.` (0x2E) sorts below `Z` (0x5A), so a lexical compare reads
+    `...03.500Z` as *earlier* than `...03Z` and names the superseded grant."""
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={
+            "data": {
+                "issue": {
+                    "history": _conn(
+                        [
+                            _entry(bot="expfactory-agent", at="2026-07-01T00:00:03Z"),
+                            _entry(actor="usr-brett", at="2026-07-01T00:00:03.500Z"),
+                        ]
+                    )
+                }
+            }
+        },
+    )
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") == "usr-brett"
+
+
+def test_an_offset_timestamp_orders_by_instant_not_wall_clock():
+    """`-04:00` is four hours *ahead* of the same wall clock in UTC. Compared as
+    text it sorts as if it were behind."""
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={
+            "data": {
+                "issue": {
+                    "history": _conn(
+                        [
+                            # 12:00Z
+                            _entry(actor="usr-brett", at="2026-07-01T12:00:00Z"),
+                            # 15:00Z, but sorts below '12:00:00Z' as text
+                            _entry(bot="expfactory-agent", at="2026-07-01T11:00:00-04:00"),
+                        ]
+                    )
+                }
+            }
+        },
+    )
+    assert LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready") is None
+
+
+@pytest.mark.parametrize("bad", ["not-a-date", "2026-13-45T99:99:99Z"])
+def test_an_unparseable_timestamp_is_refused(bad: str):
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={"data": {"issue": {"history": _conn([_entry(actor="usr-brett", at=bad)])}}},
+    )
+    with pytest.raises(UnorderableEntry):
+        LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready")
+
+
+def test_a_naive_timestamp_is_refused():
+    """No timezone names a wall clock, not an instant."""
+    transport = FakeGraphQL(
+        labels=_LABELS_OK,
+        history={
+            "data": {
+                "issue": {"history": _conn([_entry(actor="usr-brett", at="2026-07-01T00:00:00")])}
+            }
+        },
+    )
+    with pytest.raises(UnorderableEntry, match="timezone"):
+        LinearTracker(TEAM, transport).label_actor(ISSUE, "agent-ready")

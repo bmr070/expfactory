@@ -31,6 +31,29 @@ Both halves are enforced by
 separate steps, so the timeline shows which refusal fired. Prose does not
 ratchet (invariant 8), so neither rule lives only here.
 
+### The allowlist holds account ids, not names (BRE-42)
+
+`Runner(human_allowlist=...)` is compared against whatever `Tracker.label_actor`
+returns, and what that is differs by adapter on purpose:
+
+| Adapter | Returns | Why |
+|---|---|---|
+| `linear_tracker` | Linear **`User.id`** (a UUID) | `displayName` and `name` are self-editable by any workspace member, so a name-based allowlist could be joined from a settings page |
+| `github_tracker` | the account **login** | GitHub logins are namespace-unique and a rename frees the old one; there is no second identifier the timeline exposes |
+
+Get the ids for a Linear team with:
+
+```bash
+curl -s -H "Authorization: $LINEAR_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"query":"{ users(first: 50) { nodes { id name displayName email } } }"}' \
+  https://api.linear.app/graphql
+```
+
+A stale name-based allowlist fails **closed**: the id will not match, the ticket
+is refused, and the reason names the id that was not recognised. That is the
+intended failure — a dispatch check that degrades to "allow" on a config drift is
+not a check.
+
 ## The intake chain
 
 A project enters as a ticket, and no implementation ticket exists until the chain

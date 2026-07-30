@@ -634,3 +634,76 @@ def test_a_real_transport_failure_is_not_swallowed():
 
     with pytest.raises(PermissionError):
         GitHubTracker(REPO, Broken()).set_state("1", STATE_IN_REVIEW)
+
+
+# ---------------------------------------------------------------------------
+# BRE-42 — ordering by instant, and refusing a tie
+# ---------------------------------------------------------------------------
+
+
+class _Timeline:
+    """A one-page timeline the test supplies directly."""
+
+    def __init__(self, events):
+        self.events = events
+
+    def get(self, path: str) -> Page:
+        if "timeline" in path:
+            return Page(self.events, {})
+        return Page([], {})
+
+    def post(self, path: str, body):  # pragma: no cover - not used here
+        raise AssertionError("label_actor must not write")
+
+
+def test_a_same_second_tie_between_two_accounts_is_refused():
+    """GitHub timestamps are second-precision and Python's sort is stable, so a
+    tie fell back to the order the server happened to send.
+
+    Verified before the fix: the identical pair answered `'bot'` or `'bmr070'`
+    depending on arrival alone, and half those attempts grant eligibility to the
+    wrong account. Reachable by the attacker `runner.py` already assumes — a
+    compromised agent with `issues: write` re-adding within the same second.
+    """
+    same = "2026-07-01T00:00:03Z"
+    http = _Timeline([_labeled("bmr070", at=same), _labeled("bot-account", at=same)])
+    with pytest.raises(UnorderableEvent, match="share"):
+        GitHubTracker(REPO, http).label_actor("1", LABEL_AGENT_READY)
+
+
+def test_a_same_second_repeat_by_one_account_is_fine():
+    """A tie is only ambiguous when the accounts differ. One account applying
+    twice in a second answers the same either way, and refusing it would be
+    friction with no safety in it."""
+    same = "2026-07-01T00:00:03Z"
+    http = _Timeline([_labeled("bmr070", at=same), _labeled("bmr070", at=same)])
+    assert GitHubTracker(REPO, http).label_actor("1", LABEL_AGENT_READY) == "bmr070"
+
+
+def test_mixed_precision_timestamps_order_by_instant_not_text():
+    """`.` (0x2E) sorts below `Z` (0x5A), so a lexical compare puts
+    `...03.500Z` *before* `...03Z` and reports the earlier grant as newest."""
+    http = _Timeline(
+        [
+            _labeled("bot-account", at="2026-07-01T00:00:03Z"),
+            _labeled("bmr070", at="2026-07-01T00:00:03.500Z"),
+        ]
+    )
+    assert GitHubTracker(REPO, http).label_actor("1", LABEL_AGENT_READY) == "bmr070"
+
+
+@pytest.mark.parametrize("bad", ["not-a-date", "2026-13-45T99:99:99Z", ""])
+def test_an_unparseable_timestamp_is_refused(bad: str):
+    """Refused rather than defaulted to either end: where it belongs in the
+    order is who granted dispatch."""
+    http = _Timeline([_labeled("bmr070", at=bad)])
+    with pytest.raises(UnorderableEvent):
+        GitHubTracker(REPO, http).label_actor("1", LABEL_AGENT_READY)
+
+
+def test_a_naive_timestamp_is_refused():
+    """No timezone names a wall clock, not an instant, and cannot be ordered
+    against one."""
+    http = _Timeline([_labeled("bmr070", at="2026-07-01T00:00:03")])
+    with pytest.raises(UnorderableEvent, match="timezone"):
+        GitHubTracker(REPO, http).label_actor("1", LABEL_AGENT_READY)
