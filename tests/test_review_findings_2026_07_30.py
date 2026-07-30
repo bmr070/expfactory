@@ -232,9 +232,7 @@ def test_an_unlocatable_connection_is_refused_not_treated_as_empty() -> None:
 
 
 def _git(repo: Path, *args: str) -> str:
-    out = subprocess.run(
-        ["git", *args], cwd=repo, capture_output=True, text=True, check=True
-    )
+    out = subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True)
     return out.stdout
 
 
