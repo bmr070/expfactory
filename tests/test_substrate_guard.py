@@ -16,7 +16,13 @@ import subprocess
 from pathlib import Path
 
 from expfactory.gates_v1 import _HARNESS_PATHS
-from expfactory.substrate_guard import changed_paths, diff_evidence, main
+from expfactory.substrate_guard import (
+    changed_paths,
+    diff_evidence,
+    main,
+    protected_diffstat,
+    touched_protected,
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -151,3 +157,113 @@ def test_the_blocking_message_is_ascii_only(tmp_path: Path, monkeypatch, capsys)
     out = capsys.readouterr().out
     offenders = sorted({f"U+{ord(c):04X}" for c in out if ord(c) > 127})
     assert not offenders, f"non-ASCII in blocking output: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# The triage report (BRE-34). Reporting is not adjudicating: every test below
+# asserts the verdict is untouched by what the report says.
+# ---------------------------------------------------------------------------
+
+
+def test_touched_protected_keeps_only_the_protected_paths():
+    """Filters by basename, matching how the gate itself decides."""
+    got = touched_protected(
+        ["docs/notes.md", "src/expfactory/verifier.py", "tests/test_x.py", "README.md"]
+    )
+    assert got == ["src/expfactory/verifier.py"]
+
+
+def test_touched_protected_is_derived_not_hand_listed():
+    """A module added to _HARNESS_PATHS is covered without anyone remembering."""
+    for module in _HARNESS_PATHS:
+        assert touched_protected([f"src/expfactory/{module}"]) == [f"src/expfactory/{module}"]
+
+
+def test_the_diffstat_separates_additions_from_deletions(tmp_path: Path, monkeypatch):
+    """The distinction the report exists to surface.
+
+    An additions-only change to the harness and one that deletes forty lines
+    from it produce the same red X. A human spending an admin override should be
+    able to tell them apart without opening the diff.
+    """
+    repo = _repo(tmp_path)
+    target = repo / "src" / "expfactory" / "verifier.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("one\ntwo\nthree\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed")
+
+    _git(repo, "checkout", "-q", "-b", "feature")
+    target.write_text("one\ntwo\nthree\nfour\n")  # pure addition
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "add a line")
+
+    monkeypatch.chdir(repo)
+    stat = protected_diffstat("main", "HEAD", ["src/expfactory/verifier.py"])
+    assert stat == [("src/expfactory/verifier.py", 1, 0)]
+
+
+def test_the_diffstat_reports_deletions(tmp_path: Path, monkeypatch):
+    repo = _repo(tmp_path)
+    target = repo / "src" / "expfactory" / "gates_v1.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("one\ntwo\nthree\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed")
+
+    _git(repo, "checkout", "-q", "-b", "feature")
+    target.write_text("one\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "remove two lines")
+
+    monkeypatch.chdir(repo)
+    stat = protected_diffstat("main", "HEAD", ["src/expfactory/gates_v1.py"])
+    assert stat == [("src/expfactory/gates_v1.py", 0, 2)]
+
+
+def test_the_diffstat_asks_git_for_nothing_when_given_nothing():
+    """An empty path list must not become `git diff -- ` over the whole tree."""
+    assert protected_diffstat("main", "HEAD", []) == []
+
+
+def test_an_additions_only_substrate_change_still_blocks(tmp_path: Path, monkeypatch, capsys):
+    """The load-bearing one.
+
+    The report says "additions only", and the verdict is still BLOCKED. If this
+    ever inverts, the report has started adjudicating and the wall is gone.
+    """
+    repo = _repo(tmp_path)
+    target = repo / "src" / "expfactory" / "verifier.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("one\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed")
+
+    _git(repo, "checkout", "-q", "-b", "feature")
+    target.write_text("one\ntwo\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "pure addition")
+
+    monkeypatch.chdir(repo)
+    assert main(["--base", "main"]) == 1
+    out = capsys.readouterr().out
+    assert "Additions only" in out
+    assert "BLOCKED" in out
+
+
+def test_the_report_names_the_override_command(tmp_path: Path, monkeypatch, capsys):
+    """The check can never pass on a substrate PR, so the message must say what
+    the actual path forward is rather than leaving the reader to infer it."""
+    repo = _repo(tmp_path)
+    _branch_touching(repo, "src/expfactory/holdout.py")
+    monkeypatch.chdir(repo)
+    assert main(["--base", "main"]) == 1
+    assert "--admin" in capsys.readouterr().out
+
+
+def test_a_clean_pr_prints_no_triage_block(tmp_path: Path, monkeypatch, capsys):
+    repo = _repo(tmp_path)
+    _branch_touching(repo, "docs/notes.md")
+    monkeypatch.chdir(repo)
+    assert main(["--base", "main"]) == 0
+    assert "What changed in the protected set" not in capsys.readouterr().out
