@@ -1,15 +1,20 @@
 [
-  {"name": "agent-ready",        "color": "0e8a16", "description": "Human-tagged. The ONLY state a runner will dispatch. Valid only on stage:ticket."},
+  {"name": "stage:wayfinder",    "color": "c2e0c6", "dimension": "stage",    "description": "A question, not a task. Closes when the answer is recorded. Research is this, not its own label."},
+  {"name": "stage:spec",         "color": "bfd4f2", "dimension": "stage",    "description": "A published specification. Must link to the wayfinder node it synthesises."},
+  {"name": "stage:ticket",       "color": "0052cc", "dimension": "stage",    "description": "Atomic tracer bullet. Must have a stage:spec parent. The only dispatch-eligible stage."},
+  {"name": "stage:review",       "color": "fbca04", "dimension": "stage",    "description": "In /code-review. Clean-context sign-off pending."},
 
-  {"name": "lane:empirical",     "color": "1d76db", "description": "Verified by the gate harness + ledger."},
-  {"name": "lane:deterministic", "color": "5319e7", "description": "Verified by CI exit code."},
+  {"name": "lane:empirical",     "color": "1d76db", "dimension": "lane",     "description": "Verified by the gate harness + ledger. Model training and evaluation are this, not their own labels."},
+  {"name": "lane:deterministic", "color": "5319e7", "dimension": "lane",     "description": "Verified by CI exit code."},
 
-  {"name": "stage:wayfinder",    "color": "c2e0c6", "description": "A question, not a task. Closes when the answer is recorded."},
-  {"name": "stage:spec",         "color": "bfd4f2", "description": "A published specification. Must link to the wayfinder node it synthesises."},
-  {"name": "stage:ticket",       "color": "0052cc", "description": "Atomic tracer bullet. Must have a stage:spec parent. The only dispatch-eligible stage."},
-  {"name": "stage:review",       "color": "fbca04", "description": "In /code-review. Clean-context sign-off pending."},
+  {"name": "bug",                "color": "d73a4a", "dimension": "category", "description": "Shipped code does not do what it says."},
+  {"name": "enhancement",        "color": "a2eeef", "dimension": "category", "description": "New capability, or an existing one made better."},
 
-  {"name": "blocked",            "color": "b60205", "description": "Has an unmet blocking edge."},
-  {"name": "needs-human",        "color": "d93f0b", "description": "Cost/failure breaker tripped, or red-lane path. Runner will not touch."},
-  {"name": "declined",           "color": "6a737d", "description": "Killed on evidence at the wayfinder stage. Kept, not deleted - a closed option is a result."}
+  {"name": "needs-triage",       "color": "ededed", "dimension": "state",    "description": "Entry point. Leaves when it has a category and a lane."},
+  {"name": "needs-info",         "color": "d4c5f9", "dimension": "state",    "description": "Waiting on the reporter. Returns to needs-triage when they answer."},
+  {"name": "agent-ready",        "color": "0e8a16", "dimension": "state",    "description": "Human-tagged. The ONLY dispatchable state. stage:ticket only. On a PR: an agent works the diff."},
+  {"name": "ready-for-human",    "color": "1d76db", "dimension": "state",    "description": "Gate lane green, branch current, a human decides. On a PR: ready to merge."},
+  {"name": "blocked",            "color": "b60205", "dimension": "state",    "description": "Has an unmet blocking edge."},
+  {"name": "needs-human",        "color": "d93f0b", "dimension": "state",    "description": "Cost/failure breaker tripped, or red-lane path. Runner will not touch."},
+  {"name": "declined",           "color": "6a737d", "dimension": "state",    "description": "Killed on evidence at the wayfinder stage. Kept, not deleted - a closed option is a result."}
 ]

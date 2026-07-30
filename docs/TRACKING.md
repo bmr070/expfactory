@@ -79,10 +79,21 @@ Standing up a new project: [`provision/new-project/`](../provision/new-project/)
 
 ## Labels
 
-Source of truth is [`provision/labels.json`](../provision/labels.json); this
-table is the reading copy.
+Source of truth is [`provision/labels.json`](../provision/labels.json), which
+carries a `dimension` on every entry; this table is the reading copy. The role →
+string mapping an agent reads is
+[`docs/agents/triage-labels.md`](agents/triage-labels.md).
 
-**Stage** — position in the pipeline.
+> **Four dimensions. Exactly one label from each. (BRE-43)**
+>
+> stage, lane, category, state. A ticket carrying two states is not a formatting
+> problem — it is two people disagreeing about what happens next. **Stop and ask;
+> do not pick one.** Disjointness is pinned by
+> [`tests/test_provision_intake.py`](../tests/test_provision_intake.py), because a
+> vocabulary nothing checks is a vocabulary that drifts.
+
+**Stage** — position in the pipeline. Research is `stage:wayfinder`, not a label
+of its own.
 
 | Label | Meaning |
 |---|---|
@@ -96,17 +107,58 @@ how the two lanes get conflated.
 
 | Label | Meaning |
 |---|---|
-| `lane:empirical` | Verified by the gate harness + ledger. |
+| `lane:empirical` | Verified by the gate harness + ledger. **Model training and evaluation are this**, not labels of their own. |
 | `lane:deterministic` | Verified by CI exit code. |
 
-**State.**
+**Category** — what kind of work. Added in BRE-43; the review findings this week
+were all bugs in shipped code while the BRE-2x series were mostly enhancements,
+and nothing distinguished them.
 
 | Label | Meaning |
 |---|---|
+| `bug` | Shipped code does not do what it says. |
+| `enhancement` | New capability, or an existing one made better. |
+
+**State** — a state machine, not a tag set. Transitions are in
+[`triage-labels.md`](agents/triage-labels.md).
+
+| Label | Meaning |
+|---|---|
+| `needs-triage` | Entry point. Leaves when it has a category and a lane. |
+| `needs-info` | Waiting on the reporter. Returns to `needs-triage` when they answer. |
 | `agent-ready` | Human-tagged, on a `stage:ticket` only. The ONLY state a runner will dispatch. |
+| `ready-for-human` | Gate lane green, branch current. A human decides. |
 | `blocked` | Has an unmet blocking edge. |
 | `needs-human` | Cost/failure breaker tripped, or red-lane path. Runner will not touch. |
 | `declined` | Killed on evidence at the wayfinder stage. Kept, not deleted — a closed option is a result. |
+
+### Hierarchy is not a label
+
+Linear has `project`, `parentId` and `blockedBy`, and BRE-36 uses all three: the
+wayfinder map is a project, the spec is an issue, tickets are children with
+blocking edges. An `epic` / `story` pair would put that structure in a second
+place that can disagree with the first.
+
+## Pull requests: draft first (BRE-43)
+
+**Work in progress is a draft PR, or no PR at all. Never a ready PR that cannot
+merge.** Draft is a field GitHub already understands and branch protection
+already respects, so the not-ready state needs no label. Open SWE does the same
+thing: it commits and opens a *draft* PR when done.
+
+1. In progress → **draft**.
+2. Gate lane green and the branch up to date → **mark ready**, apply
+   `ready-for-human`.
+3. Review left findings the author should address → `agent-ready`, meaning an
+   agent takes the next step on the diff.
+4. **A red `substrate-guard` is not "not ready."** It is the expected state for a
+   harness change and the PR is still `ready-for-human` — the override *is* the
+   review.
+
+A PR that cannot merge is noise on a review queue whose size is this project's
+founding constraint ([`MAP.md`](MAP.md), `Runner(max_awaiting_human=N)`). The
+rule was written after #72, #73 and #75 were opened stacked, were marked MERGED
+when their bases were deleted, and delivered nothing to `main`.
 
 ## Current mapping
 
