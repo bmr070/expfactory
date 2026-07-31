@@ -285,3 +285,70 @@ closed the last gap — both production trackers support the parked state, and
 the runner refuses to start against one that does not.
 
 A first live run should be a short deterministic ticket, not a training run.
+
+---
+
+## What BRE-42 changed about this list
+
+Two entries above were claims this document could not have checked, and checking
+them changed the answer. Both are recorded here because a readiness list that is
+optimistic is worse than none.
+
+### The parked state is supported by the *adapter*, not by the *board*
+
+"Both production trackers support the parked state" was true of the code and said
+nothing about the workspace. `LinearTracker.writable_states()` returned a
+`frozenset` constant, so it answered a question about `linear_tracker.py` while
+this document read it as a question about the BRE team.
+
+Measured against the live API, 2026-07-30 — the BRE team has seven states:
+
+```
+Backlog   Todo   In Progress   In Review   Done   Duplicate   Canceled
+```
+
+**`Needs Human` and `Running Unattended` do not exist on the board.** Two of the
+four states the runner writes are not Linear defaults, so this is the ordinary
+case for a fresh team rather than a misconfiguration.
+
+Before BRE-42 that failed at *write* time: the runner parked a ticket, the
+adapter raised `StateWriteRefused`, and the refusal arrived after the job it was
+parking had already started (BRE-32 defect 2, recurring in a new place).
+`writable_states()` now intersects the allowlist with the team's real
+`workflowStates`, so the runner refuses to dispatch instead. **That is the right
+failure at the right moment, and it means Linear dispatch is blocked until the
+columns exist** — BRE-44, an owner action on the board.
+
+### `human_allowlist` holds account ids, not names
+
+`label_actor` returned Linear's `displayName`. Both that and `name` are editable
+by any member of the workspace, so an allowlist matched against either could be
+joined from a settings page: file a ticket, rename yourself onto the list, apply
+`agent-ready`. Invariant 7 defeated without touching code, and by a lower-effort
+route than the personal-key trap described above.
+
+It now returns `User.id`, which is server-assigned. The live values:
+
+| Account | id |
+|---|---|
+| Brett R / bmr070 | `45a21d4f-c6a4-425e-9a5e-e84d82fce4aa` |
+| Linear (system) | `a99c6581-5157-493f-a8ce-e15311c7f761` — **not** on the allowlist |
+
+The GitHub adapter still returns a login, and the asymmetry is deliberate: GitHub
+logins are namespace-unique and a rename frees the old one, and the timeline
+exposes no second identifier. The query that lists Linear's ids is in
+[`TRACKING.md`](TRACKING.md).
+
+A stale name-based allowlist fails **closed** and names the id it did not
+recognise. That is the intended failure — a dispatch check that degrades to
+"allow" on config drift is not a check.
+
+### Two more entries for step 7's watch list
+
+When the first `agent-ready` ticket is applied by hand, two things above are
+worth watching specifically rather than trusting:
+
+- the ticket enters `Running Unattended` **and is taken out of it by the
+  registry**, not by the process that put it there;
+- `label_actor` returns the id, and the runner's refusal message names an id
+  rather than a name if the allowlist is stale.
