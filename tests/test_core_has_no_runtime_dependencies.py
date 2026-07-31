@@ -100,6 +100,22 @@ def test_the_demo_deps_are_an_extra_not_a_dependency() -> None:
         assert package in demo
 
 
+def test_torch_is_its_own_extra_and_not_folded_into_demo() -> None:
+    """`demo` is what CI installs to run H1/H2, and neither needs torch.
+
+    H1/H2 are scikit-learn over a cached feature matrix — which is the reason
+    they finish in seconds and the reason a ~2.5 GB wheel does not belong on
+    that path. Folding torch into `demo` would put it in CI silently.
+    """
+    extras = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]
+
+    assert "torch" in " ".join(extras["h3"])
+    assert "torch" not in " ".join(extras["demo"])
+    assert "torch" not in " ".join(extras["dev"])
+
+
 @pytest.mark.parametrize("module", _core_modules(), ids=lambda p: p.name)
 def test_no_core_module_imports_a_third_party_package(module: Path) -> None:
     """The claim with teeth. Metadata is a promise; an import is what breaks it."""
