@@ -22,9 +22,52 @@ still need infrastructure that does not exist yet.
 | BRE-31 | Trusted completion record; G-10 binds artifact, ticket and command | BRE-30 | — | **DONE** |
 | BRE-32 | Cursor/Link pagination; the parked state reachable through both trackers | — | — | **DONE** |
 | BRE-38 | `AgentSessionFactory` — the runner builds the session it hands out | 07 | — | **DONE** |
-| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | - | **DONE** (last box closed by BRE-38) |
+| 07 | Runner: poll, claim, dispatch, reconcile | N-08 | - | **PARTIAL** — see below |
 | N-06 | Ticket 01 provisioning | — | **owner's accounts** | open |
 | N-07 | M2-01 timeout / handoff test | N-06 | **owner's machine** | open |
+
+### 07 is PARTIAL again, and the correction matters
+
+This table said **DONE (last box closed by BRE-38)**. That was wrong, and it is
+the failure this file exists to prevent — a green summary hiding an unmet box.
+
+BRE-38 closed the *session-construction* box: the runner builds the session, so
+it decides what the agent reaches. **The detach box was never closed.**
+`AgentSession.run` is synchronous, so the runner blocks for the length of a job.
+`JobRegistry.sweep()` can already notice a job nobody waited on, and both
+trackers reach `Running Unattended` — but **nothing yet submits a job that way**,
+so the machinery is exercised only by tests.
+
+Restated as BRE-6 (rewritten 2026-07-30) and in the M2-03 ratification. It is
+blocked on BRE-44 rather than on design.
+
+## The 2026-07-30 review, and what it cost
+
+Four fresh-context reviewers found 23 defects, all reproduced by execution rather
+than argued. Filed as BRE-39 through BRE-43; recorded here because two of them
+say something about this file rather than about the code.
+
+| ID | Found | Status |
+|---|---|---|
+| BRE-39 | `git mv gates_v1.py gates.py` reported "substrate untouched", exit 0 | **DONE** — PR #81 |
+| BRE-40 | three routes to a promoted fake result: G-08 off via `parent_id=None`, one seed × 5 as stable, NaN through the ledger | **DONE** — PR #81 |
+| BRE-41 | nine registry fail-opens, incl. a damaged log answering `0.0` spend | **DONE** — PR #81 |
+| BRE-42 | both trackers ordered timestamps lexically; Linear identity was a self-editable display name; `writable_states()` claimed states it had not verified | **DONE** — PR #81 |
+| BRE-43 | label vocabulary was a flat namespace with no dimensions and no draft-first PR rule | **DONE** — PR #81 |
+| BRE-44 | the live Linear board has neither state the runner parks into | **open — owner's board** |
+
+**BRE-42 is the one worth reading twice.** `writable_states()` answered from a
+constant, so it was a claim about `linear_tracker.py` while every caller read it
+as a claim about the workspace. Checking it against the live board found the
+board does not have the columns. The lesson generalises past this method: a
+readiness check that cannot fail is not a check, and this file had two entries of
+that kind.
+
+## Recorded, deliberately not fixed
+
+| Finding | Why it is open |
+|---|---|
+| G-08's churn count does not reset on a promotion | Defensible as written. A design question about whether the gate polices *the lineage* or *the search*, and that is the owner's call rather than something that follows from evidence. One real lineage is not a recalibration. [`../decisions/G-08-OBSERVATION-churn-does-not-reset.md`](../decisions/G-08-OBSERVATION-churn-does-not-reset.md) |
 
 ## Blocking defects from the 2026-07-28 review
 

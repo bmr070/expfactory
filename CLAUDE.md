@@ -52,6 +52,12 @@ the wrong shape at any timeout value.
 
 ```bash
 pip install -e ".[dev]"
+python scripts/gate.py                # the whole gate lane, one real exit code
+python scripts/gate.py --eval         # + the eval lane (needs local Ollama)
+
+# The individual steps, if you need one alone. Do NOT pipe these to `tail` —
+# a pipeline's status is the last command's, so `ruff format --check ... | tail`
+# exits 0 whether or not the check passed. That has shipped unformatted files.
 pytest                                # EXPFACTORY_REQUIRE_DEMO=1 forces the demo test
 ruff check src tests
 ruff format --check src tests         # src AND tests; CI checks both
