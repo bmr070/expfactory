@@ -16,6 +16,7 @@ nobody armed.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -326,3 +327,110 @@ def test_targets_are_rotated_so_one_flaw_does_not_dominate():
 def test_no_targets_is_refused():
     with pytest.raises(ValueError, match="no targets"):
         probe(1, targets=(), generator=lambda t, n: "", verifier=GateVerifier())
+
+
+# --------------------------------------------------------------------------- #
+# BRE-45 — the armed configuration is reachable from the CLI
+# --------------------------------------------------------------------------- #
+#
+# The default run prints `NOT ARMED: ['preregistration']` on every invocation,
+# and that message is correct — it was added after the first live run reported
+# the silence of a gate nobody armed as a clean result.
+#
+# The gap was that nothing could arm it. `probe()` took `verifier=`, `main()` did
+# not, so the armed configuration existed only for someone willing to hand-write
+# a script. The gates it was silent about are G-07 and G-08 — the pair BRE-40
+# most recently found a promotion bypass in.
+
+
+def test_the_armed_verifier_leaves_no_gate_unarmed(tmp_path):
+    """The property the flag exists to produce, asserted on the verifier itself
+    rather than on the flag having been accepted by argparse."""
+    from expfactory.llm_probe import armed_verifier, unarmed_gates
+
+    assert unarmed_gates(armed_verifier(tmp_path / "ledger.jsonl")) == set()
+
+
+def test_the_default_verifier_still_leaves_preregistration_unarmed(tmp_path):
+    """The other half. If this ever passes trivially, the test above is not
+    measuring the flag — it is measuring a default that changed underneath it.
+
+    The default stays off on purpose: this same gate set adjudicates one-off
+    candidates with no lineage, and requiring a preregistration there would
+    reject every one of them and destroy their diagnostic value.
+    """
+    from expfactory.llm_probe import unarmed_gates
+    from expfactory.verifier import GateVerifier
+
+    assert "preregistration" in unarmed_gates(
+        GateVerifier(grouping=DatasetGrouping("recording_session", "llm_probe"))
+    )
+
+
+def test_the_flag_reaches_the_probe_rather_than_only_parsing(monkeypatch):
+    """A flag that parses and changes nothing is the failure to prevent.
+
+    So this captures the verifier `main()` actually hands to `probe()` and asks
+    *it* whether the gates are armed. Asserting on argparse output would pass
+    against a `main()` that ignored the flag entirely.
+
+    Asked *inside* the fake probe, not after `main()` returns. The temp ledger is
+    cleaned up in `main`'s `finally`, so a verifier inspected afterwards holds a
+    path that no longer exists — which the first version of this test found by
+    raising `FileNotFoundError`. Nothing should use the verifier after the run,
+    and the test must not either.
+    """
+    from expfactory import llm_probe
+
+    captured: dict[str, object] = {}
+
+    def fake_probe(attempts, *, verifier=None, **kwargs):
+        captured["verifier_given"] = verifier is not None
+        captured["unarmed"] = llm_probe.unarmed_gates(verifier) if verifier else "no verifier"
+        return llm_probe.ProbeReport(attempts=attempts)
+
+    monkeypatch.setattr(llm_probe, "probe", fake_probe)
+
+    assert llm_probe.main(["--attempts", "1", "--require-prereg"]) == 0
+    assert captured["verifier_given"] is True, "--require-prereg did not reach probe()"
+    assert captured["unarmed"] == set()
+
+
+def test_without_the_flag_no_verifier_is_forced(monkeypatch):
+    """`probe()` builds its own default. Passing one unconditionally would make
+    the flag meaningless in the other direction."""
+    from expfactory import llm_probe
+
+    captured: dict[str, object] = {"verifier": "unset"}
+
+    def fake_probe(attempts, *, verifier=None, **kwargs):
+        captured["verifier"] = verifier
+        return llm_probe.ProbeReport(attempts=attempts)
+
+    monkeypatch.setattr(llm_probe, "probe", fake_probe)
+    llm_probe.main(["--attempts", "1"])
+
+    assert captured["verifier"] is None
+
+
+def test_the_temp_ledger_outlives_the_probe(monkeypatch):
+    """A `TemporaryDirectory` deletes on close. Building the verifier inside a
+    `with` block would delete the ledger before the probe read it, and G-07's
+    ordering proof reads positions out of that file.
+
+    Asserted by checking the path is live at the moment `probe()` is called.
+    """
+    from expfactory import llm_probe
+
+    alive: dict[str, bool] = {}
+
+    def fake_probe(attempts, *, verifier=None, **kwargs):
+        store = getattr(verifier, "_prereg_store", None)
+        path = getattr(store, "path", None)
+        alive["exists"] = bool(path and Path(path).exists())
+        return llm_probe.ProbeReport(attempts=attempts)
+
+    monkeypatch.setattr(llm_probe, "probe", fake_probe)
+    llm_probe.main(["--attempts", "1", "--require-prereg"])
+
+    assert alive.get("exists") is True, "the ledger was deleted before the probe ran"

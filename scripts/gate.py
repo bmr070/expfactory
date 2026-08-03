@@ -83,18 +83,34 @@ def main() -> int:
         if code != 0:
             failures.append((label, code))
 
-    probe_note = ""
+    notes: list[str] = []
     if args.eval:
-        code = _run("llm_probe (eval lane)", [sys.executable, "-m", "expfactory.llm_probe"], True)
-        if code == PROBE_UNAVAILABLE:
-            # Reported, never counted as a pass and never counted as a failure.
-            # A missing server is not a clean report and it is not a finding.
-            probe_note = (
-                "\neval lane: DID NOT RUN (exit 3, no model server). "
-                "Start Ollama and re-run; this is not a pass."
-            )
-        elif code != 0:
-            failures.append(("llm_probe (eval lane)", code))
+        # BOTH configurations, because "clean" means different things in each and
+        # one number hides which. The default verifier does not arm G-07/G-08 —
+        # it prints NOT ARMED: ['preregistration'] — and those are the gates
+        # BRE-40 most recently found a promotion bypass in. Running only the
+        # default would report a clean eval lane over everything except the area
+        # most recently known broken.
+        #
+        # The default is not simply replaced by the armed one: requiring a
+        # preregistration rejects every one-off candidate that has no lineage,
+        # which is most of the adversarial fixtures. The two runs cover different
+        # things and both are needed.
+        for label, extra in (
+            ("llm_probe (default)", []),
+            ("llm_probe (armed: G-07/G-08)", ["--require-prereg"]),
+        ):
+            code = _run(label, [sys.executable, "-m", "expfactory.llm_probe", *extra], True)
+            if code == PROBE_UNAVAILABLE:
+                # Reported, never counted as a pass and never counted as a
+                # failure. A missing server is not a clean report and is not a
+                # finding — the whole reason that exit code is distinct.
+                notes.append(f"{label}: DID NOT RUN (exit 3, no model server). Not a pass.")
+            elif code != 0:
+                failures.append((label, code))
+            else:
+                notes.append(f"{label}: clean")
+    probe_note = ("\n" + "\n".join(notes)) if notes else ""
 
     print("\n" + "=" * 68)
     if failures:

@@ -71,6 +71,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -425,22 +426,78 @@ def _round_robin(targets: Sequence[str], attempts: int) -> Iterator[tuple[int, s
         yield n, targets[n % len(targets)]
 
 
+def armed_verifier(ledger_path: str | Path) -> GateVerifier:
+    """The verifier the hill-climb runner must build (SPEC.md §6), for probing.
+
+    Exists because the armed configuration was previously reachable only by
+    hand-writing a script (BRE-45). The default run prints
+    `NOT ARMED: ['preregistration']` on every invocation, and the gates it is
+    silent about are G-07 and G-08 — the pair BRE-40 most recently found a
+    promotion bypass in (`G-08 disabled by parent_id=None`).
+
+    So the reproducible command covered everything except the area most recently
+    known broken, and the only run that covered it was one nobody could repeat.
+
+    The ledger is a real one on disk rather than a stub: G-07's ordering proof is
+    over ledger positions, so a store that does not order cannot arm the gate it
+    is supposed to arm. It is written to and should be a scratch path.
+    """
+    from expfactory.verifier import Ledger
+
+    return GateVerifier(
+        grouping=DatasetGrouping("recording_session", "llm_probe"),
+        require_prereg=True,
+        prereg_store=Ledger(ledger_path),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
+    import tempfile
 
     ap = argparse.ArgumentParser(prog="python -m expfactory.llm_probe", description=__doc__)
     ap.add_argument("--attempts", type=int, default=20)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
+    ap.add_argument(
+        "--require-prereg",
+        action="store_true",
+        help=(
+            "arm G-07/G-08. Off by default on purpose: this same gate set "
+            "adjudicates one-off candidates with no lineage, and requiring a "
+            "preregistration there would reject everything and destroy their "
+            "diagnostic value. Run BOTH — clean means different things in each."
+        ),
+    )
+    ap.add_argument(
+        "--ledger",
+        default=None,
+        help="where --require-prereg's ledger lives. Defaults to a temp file.",
+    )
     args = ap.parse_args(argv)
 
+    verifier = None
+    tmpdir: tempfile.TemporaryDirectory[str] | None = None
+    if args.require_prereg:
+        if args.ledger:
+            verifier = armed_verifier(args.ledger)
+        else:
+            # Held open for the run: TemporaryDirectory deletes on close, and a
+            # ledger deleted mid-probe would make G-07's ordering proof read
+            # positions out of a file that is no longer there.
+            tmpdir = tempfile.TemporaryDirectory(prefix="llm_probe_ledger_")
+            verifier = armed_verifier(Path(tmpdir.name) / "ledger.jsonl")
+
     try:
-        report = probe(args.attempts, model=args.model, endpoint=args.endpoint)
+        report = probe(args.attempts, verifier=verifier, model=args.model, endpoint=args.endpoint)
     except ProbeUnavailable as exc:
         print(f"probe did not run: {exc}")
         # Not a pass and not a failure. Distinguished from both so a CI job that
         # ever wraps this cannot read "no server" as "no findings".
         return 3
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
 
     print(report)
     return 0 if report.is_clean else 1
@@ -450,6 +507,7 @@ __all__ = [
     "Finding",
     "ProbeReport",
     "ProbeUnavailable",
+    "armed_verifier",
     "confirmed_flaws",
     "generate",
     "judge",
