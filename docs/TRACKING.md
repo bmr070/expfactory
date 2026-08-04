@@ -77,6 +77,15 @@ tickets carry the spec as `parentId` with `blockedBy` edges.
 
 Standing up a new project: [`provision/new-project/`](../provision/new-project/).
 
+**Walked once, 2026-08-04.** `edge-drone` is the first project through this chain
+end to end. The ordering earned its keep twice before any expensive work — the
+wayfinder stage found that DADS contains our own dataset, and the spec stage found
+the metric was never a deployment metric. It also exposed **three defects in the
+provisioning**, none of them in the chain itself: branch protection cannot be
+applied to a free private repo, nothing linked the factory back to its project,
+and the default branch ended up being a stage name. See
+[`decisions/BRE-36-EVIDENCE-first-project-through-intake.md`](decisions/BRE-36-EVIDENCE-first-project-through-intake.md).
+
 ## Labels
 
 Source of truth is [`provision/labels.json`](../provision/labels.json), which
