@@ -100,20 +100,31 @@ def test_the_demo_deps_are_an_extra_not_a_dependency() -> None:
         assert package in demo
 
 
-def test_torch_is_its_own_extra_and_not_folded_into_demo() -> None:
-    """`demo` is what CI installs to run H1/H2, and neither needs torch.
+def test_the_verifier_declares_no_modelling_dependencies() -> None:
+    """torch does not belong here, and this is where that gets enforced.
 
-    H1/H2 are scikit-learn over a cached feature matrix — which is the reason
-    they finish in seconds and the reason a ~2.5 GB wheel does not belong on
-    that path. Folding torch into `demo` would put it in CI silently.
+    An `h3` extra carrying torch/torchaudio/transformers was added to *this*
+    repo while writing about a project's modelling work. Wrong repo, and
+    backwards: `provision/new-project/README.md` says the project repo never
+    imports expfactory, and the verifier holds no project code. The judge does
+    not need the defendant's tools.
+
+    It was never used - `grep -rn "import torch" src/` returns nothing - so the
+    only thing it did was make the verifier's dependency surface a lie.
+
+    Checked as a *property* rather than by naming `h3`, because the next one will
+    have a different name.
     """
-    extras = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
-        "optional-dependencies"
-    ]
+    meta = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = meta["project"]["optional-dependencies"]
+    declared = " ".join(dep for group in extras.values() for dep in group).lower()
 
-    assert "torch" in " ".join(extras["h3"])
-    assert "torch" not in " ".join(extras["demo"])
-    assert "torch" not in " ".join(extras["dev"])
+    for package in ("torch", "transformers", "torchaudio", "tensorflow", "jax"):
+        assert package not in declared, (
+            f"{package!r} is declared in this repo's extras. Modelling "
+            "dependencies belong in the project repo; the verifier adjudicates "
+            "numbers and never trains."
+        )
 
 
 @pytest.mark.parametrize("module", _core_modules(), ids=lambda p: p.name)
