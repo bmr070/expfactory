@@ -50,6 +50,39 @@ artifacts; runner-owned code holds the labels and computes the metric. That is
 the trusted-scorer split (T-01, BRE-27) applied one level up. A project that
 depends on its own judge has lost the property the whole design is for.
 
+### Create `main` first, and push nothing else to it
+
+```bash
+gh repo create bmr070/<project> --private
+git init && git commit --allow-empty -m "chore: trunk"
+git branch -M main && git remote add origin git@github.com:bmr070/<project>.git
+git push -u origin main
+```
+
+**The first branch you push becomes the default.** `edge-drone` was created by
+pushing `stage/wayfinder`, so a *stage* from the intake chain became its trunk
+and a project finishing the chain had nothing to merge into. Costless to get
+right at creation and annoying afterwards, because changing it moves every open
+PR's base.
+
+`stage/*` are working branches off `main`, not replacements for it.
+
+### Check the plan before promising protection
+
+```bash
+gh api repos/bmr070/<project>/branches/main/protection >/dev/null   && echo "protection available"   || echo "NOT AVAILABLE - see section 5"
+```
+
+Step 5 below assumes branch protection can be applied. **On a free plan it cannot
+be applied to a private repo at all** — GitHub returns
+
+    403 Upgrade to GitHub Pro or make this repository public
+
+Run the check at creation rather than discovering it at step 5, and if it fails,
+record which of the three resolutions was chosen (public / weaker guarantees /
+Pro) in the project's own docs. A repo whose `CODEOWNERS` implies review that
+nothing enforces is worse than one with no `CODEOWNERS`.
+
 ## 2. Linear — one queue, no mirror
 
 One workspace. **One Linear project per factory project.** Do not create a second
@@ -150,9 +183,14 @@ because G-07 rule 8 compares a declared baseline against what the ledger records
 
 ## The shortest path
 
-1. Create the repo, apply labels, apply branch protection from the JSON
+1. Create the repo **with `main` as the first push**, apply labels, check that
+   protection is available, and apply it from the JSON
 2. Install the App; add as write collaborator; keep it out of `CODEOWNERS`
-3. Create the Linear project and its states
+3. Create the Linear project and its states, and **link it both ways** — the
+   project description names the repo, and a decision doc in *this* repo names
+   the project. `edge-drone` ran the whole chain while expfactory contained no
+   reference to it, so from the factory's own documentation the design was
+   untested
 4. File **one** ticket holding the ambition, and nothing else
 5. Run `/wayfinder` on it. Resolve the frontier one node at a time
 6. `/to-spec` → `/to-tickets` → `/implement` → `/code-review`

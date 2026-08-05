@@ -14,21 +14,6 @@ dependencies = []
 # The verifier core deliberately has no runtime deps. numpy/scipy/scikit-learn are
 # needed only by the demo workload, never by the gates or the ledger.
 demo = ["numpy>=1.26", "scipy>=1.11", "scikit-learn>=1.3"]
-# H3 onward: a pretrained audio encoder distilled to an edge student. Its own
-# extra rather than folded into `demo`, because `demo` is what CI installs to run
-# H1/H2 and torch is ~2.5 GB of wheel that neither needs — H1/H2 are scikit-learn
-# over a cached feature matrix, which is why they finish in seconds.
-#
-# NOT a runtime dependency, and `tests/test_core_has_no_runtime_dependencies.py`
-# is what keeps it that way: no adjudicating module may import it. A gate that
-# needed torch would mean the verification layer had grown a reason to care what
-# the task is, which is the coupling the plugin boundary exists to prevent.
-#
-# No upper bound on purpose: the CUDA build must match the installed driver
-# (610.88, compute capability 8.9 on this machine), so which wheel index to use
-# is a local install decision rather than something to freeze here. See
-# docs/decisions/C-01-RESOLVED-local-gpu-first.md for the 12 GB ceiling.
-h3 = ["torch>=2.4", "torchaudio>=2.4", "transformers>=4.44", "soundfile>=0.12"]
 # Pinned, not floated. These three ARE the checks: an unpinned linter means a
 # green local run says nothing about CI, and a new release can turn main red
 # with no code change. Bump deliberately, in its own commit.
